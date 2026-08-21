@@ -14,6 +14,7 @@ class HistoricalBranchPlanner:
     """
 
     _DATA_KEYS = ("name", "former_name", "old_name", "operator", "brand")
+    _NON_ENTITY_SOURCE_KINDS = {"archive_capture_index"}
 
     def __init__(
         self,
@@ -66,6 +67,8 @@ class HistoricalBranchPlanner:
         seen: set[str] = set()
         territory_key = territory.casefold().strip()
         for observation in observations:
+            if observation.source_kind in self._NON_ENTITY_SOURCE_KINDS:
+                continue
             candidates: list[object] = [observation.title]
             candidates.extend(observation.data.get(key) for key in self._DATA_KEYS)
             for raw in candidates:
