@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "argus-web-intelligence"
+version = "0.1.0"
+description = "Internal evidence-first web intelligence backend for Geo Analyzer consumers"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "httpx>=0.28,<1",
+  "pydantic>=2.10,<3",
+  "pydantic-settings>=2.7,<3",
+  "typer>=0.15,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "beautifulsoup4>=4.12,<5",
+  "crawlee[playwright]>=1.9.1,<2",
+]
+
+[project.optional-dependencies]
+agent-browser-use = ["browser-use>=0.13.7,<1", "ollama>=0.6,<1"]
+stagehand = ["crawlee[stagehand]>=1.9.1,<2"]
+dev = [
+  "pytest>=8,<10",
+  "pytest-asyncio>=0.25,<2",
+  "pytest-cov>=6,<8",
+  "ruff>=0.11,<1",
+]
+
+[project.scripts]
+argus = "argus.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/argus"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B"]
+ignore = ["B008"]
