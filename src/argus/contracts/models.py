@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, HttpUrl, model_validator
@@ -54,7 +54,7 @@ class CollectionConstraints(BaseModel):
 
 
 class CollectionRequest(BaseModel):
-    protocol_version: str = PROTOCOL_VERSION
+    protocol_version: Literal["1.0.0"] = PROTOCOL_VERSION
     consumer: str = Field(min_length=1, max_length=128)
     analysis_id: str = Field(min_length=1, max_length=128)
     territory: TerritoryContext
@@ -152,7 +152,7 @@ class CollectionAccepted(BaseModel):
 
 
 class CollectionResult(BaseModel):
-    protocol_version: str = PROTOCOL_VERSION
+    protocol_version: Literal["1.0.0"] = PROTOCOL_VERSION
     collection_id: str
     analysis_id: str
     consumer: str
