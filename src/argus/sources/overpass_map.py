@@ -4,7 +4,14 @@ import hashlib
 import json
 from typing import Any
 
-from argus.contracts.models import CollectionRequest, Evidence, EvidenceSource, Observation
+from argus.contracts.models import (
+    CollectionRequest,
+    Evidence,
+    EvidenceSource,
+    Observation,
+    StructuredError,
+)
+from argus.geocoding.contracts import GeocodeProvider
 from argus.history.snapshots import SnapshotService
 from argus.maps.contracts import MapPlace, MapSearchRequest, MapSearchResult
 from argus.maps.overpass import SUPPORTED_CATEGORIES, OverpassMapProvider
@@ -18,9 +25,15 @@ class OverpassSourceAdapter:
     source_id = "openstreetmap_overpass"
     intents = set(SUPPORTED_CATEGORIES)
 
-    def __init__(self, provider: OverpassMapProvider, snapshots: SnapshotService) -> None:
+    def __init__(
+        self,
+        provider: OverpassMapProvider,
+        snapshots: SnapshotService,
+        geocoder: GeocodeProvider | None = None,
+    ) -> None:
         self.provider = provider
         self.snapshots = snapshots
+        self.geocoder = geocoder
 
     async def discover(self, request: CollectionRequest) -> list[SourceTask]:
         categories = sorted(set(request.intents) & SUPPORTED_CATEGORIES)
@@ -46,7 +59,13 @@ class OverpassSourceAdapter:
         raw = task.metadata.get("map_request")
         if not isinstance(raw, dict):
             raise ValueError("Overpass source task is missing map_request metadata")
-        return await self.provider.search(MapSearchRequest.model_validate(raw))
+        map_request = MapSearchRequest.model_validate(raw)
+        if map_request.territory.point is None:
+            resolved, failure = await self._resolve_point(task, map_request)
+            if failure is not None:
+                return failure
+            map_request = resolved
+        return await self.provider.search(map_request)
 
     async def extract(
         self,
@@ -55,10 +74,17 @@ class OverpassSourceAdapter:
         request: CollectionRequest,
     ) -> SourceResult:
         collection_id = str(task.metadata.get("collection_id", ""))
+        geocoding_raw = task.metadata.get("geocoding")
+        geocoding = geocoding_raw if isinstance(geocoding_raw, dict) else None
         observations: list[Observation] = []
         evidence_items: list[Evidence] = []
         for place in fetched.places:
-            observation, evidence = await self._normalize_place(place, collection_id, request)
+            observation, evidence = await self._normalize_place(
+                place,
+                collection_id,
+                request,
+                geocoding=geocoding,
+            )
             observations.append(observation)
             evidence_items.append(evidence)
         return SourceResult(
@@ -73,13 +99,89 @@ class OverpassSourceAdapter:
         return result
 
     async def health(self) -> dict[str, object]:
-        return await self.provider.health()
+        result = await self.provider.health()
+        result["geocoding"] = (
+            await self.geocoder.health() if self.geocoder is not None else {"status": "not_configured"}
+        )
+        return result
+
+    async def _resolve_point(
+        self,
+        task: SourceTask,
+        map_request: MapSearchRequest,
+    ) -> tuple[MapSearchRequest, MapSearchResult | None]:
+        if self.geocoder is None:
+            return map_request, MapSearchResult(
+                provider=self.provider.provider_id,
+                errors=[
+                    StructuredError(
+                        code="GEOCODING_NOT_CONFIGURED",
+                        message=(
+                            "Map search received an address without coordinates and no geocoding "
+                            "provider is configured"
+                        ),
+                        retryable=False,
+                        source_id=f"map:{self.provider.provider_id}",
+                    )
+                ],
+            )
+
+        query = map_request.territory.address or map_request.territory.city
+        if not query:
+            return map_request, MapSearchResult(
+                provider=self.provider.provider_id,
+                errors=[
+                    StructuredError(
+                        code="GEOCODING_QUERY_REQUIRED",
+                        message="Map search requires coordinates, address, or city for geocoding",
+                        retryable=False,
+                        source_id=f"map:{self.provider.provider_id}",
+                    )
+                ],
+            )
+
+        result = await self.geocoder.search(
+            query,
+            limit=1,
+            language=map_request.language,
+        )
+        if result.blocked or result.errors or not result.candidates:
+            errors = list(result.errors)
+            if not errors:
+                errors.append(
+                    StructuredError(
+                        code="GEOCODING_NO_RESULTS",
+                        message="Geocoding returned no coordinate candidates",
+                        retryable=False,
+                        source_id=f"geocoding:{result.provider}",
+                    )
+                )
+            return map_request, MapSearchResult(
+                provider=self.provider.provider_id,
+                blocked=result.blocked,
+                errors=errors,
+            )
+
+        candidate = result.candidates[0]
+        task.metadata["geocoding"] = {
+            "provider": candidate.provider,
+            "provider_place_id": candidate.provider_place_id,
+            "display_name": candidate.display_name,
+            "point": candidate.point.model_dump(mode="json"),
+            "source_url": candidate.source_url,
+            "importance": candidate.importance,
+            "provenance": candidate.provenance,
+        }
+        territory = map_request.territory.model_copy(update={"point": candidate.point})
+        return map_request.model_copy(update={"territory": territory}), None
 
     async def _normalize_place(
         self,
         place: MapPlace,
         collection_id: str,
         request: CollectionRequest,
+        *,
+        geocoding: dict[str, Any] | None = None,
     ) -> tuple[Observation, Evidence]:
         facts = {
             "provider_place_id": place.provider_place_id,
@@ -112,11 +214,13 @@ class OverpassSourceAdapter:
             source_url=place.source_url,
             content_hash=content_hash,
         )
-        provenance = {
+        provenance: dict[str, Any] = {
             "snapshot_id": snapshot.snapshot_id,
             "map_provider": place.provider,
             **place.provenance,
         }
+        if geocoding is not None:
+            provenance["geocoding"] = geocoding
         observation = Observation(
             observation_id=observation_id,
             collection_id=collection_id,
