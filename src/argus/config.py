@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     db_path: Path = Path(".argus/argus.sqlite3")
     max_response_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     http_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    http_max_redirects: int = Field(default=10, ge=0, le=30)
     browser_timeout_seconds: float = Field(default=45.0, gt=0, le=600)
     fetch_wait_timeout_seconds: float = Field(default=180.0, gt=0, le=3600)
     max_concurrency: int = Field(default=4, ge=1, le=64)
