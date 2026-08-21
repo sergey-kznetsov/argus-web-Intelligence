@@ -21,11 +21,12 @@ def test_explicit_allowed_domains_can_expand_scope():
     )
 
 
-def test_feed_autodiscovery():
+def test_feed_autodiscovery_is_limited_to_rss_and_atom():
     html = """
     <html><head>
       <link rel="alternate" type="application/rss+xml" href="/feed.xml">
       <link rel="alternate" type="application/atom+xml" href="https://example.com/atom">
+      <link rel="alternate" type="application/feed+json" href="/feed.json">
     </head></html>
     """
     feeds = GenericWebAdapter._feed_links(html, "https://example.com/news", "text/html")
