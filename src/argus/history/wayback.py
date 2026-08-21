@@ -67,6 +67,7 @@ class WaybackCDXProvider:
         capture_limit = max(1, min(limit or self.settings.wayback_max_captures, 20))
         params = {
             "url": target,
+            "matchType": "exact",
             "output": "json",
             "fl": ",".join(self._FIELDS),
             "filter": "statuscode:200",
@@ -95,19 +96,7 @@ class WaybackCDXProvider:
                 ],
             )
 
-        captures = self._parse_payload(payload, capture_limit)
-        if not captures:
-            return WaybackCaptureResult(
-                errors=[
-                    StructuredError(
-                        code="ARCHIVE_NO_CAPTURES",
-                        message="Wayback CDX returned no usable captures for the exact URL",
-                        retryable=False,
-                        source_id=f"archive:{self.provider_id}",
-                    )
-                ]
-            )
-        return WaybackCaptureResult(captures=captures)
+        return WaybackCaptureResult(captures=self._parse_payload(payload, capture_limit))
 
     async def health(self) -> dict[str, object]:
         return {
