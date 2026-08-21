@@ -30,8 +30,7 @@ class PlaywrightRecipeExecutor:
             elif step.action == "press":
                 await page.locator(self._selector(step)).press(step.value or "Enter")
             elif step.action == "wait":
-                milliseconds = self._bounded_int(step.data.get("milliseconds", 500), 0, 10_000)
-                await page.wait_for_timeout(milliseconds)
+                await self._wait(page, step.data)
             elif step.action == "scroll":
                 amount = self._bounded_int(step.data.get("pixels", 1200), -100_000, 100_000)
                 await page.evaluate("pixels => window.scrollBy(0, pixels)", amount)
@@ -47,6 +46,18 @@ class PlaywrightRecipeExecutor:
                     }
                 )
         return extracted
+
+    async def _wait(self, page: Any, data: dict[str, Any]) -> None:
+        state = str(data.get("state") or "").strip().lower()
+        if state:
+            allowed_states = {"load", "domcontentloaded", "networkidle"}
+            if state not in allowed_states:
+                raise RecipeExecutionError("recipe wait state is invalid")
+            timeout_ms = self._bounded_int(data.get("timeout_ms", 10_000), 250, 60_000)
+            await page.wait_for_load_state(state, timeout=timeout_ms)
+            return
+        milliseconds = self._bounded_int(data.get("milliseconds", 500), 0, 10_000)
+        await page.wait_for_timeout(milliseconds)
 
     @staticmethod
     def _selector(step: Any) -> str:
