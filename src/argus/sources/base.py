@@ -13,6 +13,18 @@ class SourceTask:
     url: str
     depth: int = 0
     metadata: dict[str, object] = field(default_factory=dict)
+    task_key: str | None = None
+
+    @property
+    def dedupe_key(self) -> str:
+        """Stable per-collection task identity.
+
+        URL-only identity remains the backward-compatible default for ordinary GET
+        crawling. Providers that execute distinct queries against one endpoint can
+        provide an explicit task_key so checkpoint/dedupe logic does not collapse them.
+        """
+
+        return self.task_key or f"{self.source_id}:{self.url}"
 
 
 @dataclass(slots=True)
