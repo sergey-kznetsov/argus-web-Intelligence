@@ -71,7 +71,8 @@ class HistoricalBranchPlanner:
             for raw in candidates:
                 if not isinstance(raw, str):
                     continue
-                value = " ".join(raw.split()).strip(" \t\r\n-–—|,.;:")
+                clean = raw.replace('"', " ").replace("\\", " ")
+                value = " ".join(clean.split()).strip(" \t\r\n-–—|,.;:")
                 if not self._usable_entity(value):
                     continue
                 key = value.casefold()
