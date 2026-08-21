@@ -21,6 +21,10 @@ Consumer -> Internal API -> Collection Orchestrator -> Research Planner
                          Observation + Evidence
                                       |
                     SQLite Repository + Snapshots
+                                      |
+                         historical branch planner
+                                      |
+                              follow-up queries
 
 Map intents -> OverpassSourceAdapter -> optional Nominatim geocode
                                       -> Overpass provider
@@ -37,6 +41,8 @@ The service keeps Crawlee request/session/retry/concurrency machinery instead of
 
 BROWSER tracks the latest main-document response during SiteRecipe navigation. If a recipe starts on HTTP 200 and navigates to a 403/429/etc. page, the final status and content type are returned rather than the original navigation metadata.
 
+Direct HTTP providers such as Overpass and Nominatim use a separate bounded rate gate plus 429/503 retry policy. `Retry-After` is respected when valid; otherwise ARGUS uses bounded exponential delay. This is separate from Crawlee because these provider clients do not run through the crawler request manager.
+
 ## Discovery
 
 `ResearchPlanner` produces queries. `DiscoveryService` runs ordered providers as fallbacks and stops after the first provider that produces valid destination URLs.
@@ -50,13 +56,35 @@ The browser fallback submits the public no-JS search form in a real browser. CAP
 
 If all configured discovery providers complete normally but return no valid destination URL, ARGUS records `DISCOVERY_NO_RESULTS`. This prevents a mixed request from being reported as fully complete when another source covered only some intents. Existing factual data plus an uncovered intent becomes `partial`; a request with no executable source remains `failed`.
 
+If all available discovery routes are blocked before any valid URL is found, ARGUS records both `DISCOVERY_BLOCKED` and `DISCOVERY_INCOMPLETE`. If earlier factual observations already exist, the collection is degraded rather than silently reported complete. If discovery was the initial/only path, the collection terminates as `blocked`.
+
 Discovery is only run for intents not already covered by self-discovering source adapters or explicit seed tasks. The checkpoint stores `planning_complete` so restart recovery does not rerun discovery after planning has already completed.
 
-## Research Planner
+## Research Planner and recursive historical research
 
 `OllamaResearchPlanner` uses the local Ollama HTTP API and falls back to deterministic planning if Ollama is unavailable. Planning may create research queries but never facts. Factual output must originate from an Observation/Evidence pair.
 
-Recursive crawling is bounded by collection `max_pages` and `max_depth`. Discovered tasks are persisted in the collection checkpoint before the next page is processed, so a restart can resume unfinished branches. Deterministic Observation/Evidence identities prevent duplicates if data was stored immediately before a crash but the checkpoint was not yet updated.
+`HistoricalBranchPlanner` is activated only for the neutral `historical_context` intent. After a factual Observation has been persisted, it may use conservative labels from `title`, `name`, `former_name`, `old_name`, `operator` or `brand` to create follow-up search queries. Those labels are navigation hypotheses only; they do not become facts until a later source is opened and normalized.
+
+Historical branching is bounded in three ways: at most three queries are emitted per expansion, at most twelve follow-up queries are emitted per collection, and recursive expansion stops at `constraints.max_depth`. Generated queries are persisted in `checkpoint.historical_branch_queries`, so restart recovery does not repeat the same branch searches.
+
+An empty secondary historical search ends that branch without degrading otherwise valid evidence. Provider errors or fully blocked secondary discovery are retained as degraded coverage. This prevents infinite "nothing found" recursion while still surfacing real access failures.
+
+Recursive page crawling remains bounded by collection `max_pages` and `max_depth`. Discovered tasks are persisted in the collection checkpoint before the next page is processed, so a restart can resume unfinished branches. Deterministic Observation/Evidence identities prevent duplicates if data was stored immediately before a crash but the checkpoint was not yet updated.
+
+## Source task identity
+
+Ordinary GET crawling uses backward-compatible `source_id + URL` task identity. Providers that execute distinct POST/search operations against one endpoint can set an explicit `SourceTask.task_key`. The orchestrator uses this key consistently for queue de-duplication, visited checkpoints and restart recovery.
+
+This is required for providers such as Overpass: `school` and `pharmacy` searches may use the same interpreter URL but must remain separate tasks with independent limits, errors and coverage.
+
+## Source operational health
+
+`SourceRegistry` wraps every registered adapter with operational health tracking. No external probe traffic is generated just to make a health endpoint look green.
+
+Before the first factual attempt, a registered source reports `ready`. During work it reports `running`. A completed factual pipeline reports `ok`; a partial/error result reports `degraded`; an access/rate block reports `blocked`.
+
+`GET /v1/sources/{id}/health` retains the adapter's own static/configuration state as `adapter_status` and adds operational timestamps: `last_attempt_at`, `last_success_at`, `last_failure_at`, and `last_error_code`. Future source adapters receive this behavior automatically through the registry wrapper.
 
 ## SiteRecipe
 
@@ -104,4 +132,6 @@ Production still requires network egress controls because application URL valida
 
 ## Deferred provider implementations
 
-2GIS, Yandex Maps, Google Maps, GIS ЖКХ and developer/public-portal adapters remain separate provider implementations. They must use the common contracts, preserve source provenance and remain free of consumer analytics.
+Wayback CDX, 2GIS, Yandex Maps, Google Maps, GIS ЖКХ and developer/public-portal adapters remain separate provider implementations. The public Wayback CDX interface has been reviewed as a candidate for historical URL capture discovery; when implemented it must still fetch the concrete archived capture before treating page content as factual Evidence.
+
+All future providers must use the common contracts, preserve source provenance and remain free of consumer analytics.
