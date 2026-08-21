@@ -130,6 +130,24 @@ class DiscoveryService:
                 )
             if len(outcome.tasks) > before:
                 break
+
+        if (
+            not outcome.tasks
+            and outcome.providers_attempted
+            and not outcome.blocked
+            and not outcome.errors
+        ):
+            outcome.errors.append(
+                StructuredError(
+                    code="DISCOVERY_NO_RESULTS",
+                    message=(
+                        "Discovery providers returned no valid destination URLs "
+                        "for the research queries."
+                    ),
+                    retryable=False,
+                    source_id="discovery",
+                )
+            )
         return outcome
 
     @staticmethod
