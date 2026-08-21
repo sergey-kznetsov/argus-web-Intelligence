@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -15,6 +16,7 @@ from argus.maps.contracts import (
     MapSearchResult,
 )
 from argus.network.rate_gate import AsyncRateGate
+from argus.network.retry import RETRYABLE_PROVIDER_STATUSES, retry_delay_seconds
 from argus.security.redaction import safe_error_message
 
 
@@ -154,7 +156,6 @@ class OverpassMapProvider:
         return f"[out:json][timeout:25];({body});out center tags;"
 
     async def _request_json(self, query: str) -> tuple[dict[str, Any], int]:
-        await self.rate_gate.wait()
         timeout = httpx.Timeout(self.settings.overpass_timeout_seconds)
         headers = {
             "Accept": "application/json",
@@ -167,21 +168,42 @@ class OverpassMapProvider:
             transport=self.transport,
             headers=headers,
         ) as client:
-            async with client.stream("POST", self.endpoint or "", data={"data": query}) as response:
-                status_code = response.status_code
-                if status_code not in {403, 429}:
-                    response.raise_for_status()
-                body = bytearray()
-                async for chunk in response.aiter_bytes():
-                    body.extend(chunk)
-                    if len(body) > self.settings.max_response_bytes:
-                        raise ValueError("Overpass response exceeds configured limit")
-        if status_code in {403, 429}:
-            return {}, status_code
-        parsed = json.loads(body.decode("utf-8", errors="strict"))
-        if not isinstance(parsed, dict):
-            raise ValueError("Overpass returned a non-object JSON response")
-        return parsed, status_code
+            for attempt in range(self.settings.direct_provider_max_retries + 1):
+                await self.rate_gate.wait()
+                retry_delay: float | None = None
+                async with client.stream(
+                    "POST",
+                    self.endpoint or "",
+                    data={"data": query},
+                ) as response:
+                    status_code = response.status_code
+                    if (
+                        status_code in RETRYABLE_PROVIDER_STATUSES
+                        and attempt < self.settings.direct_provider_max_retries
+                    ):
+                        retry_delay = retry_delay_seconds(
+                            attempt=attempt,
+                            headers=response.headers,
+                            base_delay_seconds=self.settings.direct_provider_retry_base_seconds,
+                            max_delay_seconds=self.settings.direct_provider_retry_max_seconds,
+                        )
+                    else:
+                        if status_code not in {403, 429}:
+                            response.raise_for_status()
+                        body = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            body.extend(chunk)
+                            if len(body) > self.settings.max_response_bytes:
+                                raise ValueError("Overpass response exceeds configured limit")
+                        if status_code in {403, 429}:
+                            return {}, status_code
+                        parsed = json.loads(body.decode("utf-8", errors="strict"))
+                        if not isinstance(parsed, dict):
+                            raise ValueError("Overpass returned a non-object JSON response")
+                        return parsed, status_code
+                if retry_delay is not None:
+                    await asyncio.sleep(retry_delay)
+        raise RuntimeError("Overpass retry loop exhausted unexpectedly")
 
     def _place_from_element(self, element: dict[str, Any]) -> MapPlace | None:
         element_type = str(element.get("type") or "").strip()
