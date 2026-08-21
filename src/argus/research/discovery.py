@@ -10,6 +10,14 @@ from argus.security.urls import UnsafeUrlError, UrlGuard
 from argus.sources.base import SourceTask
 
 
+class DiscoveryBlockedError(RuntimeError):
+    """A discovery provider presented an anti-bot/access challenge.
+
+    ARGUS never attempts to bypass the challenge. The orchestrator can expose the
+    collection as blocked/partial instead of misreporting a normal source failure.
+    """
+
+
 @dataclass(slots=True)
 class DiscoveryHit:
     url: str
@@ -36,13 +44,15 @@ class DiscoveryOutcome:
     tasks: list[SourceTask] = field(default_factory=list)
     errors: list[StructuredError] = field(default_factory=list)
     providers_attempted: list[str] = field(default_factory=list)
+    blocked: bool = False
 
 
 class DiscoveryService:
     """Turn research queries into factual-source crawl tasks.
 
-    Discovery hits are not evidence. They only seed Generic Web tasks; observations and evidence are
-    created after ARGUS fetches the destination page itself.
+    Discovery hits are not evidence. Providers are ordered fallbacks: once one
+    provider yields at least one valid destination URL, later providers are not
+    called. This keeps search traffic small and avoids unnecessary anti-bot load.
     """
 
     def __init__(
@@ -73,6 +83,17 @@ class DiscoveryService:
             outcome.providers_attempted.append(provider.name)
             try:
                 hits = await provider.discover(selected_queries, request)
+            except DiscoveryBlockedError as exc:
+                outcome.blocked = True
+                outcome.errors.append(
+                    StructuredError(
+                        code="DISCOVERY_BLOCKED",
+                        message=safe_error_message(exc, max_length=300),
+                        retryable=True,
+                        source_id=f"discovery:{provider.name}",
+                    )
+                )
+                continue
             except Exception as exc:
                 outcome.errors.append(
                     StructuredError(
@@ -84,6 +105,7 @@ class DiscoveryService:
                 )
                 continue
 
+            before = len(outcome.tasks)
             for hit in hits:
                 if hit.url in seen or not self._domain_allowed(hit.url, allowed, denied):
                     continue
@@ -106,6 +128,8 @@ class DiscoveryService:
                         },
                     )
                 )
+            if len(outcome.tasks) > before:
+                break
         return outcome
 
     @staticmethod
