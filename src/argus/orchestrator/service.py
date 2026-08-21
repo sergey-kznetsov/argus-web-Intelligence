@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -14,13 +15,28 @@ from argus.contracts.models import (
     StructuredError,
 )
 from argus.research.planner import ResearchPlanner
+from argus.security.redaction import safe_error_message
 from argus.sources.base import SourceTask
 from argus.sources.registry import SourceRegistry
 from argus.storage.base import Repository
 
+logger = logging.getLogger("argus.orchestrator")
+
 
 def now():
     return datetime.now(UTC)
+
+
+def _log_extra(record: CollectionRecord, event: str, **values: object) -> dict[str, object]:
+    return {
+        "event": event,
+        "collection_id": record.collection_id,
+        "analysis_id": record.request.analysis_id,
+        "consumer": record.request.consumer,
+        "stage": record.stage,
+        "status": record.status.value,
+        **values,
+    }
 
 
 class CollectionOrchestrator:
@@ -43,8 +59,10 @@ class CollectionOrchestrator:
         for record in await self.repository.list_recoverable_collections():
             if record.status == CollectionStatus.RUNNING:
                 record.status = CollectionStatus.QUEUED
+                record.stage = "recovered"
                 record.updated_at = now()
                 await self.repository.update_collection(record)
+            logger.info("recovering collection", extra=_log_extra(record, "collection_recovered"))
             self._spawn(record.collection_id)
 
     async def shutdown(self) -> None:
@@ -66,6 +84,7 @@ class CollectionOrchestrator:
             stage="queued",
         )
         await self.repository.create_collection(record)
+        logger.info("collection accepted", extra=_log_extra(record, "collection_accepted"))
         self._spawn(collection_id)
         return CollectionAccepted(collection_id=collection_id)
 
@@ -97,6 +116,7 @@ class CollectionOrchestrator:
         record.stage = "cancelled"
         record.updated_at = now()
         await self.repository.update_collection(record)
+        logger.info("collection cancelled", extra=_log_extra(record, "collection_cancelled"))
         return record
 
     async def result(self, collection_id: str) -> CollectionResult | None:
@@ -126,6 +146,7 @@ class CollectionOrchestrator:
             record.stage = "research_planning"
             record.updated_at = now()
             await self.repository.update_collection(record)
+            logger.info("collection started", extra=_log_extra(record, "collection_started"))
             try:
                 plan = await self.planner.plan(record.request)
                 pending = self._load_tasks(record)
@@ -156,14 +177,27 @@ class CollectionOrchestrator:
                     record.stage = "failed:no_sources"
                     record.updated_at = now()
                     await self.repository.update_collection(record)
+                    logger.warning(
+                        "collection has no executable sources",
+                        extra=_log_extra(
+                            record,
+                            "collection_failed",
+                            error_code="NO_SOURCE_TASKS",
+                        ),
+                    )
                     return
                 await self._process_tasks(record, pending)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 record = await self.repository.get_collection(collection_id) or record
+                message = safe_error_message(exc, max_length=500)
                 record.errors.append(
-                    StructuredError(code="COLLECTION_FAILED", message=str(exc)[:500], retryable=False)
+                    StructuredError(
+                        code="COLLECTION_FAILED",
+                        message=message,
+                        retryable=False,
+                    )
                 )
                 has_data = bool(await self.repository.list_observations(collection_id))
                 record.status = (
@@ -175,6 +209,14 @@ class CollectionOrchestrator:
                 record.stage = "failed"
                 record.updated_at = now()
                 await self.repository.update_collection(record)
+                logger.error(
+                    "collection failed",
+                    extra=_log_extra(
+                        record,
+                        "collection_failed",
+                        error_code="COLLECTION_FAILED",
+                    ),
+                )
             finally:
                 self._cancelled.discard(collection_id)
 
@@ -213,6 +255,15 @@ class CollectionOrchestrator:
                 coverage.observations = len(result.observations)
                 coverage.blocked = result.blocked
                 coverage.status = "blocked" if result.blocked else "ok"
+                if result.blocked:
+                    logger.warning(
+                        "source blocked",
+                        extra=_log_extra(
+                            record,
+                            "source_blocked",
+                            source_id=task.source_id,
+                        ),
+                    )
                 queued_keys = {f"{item.source_id}:{item.url}" for item in pending}
                 for child in result.discovered_tasks:
                     child.metadata["collection_id"] = record.collection_id
@@ -221,16 +272,26 @@ class CollectionOrchestrator:
                         queued_keys.add(child_key)
                         pending.append(child)
             except Exception as exc:
+                message = safe_error_message(exc, max_length=300)
                 coverage.status = "error"
                 coverage.error_code = "SOURCE_ERROR"
-                coverage.error_message = str(exc)[:300]
+                coverage.error_message = message
                 record.errors.append(
                     StructuredError(
                         code="SOURCE_ERROR",
-                        message=str(exc)[:300],
+                        message=message,
                         retryable=True,
                         source_id=task.source_id,
                     )
+                )
+                logger.warning(
+                    "source collection failed",
+                    extra=_log_extra(
+                        record,
+                        "source_error",
+                        source_id=task.source_id,
+                        error_code="SOURCE_ERROR",
+                    ),
                 )
             coverage.finished_at = now()
             record.coverage.append(coverage)
@@ -284,6 +345,7 @@ class CollectionOrchestrator:
             "pending_tasks": [self._task_dict(t) for t in pending] if budget_exhausted else [],
         }
         await self.repository.update_collection(record)
+        logger.info("collection finished", extra=_log_extra(record, "collection_finished"))
 
     @staticmethod
     def _task_dict(task: SourceTask) -> dict[str, object]:
