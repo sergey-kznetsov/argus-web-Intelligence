@@ -15,8 +15,13 @@ class HistoricalBranchPlanner:
 
     _DATA_KEYS = ("name", "former_name", "old_name", "operator", "brand")
 
-    def __init__(self, max_queries_per_expansion: int = 3) -> None:
+    def __init__(
+        self,
+        max_queries_per_expansion: int = 3,
+        max_total_queries: int = 12,
+    ) -> None:
         self.max_queries_per_expansion = max(1, max_queries_per_expansion)
+        self.max_total_queries = max(self.max_queries_per_expansion, max_total_queries)
 
     def expand(
         self,
@@ -29,9 +34,18 @@ class HistoricalBranchPlanner:
         if "historical_context" not in request.intents:
             return []
 
+        remaining_total = max(0, self.max_total_queries - len(seen_queries))
+        if remaining_total == 0:
+            return []
+
         territory = self._territory_text(request)
         language = self._language(request, territory)
-        query_limit = max(0, min(limit or self.max_queries_per_expansion, self.max_queries_per_expansion))
+        requested_limit = self.max_queries_per_expansion if limit is None else max(0, limit)
+        query_limit = min(
+            requested_limit,
+            self.max_queries_per_expansion,
+            remaining_total,
+        )
         if query_limit == 0:
             return []
 
