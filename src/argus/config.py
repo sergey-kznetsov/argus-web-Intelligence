@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,6 +29,12 @@ class Settings(BaseSettings):
     throttled_domains: list[str] = Field(default_factory=list)
     throttle_base_delay_seconds: float = Field(default=2.0, gt=0, le=300)
     throttle_max_delay_seconds: float = Field(default=60.0, gt=0, le=3600)
+
+    discovery_max_queries: int = Field(default=8, ge=1, le=50)
+    searxng_url: str | None = None
+    searxng_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
+    searxng_max_results_per_query: int = Field(default=10, ge=1, le=50)
+
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
     agent_backend: str = "browser-use"
@@ -54,6 +61,19 @@ class Settings(BaseSettings):
         if level not in allowed:
             raise ValueError(f"log_level must be one of {sorted(allowed)}")
         return level
+
+    @field_validator("searxng_url", mode="before")
+    @classmethod
+    def normalize_searxng_url(cls, value: object) -> str | None:
+        if value is None or not str(value).strip():
+            return None
+        url = str(value).strip().rstrip("/")
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("searxng_url must be an http(s) URL")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("searxng_url must not contain credentials, query or fragment")
+        return url
 
     @model_validator(mode="after")
     def validate_throttling(self) -> "Settings":
