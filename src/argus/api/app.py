@@ -85,6 +85,9 @@ def build_discovery(
         providers=providers,
         url_guard=guard,
         max_queries=settings.discovery_max_queries,
+        historical_archive_source_id=(
+            "wayback_cdx" if settings.wayback_cdx_url else None
+        ),
     )
 
 
