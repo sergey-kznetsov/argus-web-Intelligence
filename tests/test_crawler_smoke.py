@@ -8,6 +8,7 @@ import pytest
 from argus.config import Settings
 from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
+from argus.recipes.models import RecipeStep, SiteRecipe
 from argus.security.urls import UnsafeUrlError, UrlGuard
 
 
@@ -25,6 +26,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if self.path == "/secret":
             type(self).secret_hits += 1
+
+        if self.path == "/blocked":
+            body = b"rate limited"
+            self.send_response(429)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
 
         body = (
             b"<html><head><title>Smoke</title></head><body>"
@@ -90,6 +100,35 @@ async def test_browser_runtime_executes_javascript_and_reuses_runtime():
     finally:
         await runtime.shutdown()
         assert runtime._crawler is None
+
+
+@pytest.mark.asyncio
+async def test_browser_recipe_reports_final_navigation_response():
+    settings = Settings(allow_internal_targets=["127.0.0.1"])
+    guard = UrlGuard.from_strings(settings.allow_internal_targets)
+    runtime = BrowserCrawlerRuntime(settings, guard)
+    try:
+        with server() as port:
+            recipe = SiteRecipe(
+                domain="127.0.0.1",
+                goal="test_final_response",
+                steps=[
+                    RecipeStep(
+                        action="goto",
+                        value=f"http://127.0.0.1:{port}/blocked",
+                    )
+                ],
+            )
+            result = await runtime.fetch(
+                f"http://127.0.0.1:{port}/first",
+                recipe=recipe,
+            )
+            assert result.final_url.endswith("/blocked")
+            assert result.status_code == 429
+            assert result.blocked is True
+            assert result.content_type == "text/plain; charset=utf-8"
+    finally:
+        await runtime.shutdown()
 
 
 @pytest.mark.asyncio
