@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from argus.contracts.models import Point, StructuredError, TerritoryContext, utcnow
 
@@ -51,6 +52,16 @@ class MapPlace(BaseModel):
     collected_at: datetime = Field(default_factory=utcnow)
     attributes: dict[str, Any] = Field(default_factory=dict)
     provenance: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("source_url")
+    @classmethod
+    def require_public_source_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("map source_url must be an http(s) URL")
+        if parsed.username or parsed.password:
+            raise ValueError("map source_url must not contain credentials")
+        return value
 
 
 class MapSearchResult(BaseModel):
