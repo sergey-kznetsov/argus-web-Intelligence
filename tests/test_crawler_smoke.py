@@ -13,7 +13,12 @@ from argus.security.urls import UrlGuard
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
-        body = b"<html><head><title>Smoke</title></head><body><div id='app'></div><script>document.getElementById('app').innerText='Rendered';</script></body></html>"
+        body = (
+            b"<html><head><title>Smoke</title></head><body>"
+            b"<div id='app'></div>"
+            b"<script>document.getElementById('app').innerText='Rendered';</script>"
+            b"</body></html>"
+        )
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -37,19 +42,37 @@ def server():
 
 
 @pytest.mark.asyncio
-async def test_fast_runtime_real_crawlee():
+async def test_fast_runtime_real_crawlee_and_reuses_runtime():
     settings = Settings(allow_internal_targets=["127.0.0.1"])
     guard = UrlGuard.from_strings(settings.allow_internal_targets)
-    with server() as port:
-        result = await FastCrawlerRuntime(settings, guard).fetch(f"http://127.0.0.1:{port}/")
-        assert result.status_code == 200
-        assert result.title == "Smoke"
+    runtime = FastCrawlerRuntime(settings, guard)
+    try:
+        with server() as port:
+            first = await runtime.fetch(f"http://127.0.0.1:{port}/first")
+            crawler = runtime._crawler
+            second = await runtime.fetch(f"http://127.0.0.1:{port}/second")
+            assert first.status_code == 200
+            assert first.title == "Smoke"
+            assert second.status_code == 200
+            assert runtime._crawler is crawler
+    finally:
+        await runtime.shutdown()
+        assert runtime._crawler is None
 
 
 @pytest.mark.asyncio
-async def test_browser_runtime_executes_javascript():
+async def test_browser_runtime_executes_javascript_and_reuses_runtime():
     settings = Settings(allow_internal_targets=["127.0.0.1"])
     guard = UrlGuard.from_strings(settings.allow_internal_targets)
-    with server() as port:
-        result = await BrowserCrawlerRuntime(settings, guard).fetch(f"http://127.0.0.1:{port}/")
-        assert "Rendered" in result.text
+    runtime = BrowserCrawlerRuntime(settings, guard)
+    try:
+        with server() as port:
+            first = await runtime.fetch(f"http://127.0.0.1:{port}/first")
+            crawler = runtime._crawler
+            second = await runtime.fetch(f"http://127.0.0.1:{port}/second")
+            assert "Rendered" in first.text
+            assert "Rendered" in second.text
+            assert runtime._crawler is crawler
+    finally:
+        await runtime.shutdown()
+        assert runtime._crawler is None
