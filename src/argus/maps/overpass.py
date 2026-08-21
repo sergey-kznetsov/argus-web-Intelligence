@@ -31,10 +31,12 @@ _CATEGORY_TAGS: dict[str, tuple[str, str]] = {
     "mall": ("shop", "mall"),
     "park": ("leisure", "park"),
 }
+SUPPORTED_CATEGORIES = frozenset(_CATEGORY_TAGS)
 
 
 class OverpassMapProvider:
     provider_id = "openstreetmap_overpass"
+    supported_categories = SUPPORTED_CATEGORIES
     capabilities = MapProviderCapabilities(
         text_search=True,
         category_search=True,
@@ -63,7 +65,7 @@ class OverpassMapProvider:
                 retryable=False,
             )
         radius = request.radius_meters or request.territory.radius_meters or 1_000
-        unsupported = [item for item in request.categories if item not in _CATEGORY_TAGS]
+        unsupported = [item for item in request.categories if item not in SUPPORTED_CATEGORIES]
         if unsupported:
             return self._error(
                 "MAP_CATEGORY_UNSUPPORTED",
