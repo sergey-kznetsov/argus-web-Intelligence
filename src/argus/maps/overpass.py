@@ -14,6 +14,7 @@ from argus.maps.contracts import (
     MapSearchRequest,
     MapSearchResult,
 )
+from argus.network.rate_gate import AsyncRateGate
 from argus.security.redaction import safe_error_message
 
 
@@ -56,6 +57,7 @@ class OverpassMapProvider:
         self.settings = settings
         self.endpoint = settings.overpass_url
         self.transport = transport
+        self.rate_gate = AsyncRateGate(settings.overpass_min_interval_seconds)
 
     async def search(self, request: MapSearchRequest) -> MapSearchResult:
         if request.territory.point is None:
@@ -116,7 +118,11 @@ class OverpassMapProvider:
         return MapSearchResult(provider=self.provider_id, places=places)
 
     async def health(self) -> dict[str, object]:
-        return {"provider": self.provider_id, "status": "configured"}
+        return {
+            "provider": self.provider_id,
+            "status": "configured",
+            "min_interval_seconds": self.settings.overpass_min_interval_seconds,
+        }
 
     def _build_query(self, request: MapSearchRequest, radius: int) -> str:
         point = request.territory.point
@@ -148,6 +154,7 @@ class OverpassMapProvider:
         return f"[out:json][timeout:25];({body});out center tags;"
 
     async def _request_json(self, query: str) -> tuple[dict[str, Any], int]:
+        await self.rate_gate.wait()
         timeout = httpx.Timeout(self.settings.overpass_timeout_seconds)
         headers = {
             "Accept": "application/json",
