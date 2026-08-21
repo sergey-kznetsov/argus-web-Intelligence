@@ -60,10 +60,12 @@ class DiscoveryService:
         providers: list[DiscoveryProvider],
         url_guard: UrlGuard,
         max_queries: int = 8,
+        historical_archive_source_id: str | None = None,
     ) -> None:
         self.providers = providers
         self.url_guard = url_guard
         self.max_queries = max_queries
+        self.historical_archive_source_id = historical_archive_source_id
 
     async def discover(
         self,
@@ -114,20 +116,38 @@ class DiscoveryService:
                 except UnsafeUrlError:
                     continue
                 seen.add(hit.url)
+                common_metadata = {
+                    "discovery_provider": hit.provider,
+                    "discovery_engines": hit.engines,
+                    "discovery_rank": hit.rank,
+                    "allowed_domains": list(request.constraints.allowed_domains),
+                }
                 outcome.tasks.append(
                     SourceTask(
                         source_id="generic_web",
                         goal=request.intents[0],
                         url=hit.url,
                         depth=0,
-                        metadata={
-                            "discovery_provider": hit.provider,
-                            "discovery_engines": hit.engines,
-                            "discovery_rank": hit.rank,
-                            "allowed_domains": list(request.constraints.allowed_domains),
-                        },
+                        metadata=dict(common_metadata),
                     )
                 )
+                if (
+                    self.historical_archive_source_id
+                    and "historical_context" in request.intents
+                ):
+                    outcome.tasks.append(
+                        SourceTask(
+                            source_id=self.historical_archive_source_id,
+                            goal="historical_context",
+                            url=hit.url,
+                            depth=0,
+                            task_key=f"{self.historical_archive_source_id}:{hit.url}",
+                            metadata={
+                                **common_metadata,
+                                "archive_target_url": hit.url,
+                            },
+                        )
+                    )
             if len(outcome.tasks) > before:
                 break
 
