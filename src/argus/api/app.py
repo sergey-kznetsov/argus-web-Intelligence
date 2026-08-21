@@ -31,6 +31,7 @@ from argus.security.auth import bearer_dependency, ensure_token
 from argus.security.urls import UrlGuard
 from argus.services import ServiceContainer
 from argus.sources.generic_web import GenericWebAdapter
+from argus.sources.overpass_map import OverpassSourceAdapter
 from argus.sources.registry import SourceRegistry
 from argus.sources.rss import RSSAdapter
 from argus.storage.sqlite import SQLiteRepository
@@ -103,6 +104,9 @@ def build_services(settings: Settings) -> ServiceContainer:
         )
     )
     registry.register(RSSAdapter(fast, snapshots))
+    if settings.overpass_url:
+        overpass_provider = map_registry.get("openstreetmap_overpass")
+        registry.register(OverpassSourceAdapter(overpass_provider))
     planner = OllamaResearchPlanner(settings)
     orchestrator = CollectionOrchestrator(
         repository=repository,
