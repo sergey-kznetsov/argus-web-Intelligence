@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from argus.contracts.models import CollectionRequest, CollectionStatus, Observation
+from argus.contracts.models import (
+    CollectionRequest,
+    CollectionStatus,
+    Observation,
+    StructuredError,
+)
 from argus.history.snapshots import sha256_text
 from argus.orchestrator.service import CollectionOrchestrator
 from argus.research.discovery import DiscoveryOutcome
@@ -115,6 +120,33 @@ class BranchDiscovery:
         return DiscoveryOutcome(tasks=tasks, providers_attempted=["fake"])
 
 
+class BlockedBranchDiscovery(BranchDiscovery):
+    def __init__(self) -> None:
+        super().__init__(return_task=False)
+
+    async def discover(self, queries, request):
+        assert request.intents == ["historical_context"]
+        self.calls.append(list(queries))
+        return DiscoveryOutcome(
+            blocked=True,
+            providers_attempted=["blocked"],
+            errors=[
+                StructuredError(
+                    code="DISCOVERY_BLOCKED",
+                    message="search challenge",
+                    retryable=True,
+                    source_id="discovery:blocked",
+                ),
+                StructuredError(
+                    code="DISCOVERY_INCOMPLETE",
+                    message="no valid destination URL found",
+                    retryable=True,
+                    source_id="discovery",
+                ),
+            ],
+        )
+
+
 @pytest.mark.asyncio
 async def test_historical_observation_triggers_bounded_recursive_discovery(tmp_path: Path):
     repo = SQLiteRepository(tmp_path / "db.sqlite")
@@ -184,3 +216,36 @@ async def test_empty_historical_branch_is_terminal_not_partial(tmp_path: Path):
     assert record.status == CollectionStatus.COMPLETED
     assert len(discovery.calls) == 1
     assert not any(error.code == "DISCOVERY_NO_RESULTS" for error in record.errors)
+
+
+@pytest.mark.asyncio
+async def test_blocked_historical_branch_degrades_existing_results(tmp_path: Path):
+    repo = SQLiteRepository(tmp_path / "db.sqlite")
+    registry = SourceRegistry()
+    registry.register(HistoricalSeedAdapter())
+    discovery = BlockedBranchDiscovery()
+    orchestrator = CollectionOrchestrator(
+        repo,
+        registry,
+        HeuristicResearchPlanner(),
+        discovery=discovery,
+        historical_branch_planner=HistoricalBranchPlanner(),
+    )
+    await orchestrator.start()
+    accepted = await orchestrator.submit(
+        CollectionRequest(
+            consumer="test",
+            analysis_id="analysis-3",
+            territory={"city": "Ижевск"},
+            intents=["historical_context"],
+            constraints={"max_depth": 2, "max_pages": 10, "language": "ru"},
+        )
+    )
+    await orchestrator._jobs[accepted.collection_id]
+    record = await repo.get_collection(accepted.collection_id)
+    await orchestrator.shutdown()
+
+    assert record is not None
+    assert record.status == CollectionStatus.PARTIAL
+    assert record.partial is True
+    assert any(error.code == "DISCOVERY_INCOMPLETE" for error in record.errors)
