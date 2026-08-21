@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
+from argus.maps.registry import MapProviderRegistry
 from argus.orchestrator.service import CollectionOrchestrator
 from argus.sources.registry import SourceRegistry
 from argus.storage.base import Repository
@@ -16,6 +17,7 @@ class ServiceContainer:
 
     repository: Repository
     registry: SourceRegistry
+    map_registry: MapProviderRegistry
     orchestrator: CollectionOrchestrator
     fast: FastCrawlerRuntime
     browser: BrowserCrawlerRuntime
