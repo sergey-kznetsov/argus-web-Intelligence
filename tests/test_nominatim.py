@@ -7,6 +7,19 @@ from argus.config import Settings
 from argus.geocoding.nominatim import NominatimGeocoder
 
 
+def settings(tmp_path, **values):
+    defaults = {
+        "db_path": tmp_path / "db.sqlite",
+        "token_file": tmp_path / "token",
+        "nominatim_url": "http://127.0.0.1:8080",
+        "nominatim_min_interval_seconds": 0,
+        "direct_provider_retry_base_seconds": 0,
+        "direct_provider_retry_max_seconds": 0,
+    }
+    defaults.update(values)
+    return Settings(**defaults)
+
+
 @pytest.mark.asyncio
 async def test_nominatim_geocoder_normalizes_first_candidates(tmp_path):
     requests: list[httpx.Request] = []
@@ -29,12 +42,7 @@ async def test_nominatim_geocoder_normalizes_first_candidates(tmp_path):
         ]
         return httpx.Response(200, content=json.dumps(body).encode(), request=request)
 
-    settings = Settings(
-        db_path=tmp_path / "db.sqlite",
-        token_file=tmp_path / "token",
-        nominatim_url="http://127.0.0.1:8080",
-    )
-    geocoder = NominatimGeocoder(settings, transport=httpx.MockTransport(handler))
+    geocoder = NominatimGeocoder(settings(tmp_path), transport=httpx.MockTransport(handler))
     result = await geocoder.search("Ижевск, Пушкинская 1", limit=1, language="ru")
 
     assert result.errors == []
@@ -55,21 +63,79 @@ async def test_nominatim_geocoder_normalizes_first_candidates(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_nominatim_rate_limit_is_blocked(tmp_path):
+async def test_nominatim_fallback_source_is_public_osm_search(tmp_path):
     def handler(request: httpx.Request) -> httpx.Response:
+        body = [
+            {
+                "place_id": 123,
+                "lat": "56.8500",
+                "lon": "53.2000",
+                "display_name": "Пушкинская улица, Ижевск, Россия",
+            }
+        ]
+        return httpx.Response(200, content=json.dumps(body).encode(), request=request)
+
+    geocoder = NominatimGeocoder(settings(tmp_path), transport=httpx.MockTransport(handler))
+    result = await geocoder.search("Ижевск, Пушкинская")
+    assert result.candidates[0].source_url.startswith("https://www.openstreetmap.org/search?query=")
+    assert "127.0.0.1" not in result.candidates[0].source_url
+
+
+@pytest.mark.asyncio
+async def test_nominatim_rate_limit_is_blocked_after_retry_budget(tmp_path):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
         return httpx.Response(429, content=b"rate limited", request=request)
 
-    settings = Settings(
-        db_path=tmp_path / "db.sqlite",
-        token_file=tmp_path / "token",
-        nominatim_url="http://127.0.0.1:8080",
+    geocoder = NominatimGeocoder(
+        settings(tmp_path, direct_provider_max_retries=1),
+        transport=httpx.MockTransport(handler),
     )
-    geocoder = NominatimGeocoder(settings, transport=httpx.MockTransport(handler))
     result = await geocoder.search("Ижевск")
 
+    assert calls == 2
     assert result.blocked is True
     assert result.candidates == []
     assert result.errors[0].code == "GEOCODING_PROVIDER_BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_nominatim_retries_503_then_succeeds(tmp_path):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503, content=b"temporary", request=request)
+        return httpx.Response(
+            200,
+            content=json.dumps(
+                [
+                    {
+                        "place_id": 1,
+                        "osm_type": "node",
+                        "osm_id": 2,
+                        "lat": "56.85",
+                        "lon": "53.2",
+                        "display_name": "Ижевск",
+                    }
+                ]
+            ).encode(),
+            request=request,
+        )
+
+    geocoder = NominatimGeocoder(
+        settings(tmp_path, direct_provider_max_retries=1),
+        transport=httpx.MockTransport(handler),
+    )
+    result = await geocoder.search("Ижевск")
+    assert calls == 2
+    assert result.errors == []
+    assert len(result.candidates) == 1
 
 
 @pytest.mark.asyncio
@@ -77,12 +143,7 @@ async def test_nominatim_empty_result_is_explicit(tmp_path):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"[]", request=request)
 
-    settings = Settings(
-        db_path=tmp_path / "db.sqlite",
-        token_file=tmp_path / "token",
-        nominatim_url="http://127.0.0.1:8080",
-    )
-    geocoder = NominatimGeocoder(settings, transport=httpx.MockTransport(handler))
+    geocoder = NominatimGeocoder(settings(tmp_path), transport=httpx.MockTransport(handler))
     result = await geocoder.search("несуществующий адрес")
 
     assert result.blocked is False
