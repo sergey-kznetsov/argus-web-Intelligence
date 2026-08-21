@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     searxng_url: str | None = None
     searxng_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     searxng_max_results_per_query: int = Field(default=10, ge=1, le=50)
+    browser_serp_enabled: bool = True
+    browser_serp_max_results_per_query: int = Field(default=5, ge=1, le=20)
+    browser_serp_wait_ms: int = Field(default=750, ge=250, le=5_000)
 
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
