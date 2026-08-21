@@ -8,9 +8,9 @@ Core rule: **ARGUS = find + obtain + prove + store. Consumers = interpret + calc
 
 The service includes strict protocol `1.0.0` contracts, asynchronous collections, SQLite storage behind a repository abstraction, persistent Crawlee FAST/BROWSER runtimes, Generic Web and RSS/Atom adapters, Research Planner with optional local Ollama, recursive research tasks, ordered discovery providers, agent abstraction, SiteRecipe replay/recovery, SHA-256 snapshots/diffs, Bearer authentication, redirect-aware SSRF validation, resource/rate limits, cancellation, restart checkpoints, structured secret-safe logging, CLI, tests and CI.
 
-Discovery is provider-neutral. Search results only seed destination URLs; snippets are never treated as factual evidence. Destination pages must be fetched by ARGUS before Observation/Evidence is created.
+Discovery is provider-neutral. Search results only seed destination URLs; snippets are never treated as factual evidence. Destination pages must be fetched by ARGUS before Observation/Evidence is created. If configured providers complete normally but produce no valid destination URL, ARGUS records `DISCOVERY_NO_RESULTS` so a mixed request cannot be reported as fully complete when only some intents were covered.
 
-`argus.maps` provides provider-neutral map contracts. The first actual map implementation is optional OpenStreetMap Overpass. It is registered only when `ARGUS_OVERPASS_URL` is configured, and its places enter the same collection Observation/Evidence/snapshot pipeline as web sources. 2GIS, Yandex Maps and Google Maps remain separate future providers rather than hardcoded branches.
+`argus.maps` provides provider-neutral map contracts. The first actual map implementation is optional OpenStreetMap Overpass. It is registered only when `ARGUS_OVERPASS_URL` is configured, and its places enter the same collection Observation/Evidence/snapshot pipeline as web sources. Address-only map requests can additionally use an explicitly configured Nominatim geocoder. 2GIS, Yandex Maps and Google Maps remain separate future providers rather than hardcoded branches.
 
 ## Install
 
@@ -93,11 +93,25 @@ ARGUS does not enable a public Overpass endpoint automatically. Configure a self
 ```bash
 ARGUS_OVERPASS_URL=https://overpass.example/api/interpreter
 ARGUS_OVERPASS_TIMEOUT_SECONDS=30
+ARGUS_OVERPASS_MIN_INTERVAL_SECONDS=1
 ```
 
 When configured, `openstreetmap_overpass` is both a map provider and a factual SourceAdapter. It currently responds to neutral POI intents: `school`, `kindergarten`, `college`, `university`, `hospital`, `clinic`, `pharmacy`, `restaurant`, `cafe`, `supermarket`, `mall`, and `park`.
 
-The collection request must include `territory.point`; the adapter uses `territory.radius_meters` or a 1000 m default. Each returned place has a direct `openstreetmap.org` source URL, ODbL attribution, deterministic Observation/Evidence IDs, and a persisted snapshot of normalized map facts. Map-source rate limits/access blocks are returned as structured `blocked`/`partial` coverage rather than bypassed.
+If the collection already contains `territory.point`, Overpass uses it directly. Otherwise an address/city can be resolved through an optional Nominatim provider:
+
+```bash
+ARGUS_NOMINATIM_URL=https://nominatim.example
+ARGUS_NOMINATIM_TIMEOUT_SECONDS=15
+ARGUS_NOMINATIM_MAX_RESULTS=3
+ARGUS_NOMINATIM_MIN_INTERVAL_SECONDS=1
+```
+
+No public Nominatim endpoint is enabled automatically. The selected geocoding candidate is stored in provenance, but its evidence URL always points to public OpenStreetMap rather than the internal/self-hosted Nominatim service.
+
+Overpass uses `territory.radius_meters` or a 1000 m default. Each returned place has a direct `openstreetmap.org` source URL, ODbL attribution, deterministic Observation/Evidence IDs, and a persisted snapshot of normalized map facts. Map/geocoding provider access blocks are returned as structured `blocked`/`partial` coverage rather than bypassed.
+
+Direct Overpass/Nominatim HTTP clients have a process-local minimum interval gate in addition to their remote service policies. The default is one request start per second per provider instance; a self-hosted deployment can explicitly set the corresponding `*_MIN_INTERVAL_SECONDS=0` if that is appropriate for its own capacity.
 
 ## API
 
@@ -111,6 +125,8 @@ The collection request must include `territory.point`; the adapter uses `territo
 - `GET /v1/sources/{source_id}/health`
 
 `POST /v1/collections` returns `202 Accepted`. Work continues asynchronously and survives process restarts through persisted task/checkpoint state. Reprocessing the same source content within the same collection uses deterministic Observation/Evidence identities to avoid duplicates after a crash/restart window.
+
+`GET /v1/capabilities` lists only actually configured discovery, geocoding and map providers. A provider marked `configured` has valid local configuration; it is not a claim that the external endpoint has just been probed successfully.
 
 ## Security boundary
 
