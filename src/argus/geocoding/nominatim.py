@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 from urllib.parse import quote_plus, urljoin
@@ -10,6 +11,7 @@ from argus.config import Settings
 from argus.contracts.models import Point, StructuredError
 from argus.geocoding.contracts import GeocodeCandidate, GeocodeResult
 from argus.network.rate_gate import AsyncRateGate
+from argus.network.retry import RETRYABLE_PROVIDER_STATUSES, retry_delay_seconds
 from argus.security.redaction import safe_error_message
 
 
@@ -100,7 +102,6 @@ class NominatimGeocoder:
         }
 
     async def _request_json(self, params: dict[str, str]) -> tuple[list[Any], int]:
-        await self.rate_gate.wait()
         timeout = httpx.Timeout(self.settings.nominatim_timeout_seconds)
         headers = {
             "Accept": "application/json",
@@ -116,21 +117,38 @@ class NominatimGeocoder:
             transport=self.transport,
             headers=headers,
         ) as client:
-            async with client.stream("GET", self.endpoint, params=params) as response:
-                status_code = response.status_code
-                if status_code not in {403, 429}:
-                    response.raise_for_status()
-                body = bytearray()
-                async for chunk in response.aiter_bytes():
-                    body.extend(chunk)
-                    if len(body) > self.settings.max_response_bytes:
-                        raise ValueError("Nominatim response exceeds configured limit")
-        if status_code in {403, 429}:
-            return [], status_code
-        parsed = json.loads(body.decode("utf-8", errors="strict"))
-        if not isinstance(parsed, list):
-            raise ValueError("Nominatim returned a non-array JSON response")
-        return parsed, status_code
+            for attempt in range(self.settings.direct_provider_max_retries + 1):
+                await self.rate_gate.wait()
+                retry_delay: float | None = None
+                async with client.stream("GET", self.endpoint, params=params) as response:
+                    status_code = response.status_code
+                    if (
+                        status_code in RETRYABLE_PROVIDER_STATUSES
+                        and attempt < self.settings.direct_provider_max_retries
+                    ):
+                        retry_delay = retry_delay_seconds(
+                            attempt=attempt,
+                            headers=response.headers,
+                            base_delay_seconds=self.settings.direct_provider_retry_base_seconds,
+                            max_delay_seconds=self.settings.direct_provider_retry_max_seconds,
+                        )
+                    else:
+                        if status_code not in {403, 429}:
+                            response.raise_for_status()
+                        body = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            body.extend(chunk)
+                            if len(body) > self.settings.max_response_bytes:
+                                raise ValueError("Nominatim response exceeds configured limit")
+                        if status_code in {403, 429}:
+                            return [], status_code
+                        parsed = json.loads(body.decode("utf-8", errors="strict"))
+                        if not isinstance(parsed, list):
+                            raise ValueError("Nominatim returned a non-array JSON response")
+                        return parsed, status_code
+                if retry_delay is not None:
+                    await asyncio.sleep(retry_delay)
+        raise RuntimeError("Nominatim retry loop exhausted unexpectedly")
 
     def _candidate(self, item: Any) -> GeocodeCandidate | None:
         if not isinstance(item, dict):
@@ -147,9 +165,7 @@ class NominatimGeocoder:
 
         osm_type = str(item.get("osm_type") or "").lower().strip()
         osm_id = item.get("osm_id")
-        source_url = (
-            "https://www.openstreetmap.org/search?query=" + quote_plus(display_name)
-        )
+        source_url = "https://www.openstreetmap.org/search?query=" + quote_plus(display_name)
         type_segment = {
             "n": "node",
             "node": "node",
