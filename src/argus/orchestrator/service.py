@@ -156,6 +156,7 @@ class CollectionOrchestrator:
                 discovery_providers: list[str] = list(
                     record.checkpoint.get("discovery_providers", [])
                 )
+                discovery_blocked = bool(record.checkpoint.get("discovery_blocked", False))
                 if not pending:
                     pending = await self._initial_tasks(record)
                     if self.discovery is not None and plan.queries:
@@ -164,6 +165,7 @@ class CollectionOrchestrator:
                         await self.repository.update_collection(record)
                         outcome = await self.discovery.discover(plan.queries, record.request)
                         discovery_providers = outcome.providers_attempted
+                        discovery_blocked = outcome.blocked
                         record.errors.extend(outcome.errors)
                         pending = self._merge_tasks(pending, outcome.tasks, record.collection_id)
                         if outcome.errors:
@@ -172,7 +174,11 @@ class CollectionOrchestrator:
                                 extra=_log_extra(
                                     record,
                                     "discovery_error",
-                                    error_code="DISCOVERY_ERROR",
+                                    error_code=(
+                                        "DISCOVERY_BLOCKED"
+                                        if outcome.blocked
+                                        else "DISCOVERY_ERROR"
+                                    ),
                                 ),
                             )
                     pending = self._merge_tasks(pending, plan.tasks, record.collection_id)
@@ -180,11 +186,28 @@ class CollectionOrchestrator:
                     "queries": plan.queries,
                     "planner_notes": plan.notes,
                     "discovery_providers": discovery_providers,
+                    "discovery_blocked": discovery_blocked,
                     "pending_tasks": [self._task_dict(t) for t in pending],
                     "visited": record.checkpoint.get("visited", []),
                 }
                 await self.repository.update_collection(record)
                 if not pending:
+                    if discovery_blocked:
+                        record.status = CollectionStatus.BLOCKED
+                        record.partial = False
+                        record.progress_percent = 100
+                        record.stage = "blocked:discovery"
+                        record.updated_at = now()
+                        await self.repository.update_collection(record)
+                        logger.warning(
+                            "collection discovery blocked",
+                            extra=_log_extra(
+                                record,
+                                "collection_blocked",
+                                error_code="DISCOVERY_BLOCKED",
+                            ),
+                        )
+                        return
                     record.errors.append(
                         StructuredError(
                             code="NO_SOURCE_TASKS",
