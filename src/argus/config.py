@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     browser_serp_max_results_per_query: int = Field(default=5, ge=1, le=20)
     browser_serp_wait_ms: int = Field(default=750, ge=250, le=5_000)
 
+    overpass_url: str | None = None
+    overpass_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
     agent_backend: str = "browser-use"
@@ -65,17 +68,17 @@ class Settings(BaseSettings):
             raise ValueError(f"log_level must be one of {sorted(allowed)}")
         return level
 
-    @field_validator("searxng_url", mode="before")
+    @field_validator("searxng_url", "overpass_url", mode="before")
     @classmethod
-    def normalize_searxng_url(cls, value: object) -> str | None:
+    def normalize_service_url(cls, value: object) -> str | None:
         if value is None or not str(value).strip():
             return None
         url = str(value).strip().rstrip("/")
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("searxng_url must be an http(s) URL")
+            raise ValueError("service URL must be an http(s) URL")
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
-            raise ValueError("searxng_url must not contain credentials, query or fragment")
+            raise ValueError("service URL must not contain credentials, query or fragment")
         return url
 
     @model_validator(mode="after")
