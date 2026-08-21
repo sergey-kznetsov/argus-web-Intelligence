@@ -40,6 +40,10 @@ def _log_extra(record: CollectionRecord, event: str, **values: object) -> dict[s
     }
 
 
+def _blocking_error(error: StructuredError) -> bool:
+    return error.code.endswith("_BLOCKED") or error.code == "DISCOVERY_BLOCKED"
+
+
 class CollectionOrchestrator:
     def __init__(
         self,
@@ -312,9 +316,22 @@ class CollectionOrchestrator:
                     await self.repository.add_observation(observation)
                 for evidence in result.evidence:
                     await self.repository.add_evidence(evidence, record.collection_id)
+
+                record.errors.extend(result.errors)
                 coverage.observations = len(result.observations)
                 coverage.blocked = result.blocked
-                coverage.status = "blocked" if result.blocked else "ok"
+                if result.errors:
+                    coverage.error_code = result.errors[0].code
+                    coverage.error_message = result.errors[0].message
+                if result.blocked:
+                    coverage.status = "blocked"
+                elif result.partial:
+                    coverage.status = "partial"
+                elif result.errors and not result.observations:
+                    coverage.status = "error"
+                else:
+                    coverage.status = "ok"
+
                 if result.blocked:
                     logger.warning(
                         "source blocked",
@@ -322,8 +339,20 @@ class CollectionOrchestrator:
                             record,
                             "source_blocked",
                             source_id=task.source_id,
+                            error_code=coverage.error_code,
                         ),
                     )
+                elif result.partial or result.errors:
+                    logger.warning(
+                        "source result degraded",
+                        extra=_log_extra(
+                            record,
+                            "source_degraded",
+                            source_id=task.source_id,
+                            error_code=coverage.error_code,
+                        ),
+                    )
+
                 queued_keys = {f"{item.source_id}:{item.url}" for item in pending}
                 for child in result.discovered_tasks:
                     child.metadata["collection_id"] = record.collection_id
@@ -369,7 +398,9 @@ class CollectionOrchestrator:
 
         observations = await self.repository.list_observations(record.collection_id)
         blocked = any(item.blocked for item in record.coverage)
-        source_errors = bool(record.errors)
+        source_partial = any(item.status == "partial" for item in record.coverage)
+        non_blocking_errors = [error for error in record.errors if not _blocking_error(error)]
+        source_errors = bool(non_blocking_errors)
         budget_exhausted = bool(pending)
         if budget_exhausted:
             record.errors.append(
@@ -379,8 +410,9 @@ class CollectionOrchestrator:
                     retryable=False,
                 )
             )
+            source_errors = True
 
-        if observations and (blocked or source_errors or budget_exhausted):
+        if observations and (blocked or source_partial or source_errors or budget_exhausted):
             if record.request.allow_partial:
                 record.status = CollectionStatus.PARTIAL
                 record.partial = True
@@ -390,7 +422,7 @@ class CollectionOrchestrator:
         elif not observations and blocked and not source_errors:
             record.status = CollectionStatus.BLOCKED
             record.partial = False
-        elif not observations and (source_errors or budget_exhausted):
+        elif not observations and (source_partial or source_errors or budget_exhausted):
             record.status = CollectionStatus.FAILED
             record.partial = False
         else:
