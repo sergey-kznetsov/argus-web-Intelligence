@@ -9,6 +9,7 @@ import httpx
 from argus.config import Settings
 from argus.contracts.models import Point, StructuredError
 from argus.geocoding.contracts import GeocodeCandidate, GeocodeResult
+from argus.network.rate_gate import AsyncRateGate
 from argus.security.redaction import safe_error_message
 
 
@@ -25,6 +26,7 @@ class NominatimGeocoder:
         self.settings = settings
         self.endpoint = urljoin(settings.nominatim_url.rstrip("/") + "/", "search")
         self.transport = transport
+        self.rate_gate = AsyncRateGate(settings.nominatim_min_interval_seconds)
 
     async def search(
         self,
@@ -91,9 +93,14 @@ class NominatimGeocoder:
         return GeocodeResult(provider=self.provider_id, candidates=candidates)
 
     async def health(self) -> dict[str, object]:
-        return {"provider": self.provider_id, "status": "configured"}
+        return {
+            "provider": self.provider_id,
+            "status": "configured",
+            "min_interval_seconds": self.settings.nominatim_min_interval_seconds,
+        }
 
     async def _request_json(self, params: dict[str, str]) -> tuple[list[Any], int]:
+        await self.rate_gate.wait()
         timeout = httpx.Timeout(self.settings.nominatim_timeout_seconds)
         headers = {
             "Accept": "application/json",
