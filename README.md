@@ -38,11 +38,13 @@ By default ARGUS binds to `127.0.0.1:8787`.
 ## CLI
 
 ```bash
-argus collect --consumer test --address "Ижевск, Пушкинская, 277" --intent public_mentions
+argus collect --consumer test --address "Ижевск, Пушкинская, 277" --intent public_mentions --seed-url https://example.org/
 argus status <collection_id>
 argus result <collection_id>
 argus sources
 ```
+
+Milestone 1 performs actual Generic Web/RSS collection from supplied seed URLs. Search-engine discovery adapters are a later milestone, so a collection without seed URLs can produce a research plan but no fetched documents.
 
 All API endpoints except `/v1/health` require `Authorization: Bearer <token>`.
 
