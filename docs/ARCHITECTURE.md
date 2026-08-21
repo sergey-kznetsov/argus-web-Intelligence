@@ -21,6 +21,10 @@ Consumer -> Internal API -> Collection Orchestrator -> Research Planner
                          Observation + Evidence
                                       |
                     SQLite Repository + Snapshots
+
+Map intents -> OverpassSourceAdapter -> optional Nominatim geocode
+                                      -> Overpass provider
+                                      -> Observation + Evidence + Snapshot
 ```
 
 Discovery results are navigation candidates, not facts. Search snippets never become Evidence. ARGUS fetches the destination page through a factual source adapter before creating Observation/Evidence.
@@ -31,6 +35,8 @@ FAST uses a persistent Crawlee HTTP crawler for static HTML/XML/JSON/public endp
 
 The service keeps Crawlee request/session/retry/concurrency machinery instead of reimplementing it. FAST can use Crawlee `ThrottlingRequestManager` for explicitly configured domains. Persistent FAST/BROWSER runtimes are shut down by the FastAPI service lifecycle.
 
+BROWSER tracks the latest main-document response during SiteRecipe navigation. If a recipe starts on HTTP 200 and navigates to a 403/429/etc. page, the final status and content type are returned rather than the original navigation metadata.
+
 ## Discovery
 
 `ResearchPlanner` produces queries. `DiscoveryService` runs ordered providers as fallbacks and stops after the first provider that produces valid destination URLs.
@@ -40,7 +46,11 @@ Current providers:
 1. optional self-hosted SearXNG JSON API;
 2. low-volume DuckDuckGo HTML Playwright fallback when enabled.
 
-The browser fallback submits the public no-JS search form in a real browser. CAPTCHA/anti-bot/access challenges are never bypassed. A fully blocked discovery with no destination URL is reported as collection `blocked`; a degraded provider plus successful factual collection produces partial coverage.
+The browser fallback submits the public no-JS search form in a real browser. CAPTCHA/anti-bot/access challenges are never bypassed. A fully blocked discovery with no destination URL is reported as collection `blocked`.
+
+If all configured discovery providers complete normally but return no valid destination URL, ARGUS records `DISCOVERY_NO_RESULTS`. This prevents a mixed request from being reported as fully complete when another source covered only some intents. Existing factual data plus an uncovered intent becomes `partial`; a request with no executable source remains `failed`.
+
+Discovery is only run for intents not already covered by self-discovering source adapters or explicit seed tasks. The checkpoint stores `planning_complete` so restart recovery does not rerun discovery after planning has already completed.
 
 ## Research Planner
 
@@ -56,13 +66,21 @@ When deterministic browsing fails and an enabled AGENT finds a path, ARGUS compi
 
 ## History
 
-Every successful collection creates a snapshot containing `collected_at`, SHA-256 `content_hash`, `source_url`, `source_id`, `extractor_version` and raw content. Unchanged content still creates a temporal snapshot with `diff=null`; changed content also stores a unified diff against the previous snapshot.
+Every successful factual collection creates temporal snapshots containing `collected_at`, SHA-256 `content_hash`, `source_url`, `source_id`, `extractor_version` and normalized/raw content. Unchanged facts still create a temporal snapshot with `diff=null`; changed facts also store a unified diff against the previous snapshot.
 
-## Map provider foundation
+Web documents snapshot fetched content. Map places snapshot canonical normalized POI facts so changes to coordinates, address, categories or attributes can be detected over time.
 
-`argus.maps` defines provider-neutral contracts for future public map collection: `MapSearchRequest`, `MapPlace`, `MapSearchResult`, provider capabilities and `MapProviderRegistry`.
+## Map and geocoding providers
 
-No 2GIS/Yandex/Google provider is registered until it has an actual public/free retrieval implementation. This avoids presenting placeholders as working data sources. Consumer-specific scoring and competition logic are explicitly outside these contracts.
+`argus.maps` defines provider-neutral contracts: `MapSearchRequest`, `MapPlace`, `MapSearchResult`, provider capabilities and `MapProviderRegistry`.
+
+The first real map provider is optional `openstreetmap_overpass`. It is registered only when `ARGUS_OVERPASS_URL` is configured. The corresponding `OverpassSourceAdapter` is a normal factual source adapter and is activated by neutral POI intents such as `school`, `kindergarten`, `hospital`, `pharmacy`, `cafe`, `supermarket` and `park`. It never branches on `consumer`.
+
+Overpass itself requires coordinates. If a collection already contains `territory.point`, no geocoder is called. For address/city-only requests, the adapter can use an optional `GeocodeProvider`. The current implementation is Nominatim, enabled only by an explicit `ARGUS_NOMINATIM_URL`. The selected geocoding candidate is retained in Observation/Evidence provenance.
+
+No public Overpass or Nominatim endpoint is silently enabled by default. Operators must configure a self-hosted or explicitly approved endpoint. This keeps rate-policy choices at deployment level and avoids treating donated public infrastructure as an unlimited backend.
+
+Map/geocoding contracts contain collection facts only. Competition scoring, demand interpretation, risk assessment and other consumer analytics remain outside ARGUS.
 
 ## Storage
 
