@@ -23,19 +23,82 @@ class ResearchPlanner(Protocol):
 
 
 class HeuristicResearchPlanner:
+    _RU_TERMS: dict[str, tuple[str, ...]] = {
+        "reviews": ("отзывы", "мнения"),
+        "public_mentions": ("", "упоминания"),
+        "local_news": ("новости",),
+        "incidents": ("происшествия", "авария пожар"),
+        "discussions": ("обсуждение форум",),
+        "historical_context": (
+            "история",
+            "что было раньше",
+            "снос реконструкция строительство",
+            "старый адрес документы публикации",
+        ),
+    }
+    _EN_TERMS: dict[str, tuple[str, ...]] = {
+        "reviews": ("reviews", "opinions"),
+        "public_mentions": ("", "mentions"),
+        "local_news": ("news",),
+        "incidents": ("incidents", "accident fire"),
+        "discussions": ("discussion forum",),
+        "historical_context": (
+            "history",
+            "what was here before",
+            "demolition reconstruction construction",
+            "old address documents publications",
+        ),
+    }
+
     async def plan(self, request: CollectionRequest) -> ResearchPlan:
-        territory = request.territory.address or request.territory.city or "location"
+        territory = self._territory_text(request)
+        language = self._language(request, territory)
+        dictionary = self._RU_TERMS if language == "ru" else self._EN_TERMS
         queries: list[str] = []
+        seen: set[str] = set()
         for intent in request.intents:
-            if intent == "historical_context":
-                queries.extend([
-                    f'"{territory}" история',
-                    f'"{territory}" что было раньше',
-                    f'"{territory}" снос реконструкция строительство',
-                ])
-            else:
-                queries.append(f'"{territory}" {intent.replace("_", " ")}')
-        return ResearchPlan(queries=queries)
+            terms = dictionary.get(intent)
+            if terms is None:
+                terms = (intent.replace("_", " "),)
+            for term in terms:
+                query = f'"{territory}" {term}'.strip()
+                if query not in seen:
+                    seen.add(query)
+                    queries.append(query)
+        return ResearchPlan(
+            queries=queries,
+            notes=[f"heuristic_language={language}"],
+        )
+
+    @staticmethod
+    def _territory_text(request: CollectionRequest) -> str:
+        city = (request.territory.city or "").strip()
+        address = (request.territory.address or "").strip()
+        if city and address:
+            if city.casefold() in address.casefold():
+                return address
+            return f"{city}, {address}"
+        if address:
+            return address
+        if city:
+            return city
+        if request.territory.point:
+            return (
+                f"{request.territory.point.latitude:.6f},"
+                f"{request.territory.point.longitude:.6f}"
+            )
+        return "location"
+
+    @staticmethod
+    def _language(request: CollectionRequest, territory: str) -> str:
+        configured = (request.constraints.language or "").lower()
+        if configured.startswith("ru"):
+            return "ru"
+        if configured.startswith("en"):
+            return "en"
+        if any("а" <= char.lower() <= "я" or char.lower() == "ё" for char in territory):
+            return "ru"
+        return "en"
 
 
 class OllamaResearchPlanner:
@@ -52,10 +115,15 @@ class OllamaResearchPlanner:
             f"Input: {request.model_dump_json()}"
         )
         try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with httpx.AsyncClient(timeout=20.0, trust_env=False) as client:
                 response = await client.post(
                     f"{self.settings.ollama_url.rstrip('/')}/api/generate",
-                    json={"model": self.settings.ollama_model, "prompt": prompt, "stream": False, "format": "json"},
+                    json={
+                        "model": self.settings.ollama_model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "format": "json",
+                    },
                 )
                 response.raise_for_status()
                 raw = response.json().get("response", "{}")
@@ -63,6 +131,9 @@ class OllamaResearchPlanner:
                 queries = [str(item) for item in data.get("queries", []) if str(item).strip()]
                 if not queries:
                     return await self.fallback.plan(request)
-                return ResearchPlan(queries=queries, notes=[str(x) for x in data.get("notes", [])])
+                return ResearchPlan(
+                    queries=queries,
+                    notes=[str(item) for item in data.get("notes", [])],
+                )
         except (httpx.HTTPError, ValueError, json.JSONDecodeError):
             return await self.fallback.plan(request)
