@@ -6,7 +6,12 @@ from fastapi import Depends, FastAPI, HTTPException, Response, status
 
 from argus import __version__
 from argus.config import Settings, get_settings
-from argus.contracts.models import CollectionAccepted, CollectionRecord, CollectionRequest, CollectionResult
+from argus.contracts.models import (
+    CollectionAccepted,
+    CollectionRecord,
+    CollectionRequest,
+    CollectionResult,
+)
 from argus.crawler.agent.base import AgentBackend
 from argus.crawler.agent.browser_use import BrowserUseAgent
 from argus.crawler.agent.stagehand import StagehandAgent
@@ -18,6 +23,7 @@ from argus.recipes.service import RecipeManager
 from argus.research.planner import OllamaResearchPlanner
 from argus.security.auth import bearer_dependency, ensure_token
 from argus.security.urls import UrlGuard
+from argus.services import ServiceContainer
 from argus.sources.generic_web import GenericWebAdapter
 from argus.sources.registry import SourceRegistry
 from argus.sources.rss import RSSAdapter
@@ -34,7 +40,7 @@ def build_agent(settings: Settings, guard: UrlGuard) -> AgentBackend | None:
     raise ValueError(f"unsupported ARGUS agent backend: {settings.agent_backend}")
 
 
-def build_services(settings: Settings):
+def build_services(settings: Settings) -> ServiceContainer:
     settings.ensure_dirs()
     repository = SQLiteRepository(settings.db_path)
     guard = UrlGuard.from_strings(settings.allow_internal_targets)
@@ -55,32 +61,51 @@ def build_services(settings: Settings):
     )
     registry.register(RSSAdapter(fast, snapshots))
     planner = OllamaResearchPlanner(settings)
-    orchestrator = CollectionOrchestrator(repository, registry, planner, settings.max_concurrency)
-    return repository, registry, orchestrator
+    orchestrator = CollectionOrchestrator(
+        repository,
+        registry,
+        planner,
+        settings.max_concurrency,
+    )
+    return ServiceContainer(
+        repository=repository,
+        registry=registry,
+        orchestrator=orchestrator,
+        fast=fast,
+        browser=browser,
+    )
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
-    repository, registry, orchestrator = build_services(settings)
+    services = build_services(settings)
+    repository = services.repository
+    registry = services.registry
+    orchestrator = services.orchestrator
     require_bearer = bearer_dependency(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         ensure_token(settings)
-        await orchestrator.start()
+        await services.start()
+        app.state.services = services
         app.state.repository = repository
         app.state.registry = registry
         app.state.orchestrator = orchestrator
         try:
             yield
         finally:
-            await orchestrator.shutdown()
+            await services.shutdown()
 
     app = FastAPI(title="ARGUS Web Intelligence", version=__version__, lifespan=lifespan)
 
     @app.get("/v1/health")
     async def health():
-        return {"status": "ok", "service": "argus-web-intelligence", "version": __version__}
+        return {
+            "status": "ok",
+            "service": "argus-web-intelligence",
+            "version": __version__,
+        }
 
     @app.get("/v1/capabilities", dependencies=[Depends(require_bearer)])
     async def capabilities():
