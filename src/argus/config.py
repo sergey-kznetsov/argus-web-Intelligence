@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     port: int = Field(default=8787, ge=1, le=65535)
     token_file: Path = Path(".argus/token")
     db_path: Path = Path(".argus/argus.sqlite3")
+    log_level: str = "INFO"
     max_response_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     http_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     http_max_redirects: int = Field(default=10, ge=0, le=30)
@@ -44,6 +45,15 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_hosts(cls, value: list[str]) -> list[str]:
         return sorted({item.lower().strip().strip(".") for item in value if item.strip()})
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def normalize_log_level(cls, value: object) -> str:
+        level = str(value).upper().strip()
+        allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if level not in allowed:
+            raise ValueError(f"log_level must be one of {sorted(allowed)}")
+        return level
 
     @model_validator(mode="after")
     def validate_throttling(self) -> "Settings":
