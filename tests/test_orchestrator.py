@@ -3,7 +3,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from argus.contracts.models import CollectionRequest, CollectionStatus, Observation
+from argus.contracts.models import (
+    CollectionRequest,
+    CollectionStatus,
+    Observation,
+    StructuredError,
+)
 from argus.history.snapshots import sha256_text
 from argus.orchestrator.service import CollectionOrchestrator
 from argus.research.discovery import DiscoveryOutcome
@@ -94,6 +99,24 @@ class FakeDiscovery:
         )
 
 
+class FakeBlockedDiscovery:
+    async def discover(self, queries, request):
+        assert queries
+        del request
+        return DiscoveryOutcome(
+            errors=[
+                StructuredError(
+                    code="DISCOVERY_BLOCKED",
+                    message="search challenge",
+                    retryable=True,
+                    source_id="discovery:fake-search",
+                )
+            ],
+            providers_attempted=["fake-search"],
+            blocked=True,
+        )
+
+
 async def run_collection(tmp_path: Path, adapter, discovery=None, **request_overrides):
     repo = SQLiteRepository(tmp_path / "db.sqlite")
     registry = SourceRegistry()
@@ -139,6 +162,19 @@ async def test_discovery_can_seed_collection_without_source_seed_urls(tmp_path: 
     observations = await repo.list_observations(record.collection_id)
     assert len(observations) == 1
     assert observations[0].url == "https://example.com/discovered"
+
+
+@pytest.mark.asyncio
+async def test_fully_blocked_discovery_is_blocked_not_failed(tmp_path: Path):
+    _, record = await run_collection(
+        tmp_path,
+        None,
+        discovery=FakeBlockedDiscovery(),
+    )
+    assert record and record.status == CollectionStatus.BLOCKED
+    assert record.stage == "blocked:discovery"
+    assert record.errors[0].code == "DISCOVERY_BLOCKED"
+    assert not any(error.code == "NO_SOURCE_TASKS" for error in record.errors)
 
 
 @pytest.mark.asyncio
