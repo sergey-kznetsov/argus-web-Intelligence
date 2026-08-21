@@ -18,6 +18,8 @@ from argus.crawler.agent.stagehand import StagehandAgent
 from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.history.snapshots import SnapshotService
+from argus.maps.overpass import OverpassMapProvider
+from argus.maps.registry import MapProviderRegistry
 from argus.observability import configure_logging
 from argus.orchestrator.service import CollectionOrchestrator
 from argus.recipes.service import RecipeManager
@@ -72,6 +74,13 @@ def build_discovery(
     )
 
 
+def build_map_registry(settings: Settings) -> MapProviderRegistry:
+    registry = MapProviderRegistry()
+    if settings.overpass_url:
+        registry.register(OverpassMapProvider(settings))
+    return registry
+
+
 def build_services(settings: Settings) -> ServiceContainer:
     settings.ensure_dirs()
     repository = SQLiteRepository(settings.db_path)
@@ -82,6 +91,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     recipes = RecipeManager(repository)
     agent = build_agent(settings, guard)
     discovery = build_discovery(settings, guard, browser)
+    map_registry = build_map_registry(settings)
     registry = SourceRegistry()
     registry.register(
         GenericWebAdapter(
@@ -104,6 +114,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     return ServiceContainer(
         repository=repository,
         registry=registry,
+        map_registry=map_registry,
         orchestrator=orchestrator,
         fast=fast,
         browser=browser,
@@ -126,6 +137,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.services = services
         app.state.repository = repository
         app.state.registry = registry
+        app.state.map_registry = services.map_registry
         app.state.orchestrator = orchestrator
         try:
             yield
@@ -151,6 +163,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "history": True,
             "site_recipes": True,
             "discovery_providers": configured_discovery_provider_names(settings),
+            "map_providers": [provider.provider_id for provider in services.map_registry.all()],
             "agent_enabled": settings.agent_enabled,
             "agent_backend": settings.agent_backend if settings.agent_enabled else None,
             "agent_backends": ["browser-use", "stagehand"],
