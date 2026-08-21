@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from argus.contracts.models import CollectionRequest, StructuredError
+from argus.geocoding.contracts import GeocodeCandidate, GeocodeResult
 from argus.history.snapshots import SnapshotService
 from argus.maps.contracts import MapPlace, MapSearchResult
 from argus.sources.overpass_map import OverpassSourceAdapter
@@ -25,6 +26,21 @@ class FakeOverpassProvider:
         return {"provider": self.provider_id, "status": "ok"}
 
 
+class FakeGeocoder:
+    provider_id = "nominatim"
+
+    def __init__(self, result: GeocodeResult) -> None:
+        self.result = result
+        self.calls = []
+
+    async def search(self, query, *, limit=3, language=None):
+        self.calls.append((query, limit, language))
+        return self.result
+
+    async def health(self):
+        return {"provider": self.provider_id, "status": "ok"}
+
+
 def request():
     return CollectionRequest(
         consumer="test",
@@ -35,6 +51,20 @@ def request():
             "radius_meters": 1000,
         },
         intents=["school"],
+    )
+
+
+def address_request():
+    return CollectionRequest(
+        consumer="test",
+        analysis_id="analysis-1",
+        territory={
+            "city": "Ижевск",
+            "address": "Ижевск, Пушкинская 1",
+            "radius_meters": 1000,
+        },
+        intents=["school"],
+        constraints={"language": "ru"},
     )
 
 
@@ -53,6 +83,27 @@ def place():
             "attribution": "© OpenStreetMap contributors",
             "data_license": "ODbL",
         },
+    )
+
+
+def geocode_result():
+    return GeocodeResult(
+        provider="nominatim",
+        candidates=[
+            GeocodeCandidate(
+                provider="nominatim",
+                provider_place_id="123",
+                display_name="Пушкинская 1, Ижевск, Россия",
+                point={"latitude": 56.85, "longitude": 53.2},
+                source_url="https://www.openstreetmap.org/way/123",
+                importance=0.7,
+                provenance={
+                    "retrieval": "nominatim",
+                    "attribution": "© OpenStreetMap contributors",
+                    "data_license": "ODbL",
+                },
+            )
+        ],
     )
 
 
@@ -83,6 +134,49 @@ async def test_overpass_source_creates_observation_evidence_and_snapshot(tmp_pat
     snapshot = await repo.latest_snapshot(observation.url)
     assert snapshot is not None
     assert snapshot.snapshot_id == observation.provenance["snapshot_id"]
+
+
+@pytest.mark.asyncio
+async def test_overpass_source_geocodes_address_before_map_search(tmp_path: Path):
+    repo = SQLiteRepository(tmp_path / "db.sqlite")
+    await repo.initialize()
+    provider = FakeOverpassProvider(
+        MapSearchResult(provider="openstreetmap_overpass", places=[place()])
+    )
+    geocoder = FakeGeocoder(geocode_result())
+    adapter = OverpassSourceAdapter(provider, SnapshotService(repo), geocoder)
+    task = (await adapter.discover(address_request()))[0]
+    task.metadata["collection_id"] = "collection-1"
+
+    fetched = await adapter.fetch(task)
+    assert geocoder.calls == [("Ижевск, Пушкинская 1", 1, "ru")]
+    assert provider.requests[0].territory.point.latitude == 56.85
+    assert provider.requests[0].territory.point.longitude == 53.2
+
+    result = await adapter.extract(task, fetched, address_request())
+    provenance = result.observations[0].provenance["geocoding"]
+    assert provenance["provider"] == "nominatim"
+    assert provenance["display_name"] == "Пушкинская 1, Ижевск, Россия"
+    assert provenance["source_url"] == "https://www.openstreetmap.org/way/123"
+
+
+@pytest.mark.asyncio
+async def test_overpass_address_without_geocoder_is_explicit(tmp_path: Path):
+    repo = SQLiteRepository(tmp_path / "db.sqlite")
+    await repo.initialize()
+    provider = FakeOverpassProvider(
+        MapSearchResult(provider="openstreetmap_overpass", places=[place()])
+    )
+    adapter = OverpassSourceAdapter(provider, SnapshotService(repo))
+    task = (await adapter.discover(address_request()))[0]
+    task.metadata["collection_id"] = "collection-1"
+
+    fetched = await adapter.fetch(task)
+    assert provider.requests == []
+    assert fetched.errors[0].code == "GEOCODING_NOT_CONFIGURED"
+    result = await adapter.extract(task, fetched, address_request())
+    assert result.observations == []
+    assert result.errors[0].code == "GEOCODING_NOT_CONFIGURED"
 
 
 @pytest.mark.asyncio
