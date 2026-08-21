@@ -4,6 +4,8 @@ from urllib.parse import urljoin, urlsplit
 
 from argus.config import Settings
 from argus.crawler.models import FetchResult
+from argus.recipes.executor import PlaywrightRecipeExecutor
+from argus.recipes.models import SiteRecipe
 from argus.security.urls import UnsafeUrlError, UrlGuard
 
 
@@ -11,8 +13,9 @@ class BrowserCrawlerRuntime:
     def __init__(self, settings: Settings, url_guard: UrlGuard) -> None:
         self.settings = settings
         self.url_guard = url_guard
+        self.recipe_executor = PlaywrightRecipeExecutor(url_guard)
 
-    async def fetch(self, url: str) -> FetchResult:
+    async def fetch(self, url: str, recipe: SiteRecipe | None = None) -> FetchResult:
         await self.url_guard.validate(url)
         try:
             from crawlee.crawlers import (
@@ -54,7 +57,10 @@ class BrowserCrawlerRuntime:
         @crawler.router.default_handler
         async def handler(context: PlaywrightCrawlingContext) -> None:
             nonlocal result
-            final_url = context.request.loaded_url or context.page.url
+            recipe_extracted: list[dict[str, object]] = []
+            if recipe is not None:
+                recipe_extracted = await self.recipe_executor.execute(context.page, recipe)
+            final_url = context.page.url
             await self.url_guard.validate_redirect(url, final_url)
             html = await context.page.content()
             if len(html.encode("utf-8", errors="replace")) > self.settings.max_response_bytes:
@@ -70,6 +76,13 @@ class BrowserCrawlerRuntime:
                 for marker in ("captcha", "verify you are human", "access denied", "robot check")
             )
             content_type = await context.response.header_value("content-type") or "text/html"
+            metadata: dict[str, object] = {}
+            if recipe is not None:
+                metadata = {
+                    "recipe_id": recipe.recipe_id,
+                    "recipe_version": recipe.version,
+                    "recipe_extracted": recipe_extracted,
+                }
             result = FetchResult(
                 url=url,
                 final_url=final_url,
@@ -79,7 +92,8 @@ class BrowserCrawlerRuntime:
                 title=title,
                 links=[urljoin(final_url, item) for item in links],
                 blocked=blocked,
-                runtime="browser",
+                runtime="browser_recipe" if recipe is not None else "browser",
+                metadata=metadata,
             )
 
         await crawler.run([url])
