@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 from urllib.parse import urlsplit
 
 from argus.config import Settings
@@ -44,18 +45,46 @@ class BrowserUseAgent:
         agent = Agent(task=instruction, llm=llm, browser=browser)
         history = await agent.run(max_steps=25)
         final = history.final_result() if hasattr(history, "final_result") else None
+        success = history.is_successful() if hasattr(history, "is_successful") else bool(final)
         visited_urls = history.urls() if hasattr(history, "urls") else [task.url]
+        raw_actions = history.model_actions() if hasattr(history, "model_actions") else []
         safe_urls: list[str] = []
         for visited in visited_urls:
+            if not visited:
+                continue
             try:
                 await self.url_guard.validate(str(visited))
             except ValueError:
                 continue
             safe_urls.append(str(visited))
         return AgentResult(
-            success=bool(final),
+            success=success is True,
             data={"result": final},
             visited_urls=safe_urls,
-            actions=[],
-            error=None if final else "agent produced no result",
+            actions=[self._normalize_action(item) for item in raw_actions if isinstance(item, dict)],
+            error=None if success is True else "agent did not complete the task successfully",
         )
+
+    @classmethod
+    def _normalize_action(cls, value: dict[str, Any]) -> dict[str, Any]:
+        normalized: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized[key] = cls._json_value(item)
+        return normalized
+
+    @classmethod
+    def _json_value(cls, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {str(k): cls._json_value(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._json_value(item) for item in value]
+        for method_name in ("model_dump", "to_dict"):
+            method = getattr(value, method_name, None)
+            if callable(method):
+                try:
+                    return cls._json_value(method())
+                except TypeError:
+                    continue
+        return str(value)
