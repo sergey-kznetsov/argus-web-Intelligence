@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import suppress
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -43,27 +44,44 @@ class BrowserUseAgent:
             "sources and retain source URLs."
         )
         agent = Agent(task=instruction, llm=llm, browser=browser)
-        history = await agent.run(max_steps=25)
-        final = history.final_result() if hasattr(history, "final_result") else None
-        success = history.is_successful() if hasattr(history, "is_successful") else bool(final)
-        visited_urls = history.urls() if hasattr(history, "urls") else [task.url]
-        raw_actions = history.model_actions() if hasattr(history, "model_actions") else []
-        safe_urls: list[str] = []
-        for visited in visited_urls:
-            if not visited:
-                continue
-            try:
-                await self.url_guard.validate(str(visited))
-            except ValueError:
-                continue
-            safe_urls.append(str(visited))
-        return AgentResult(
-            success=success is True,
-            data={"result": final},
-            visited_urls=safe_urls,
-            actions=[self._normalize_action(item) for item in raw_actions if isinstance(item, dict)],
-            error=None if success is True else "agent did not complete the task successfully",
-        )
+        try:
+            history = await agent.run(max_steps=25)
+            final = history.final_result() if hasattr(history, "final_result") else None
+            success = history.is_successful() if hasattr(history, "is_successful") else bool(final)
+            visited_urls = history.urls() if hasattr(history, "urls") else [task.url]
+            raw_actions = history.model_actions() if hasattr(history, "model_actions") else []
+            history_errors = history.errors() if hasattr(history, "errors") else []
+            safe_urls: list[str] = []
+            for visited in visited_urls:
+                if not visited:
+                    continue
+                try:
+                    await self.url_guard.validate(str(visited))
+                except ValueError:
+                    continue
+                safe_urls.append(str(visited))
+            diagnostic = " ".join(
+                [str(final or ""), *(str(item) for item in history_errors if item)]
+            ).lower()
+            blocked = success is not True and any(
+                marker in diagnostic
+                for marker in ("captcha", "verify you are human", "access denied", "robot check")
+            )
+            return AgentResult(
+                success=success is True,
+                data={"result": final},
+                visited_urls=safe_urls,
+                actions=[
+                    self._normalize_action(item) for item in raw_actions if isinstance(item, dict)
+                ],
+                blocked=blocked,
+                error=None if success is True else "agent did not complete the task successfully",
+            )
+        finally:
+            close = getattr(browser, "stop", None) or getattr(browser, "close", None)
+            if callable(close):
+                with suppress(Exception):
+                    await close()
 
     @classmethod
     def _normalize_action(cls, value: dict[str, Any]) -> dict[str, Any]:
