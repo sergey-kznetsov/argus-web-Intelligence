@@ -5,9 +5,13 @@ from urllib.parse import urldefrag, urljoin, urlparse
 from bs4 import BeautifulSoup
 
 from argus.contracts.models import CollectionRequest, Evidence, EvidenceSource, Observation
+from argus.crawler.agent.base import AgentBackend, AgentTask
 from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
+from argus.crawler.models import FetchResult
 from argus.history.snapshots import SnapshotService, sha256_text
+from argus.recipes.compiler import AgentRecipeCompiler
+from argus.recipes.service import RecipeManager
 from argus.security.urls import UnsafeUrlError
 from argus.sources.base import SourceResult, SourceTask
 
@@ -21,10 +25,16 @@ class GenericWebAdapter:
         fast: FastCrawlerRuntime,
         browser: BrowserCrawlerRuntime,
         snapshots: SnapshotService,
+        recipes: RecipeManager | None = None,
+        agent: AgentBackend | None = None,
+        recipe_compiler: AgentRecipeCompiler | None = None,
     ) -> None:
         self.fast = fast
         self.browser = browser
         self.snapshots = snapshots
+        self.recipes = recipes
+        self.agent = agent
+        self.recipe_compiler = recipe_compiler or AgentRecipeCompiler()
 
     async def discover(self, request: CollectionRequest) -> list[SourceTask]:
         return [
@@ -33,21 +43,124 @@ class GenericWebAdapter:
                 goal=request.intents[0],
                 url=str(url),
                 depth=0,
-                metadata={"intents": list(request.intents)},
+                metadata={
+                    "intents": list(request.intents),
+                    "allowed_domains": list(request.constraints.allowed_domains),
+                },
             )
             for url in request.constraints.seed_urls
         ]
 
-    async def fetch(self, task: SourceTask):
+    async def fetch(self, task: SourceTask) -> FetchResult:
+        recipe_failed = False
+        if self.recipes is not None:
+            recipe = await self.recipes.get(task.url, task.goal)
+            if recipe is not None:
+                try:
+                    result = await self.browser.fetch(task.url, recipe=recipe)
+                    if not result.blocked:
+                        await self.recipes.mark_success(recipe)
+                    return result
+                except UnsafeUrlError:
+                    raise
+                except Exception:
+                    recipe_failed = True
+                    await self.recipes.mark_failure(recipe)
+
+        if recipe_failed and self.agent is not None:
+            guided = await self._agent_guided_fetch(task)
+            if guided is not None:
+                return guided
+
         try:
             result = await self.fast.fetch(task.url)
             if result.blocked or self._needs_browser(result.text):
-                return await self.browser.fetch(task.url)
+                return await self._browser_or_agent(task)
             return result
         except UnsafeUrlError:
             raise
         except Exception:
+            return await self._browser_or_agent(task)
+
+    async def _browser_or_agent(self, task: SourceTask) -> FetchResult:
+        try:
             return await self.browser.fetch(task.url)
+        except UnsafeUrlError:
+            raise
+        except Exception as browser_error:
+            if self.agent is not None:
+                guided = await self._agent_guided_fetch(task)
+                if guided is not None:
+                    return guided
+            raise browser_error
+
+    async def _agent_guided_fetch(self, task: SourceTask) -> FetchResult | None:
+        if self.agent is None:
+            return None
+        agent_result = await self.agent.run(
+            AgentTask(
+                url=task.url,
+                goal=task.goal,
+                instruction=(
+                    f"Find the public page or view needed for goal '{task.goal}'. Use public site "
+                    "navigation, search, filters and expandable sections when needed."
+                ),
+                context={"allowed_domains": task.metadata.get("allowed_domains", [])},
+            )
+        )
+        if agent_result.blocked:
+            return FetchResult(
+                url=task.url,
+                final_url=task.url,
+                status_code=0,
+                content_type=None,
+                text="",
+                blocked=True,
+                runtime=f"agent:{self.agent.name}",
+                metadata={"agent_error": agent_result.error},
+            )
+        if not agent_result.success:
+            return None
+
+        if self.recipes is not None and agent_result.actions:
+            steps = self.recipe_compiler.compile(agent_result.actions)
+            if steps:
+                candidate = await self.recipes.candidate(task.url, task.goal, steps)
+                try:
+                    replayed = await self.browser.fetch(task.url, recipe=candidate)
+                except UnsafeUrlError:
+                    raise
+                except Exception:
+                    pass
+                else:
+                    if not replayed.blocked:
+                        await self.recipes.mark_success(candidate)
+                        replayed.metadata.update(
+                            {
+                                "agent_backend": self.agent.name,
+                                "agent_compiled_recipe": True,
+                            }
+                        )
+                        return replayed
+
+        for visited in reversed(agent_result.visited_urls):
+            if visited == task.url:
+                continue
+            try:
+                fetched = await self.browser.fetch(visited)
+            except UnsafeUrlError:
+                raise
+            except Exception:
+                continue
+            fetched.metadata.update(
+                {
+                    "agent_backend": self.agent.name,
+                    "agent_guided": True,
+                    "agent_origin_url": task.url,
+                }
+            )
+            return fetched
+        return None
 
     async def extract(self, task: SourceTask, fetched, request: CollectionRequest) -> SourceResult:
         if fetched.blocked:
@@ -59,6 +172,13 @@ class GenericWebAdapter:
             fetched.content_type,
         )
         text = self._main_text(fetched.text, fetched.content_type)
+        data = {"runtime": fetched.runtime, "status_code": fetched.status_code}
+        if fetched.metadata:
+            data["fetch_metadata"] = fetched.metadata
+        provenance = {"snapshot_id": snapshot.snapshot_id}
+        if "recipe_id" in fetched.metadata:
+            provenance["recipe_id"] = fetched.metadata["recipe_id"]
+            provenance["recipe_version"] = fetched.metadata.get("recipe_version")
         observation = Observation(
             collection_id=str(task.metadata.get("collection_id", "")),
             analysis_id=request.analysis_id,
@@ -69,9 +189,9 @@ class GenericWebAdapter:
             entity_type="document",
             title=fetched.title,
             text=text[:100_000],
-            data={"runtime": fetched.runtime, "status_code": fetched.status_code},
+            data=data,
             content_hash=sha256_text(text),
-            provenance={"snapshot_id": snapshot.snapshot_id},
+            provenance=provenance,
             quality={"evidence_backed": True},
         )
         evidence = Evidence(
@@ -96,7 +216,12 @@ class GenericWebAdapter:
         return result
 
     async def health(self) -> dict[str, object]:
-        return {"source_id": self.source_id, "status": "ok"}
+        return {
+            "source_id": self.source_id,
+            "status": "ok",
+            "agent_enabled": self.agent is not None,
+            "recipes_enabled": self.recipes is not None,
+        }
 
     def _discovered_tasks(
         self,
@@ -147,7 +272,10 @@ class GenericWebAdapter:
                     goal=task.goal,
                     url=link,
                     depth=task.depth + 1,
-                    metadata={"collection_id": collection_id},
+                    metadata={
+                        "collection_id": collection_id,
+                        "allowed_domains": list(request.constraints.allowed_domains),
+                    },
                 )
             )
         return discovered
