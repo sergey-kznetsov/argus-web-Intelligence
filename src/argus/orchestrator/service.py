@@ -14,6 +14,7 @@ from argus.contracts.models import (
     SourceCoverage,
     StructuredError,
 )
+from argus.research.discovery import DiscoveryService
 from argus.research.planner import ResearchPlanner
 from argus.security.redaction import safe_error_message
 from argus.sources.base import SourceTask
@@ -46,10 +47,12 @@ class CollectionOrchestrator:
         registry: SourceRegistry,
         planner: ResearchPlanner,
         max_concurrency: int = 4,
+        discovery: DiscoveryService | None = None,
     ) -> None:
         self.repository = repository
         self.registry = registry
         self.planner = planner
+        self.discovery = discovery
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._jobs: dict[str, asyncio.Task[None]] = {}
         self._cancelled: set[str] = set()
@@ -150,14 +153,33 @@ class CollectionOrchestrator:
             try:
                 plan = await self.planner.plan(record.request)
                 pending = self._load_tasks(record)
+                discovery_providers: list[str] = list(
+                    record.checkpoint.get("discovery_providers", [])
+                )
                 if not pending:
                     pending = await self._initial_tasks(record)
-                    for task in plan.tasks:
-                        task.metadata["collection_id"] = record.collection_id
-                        pending.append(task)
+                    if self.discovery is not None and plan.queries:
+                        record.stage = "discovery"
+                        record.updated_at = now()
+                        await self.repository.update_collection(record)
+                        outcome = await self.discovery.discover(plan.queries, record.request)
+                        discovery_providers = outcome.providers_attempted
+                        record.errors.extend(outcome.errors)
+                        pending = self._merge_tasks(pending, outcome.tasks, record.collection_id)
+                        if outcome.errors:
+                            logger.warning(
+                                "discovery provider degraded",
+                                extra=_log_extra(
+                                    record,
+                                    "discovery_error",
+                                    error_code="DISCOVERY_ERROR",
+                                ),
+                            )
+                    pending = self._merge_tasks(pending, plan.tasks, record.collection_id)
                 record.checkpoint = {
                     "queries": plan.queries,
                     "planner_notes": plan.notes,
+                    "discovery_providers": discovery_providers,
                     "pending_tasks": [self._task_dict(t) for t in pending],
                     "visited": record.checkpoint.get("visited", []),
                 }
@@ -168,7 +190,7 @@ class CollectionOrchestrator:
                             code="NO_SOURCE_TASKS",
                             message=(
                                 "Research plan produced no executable source tasks. "
-                                "Provide seed URLs or enable a discovery adapter such as SERP."
+                                "Provide seed URLs or configure a discovery provider."
                             ),
                             retryable=False,
                         )
@@ -231,6 +253,21 @@ class CollectionOrchestrator:
                     seen.add(key)
                     tasks.append(task)
         return tasks
+
+    @staticmethod
+    def _merge_tasks(
+        existing: list[SourceTask],
+        additions: list[SourceTask],
+        collection_id: str,
+    ) -> list[SourceTask]:
+        keys = {f"{task.source_id}:{task.url}" for task in existing}
+        for task in additions:
+            task.metadata["collection_id"] = collection_id
+            key = f"{task.source_id}:{task.url}"
+            if key not in keys:
+                keys.add(key)
+                existing.append(task)
+        return existing
 
     async def _process_tasks(self, record: CollectionRecord, pending: list[SourceTask]) -> None:
         visited = set(record.checkpoint.get("visited", []))
