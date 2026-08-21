@@ -21,7 +21,9 @@ from argus.history.snapshots import SnapshotService
 from argus.observability import configure_logging
 from argus.orchestrator.service import CollectionOrchestrator
 from argus.recipes.service import RecipeManager
+from argus.research.discovery import DiscoveryService
 from argus.research.planner import OllamaResearchPlanner
+from argus.research.searxng import SearxngDiscoveryProvider
 from argus.security.auth import bearer_dependency, ensure_token
 from argus.security.urls import UrlGuard
 from argus.services import ServiceContainer
@@ -41,6 +43,19 @@ def build_agent(settings: Settings, guard: UrlGuard) -> AgentBackend | None:
     raise ValueError(f"unsupported ARGUS agent backend: {settings.agent_backend}")
 
 
+def build_discovery(settings: Settings, guard: UrlGuard) -> DiscoveryService | None:
+    providers = []
+    if settings.searxng_url:
+        providers.append(SearxngDiscoveryProvider(settings))
+    if not providers:
+        return None
+    return DiscoveryService(
+        providers=providers,
+        url_guard=guard,
+        max_queries=settings.discovery_max_queries,
+    )
+
+
 def build_services(settings: Settings) -> ServiceContainer:
     settings.ensure_dirs()
     repository = SQLiteRepository(settings.db_path)
@@ -50,6 +65,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     snapshots = SnapshotService(repository)
     recipes = RecipeManager(repository)
     agent = build_agent(settings, guard)
+    discovery = build_discovery(settings, guard)
     registry = SourceRegistry()
     registry.register(
         GenericWebAdapter(
@@ -63,10 +79,11 @@ def build_services(settings: Settings) -> ServiceContainer:
     registry.register(RSSAdapter(fast, snapshots))
     planner = OllamaResearchPlanner(settings)
     orchestrator = CollectionOrchestrator(
-        repository,
-        registry,
-        planner,
-        settings.max_concurrency,
+        repository=repository,
+        registry=registry,
+        planner=planner,
+        max_concurrency=settings.max_concurrency,
+        discovery=discovery,
     )
     return ServiceContainer(
         repository=repository,
@@ -117,6 +134,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "storage": "sqlite",
             "history": True,
             "site_recipes": True,
+            "discovery_providers": ["searxng"] if settings.searxng_url else [],
             "agent_enabled": settings.agent_enabled,
             "agent_backend": settings.agent_backend if settings.agent_enabled else None,
             "agent_backends": ["browser-use", "stagehand"],
