@@ -20,6 +20,7 @@ from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.geocoding.contracts import GeocodeProvider
 from argus.geocoding.nominatim import NominatimGeocoder
 from argus.history.snapshots import SnapshotService
+from argus.history.wayback import WaybackCDXProvider
 from argus.maps.overpass import OverpassMapProvider
 from argus.maps.registry import MapProviderRegistry
 from argus.observability import configure_logging
@@ -37,6 +38,7 @@ from argus.sources.generic_web import GenericWebAdapter
 from argus.sources.overpass_map import OverpassSourceAdapter
 from argus.sources.registry import SourceRegistry
 from argus.sources.rss import RSSAdapter
+from argus.sources.wayback import WaybackSourceAdapter
 from argus.storage.sqlite import SQLiteRepository
 
 
@@ -61,6 +63,10 @@ def configured_discovery_provider_names(settings: Settings) -> list[str]:
 
 def configured_geocoding_provider_names(settings: Settings) -> list[str]:
     return ["nominatim"] if settings.nominatim_url else []
+
+
+def configured_archive_provider_names(settings: Settings) -> list[str]:
+    return ["wayback_cdx"] if settings.wayback_cdx_url else []
 
 
 def build_discovery(
@@ -121,6 +127,8 @@ def build_services(settings: Settings) -> ServiceContainer:
     if settings.overpass_url:
         overpass_provider = map_registry.get("openstreetmap_overpass")
         registry.register(OverpassSourceAdapter(overpass_provider, snapshots, geocoder))
+    if settings.wayback_cdx_url:
+        registry.register(WaybackSourceAdapter(WaybackCDXProvider(settings), snapshots))
     planner = OllamaResearchPlanner(settings)
     orchestrator = CollectionOrchestrator(
         repository=repository,
@@ -183,6 +191,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "site_recipes": True,
             "discovery_providers": configured_discovery_provider_names(settings),
             "geocoding_providers": configured_geocoding_provider_names(settings),
+            "archive_providers": configured_archive_provider_names(settings),
             "map_providers": [provider.provider_id for provider in services.map_registry.all()],
             "agent_enabled": settings.agent_enabled,
             "agent_backend": settings.agent_backend if settings.agent_enabled else None,
@@ -241,7 +250,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/v1/sources/{source_id}/health", dependencies=[Depends(require_bearer)])
     async def source_health(source_id: str):
         try:
-            return await registry.get(source_id).health()
+            return await registry.health(source_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="source not found") from exc
 
