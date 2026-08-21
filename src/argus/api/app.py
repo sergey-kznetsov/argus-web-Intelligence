@@ -27,6 +27,7 @@ from argus.orchestrator.service import CollectionOrchestrator
 from argus.recipes.service import RecipeManager
 from argus.research.browser_serp import DuckDuckGoBrowserDiscoveryProvider
 from argus.research.discovery import DiscoveryService
+from argus.research.historical import HistoricalBranchPlanner
 from argus.research.planner import OllamaResearchPlanner
 from argus.research.searxng import SearxngDiscoveryProvider
 from argus.security.auth import bearer_dependency, ensure_token
@@ -127,6 +128,7 @@ def build_services(settings: Settings) -> ServiceContainer:
         planner=planner,
         max_concurrency=settings.max_concurrency,
         discovery=discovery,
+        historical_branch_planner=HistoricalBranchPlanner(),
     )
     return ServiceContainer(
         repository=repository,
