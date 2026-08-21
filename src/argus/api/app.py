@@ -18,6 +18,7 @@ from argus.crawler.agent.stagehand import StagehandAgent
 from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.history.snapshots import SnapshotService
+from argus.observability import configure_logging
 from argus.orchestrator.service import CollectionOrchestrator
 from argus.recipes.service import RecipeManager
 from argus.research.planner import OllamaResearchPlanner
@@ -78,6 +79,7 @@ def build_services(settings: Settings) -> ServiceContainer:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    configure_logging(settings.log_level)
     services = build_services(settings)
     repository = services.repository
     registry = services.registry
