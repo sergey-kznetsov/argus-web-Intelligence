@@ -22,6 +22,7 @@ class PlaywrightRecipeExecutor:
                     raise RecipeExecutionError("goto requires value")
                 await self.url_guard.validate(step.value)
                 await page.goto(step.value)
+                await self.url_guard.validate_redirect(step.value, page.url)
             elif step.action == "click":
                 await page.locator(self._selector(step)).click()
             elif step.action == "fill":
@@ -29,13 +30,22 @@ class PlaywrightRecipeExecutor:
             elif step.action == "press":
                 await page.locator(self._selector(step)).press(step.value or "Enter")
             elif step.action == "wait":
-                await page.wait_for_timeout(int(step.data.get("milliseconds", 500)))
+                milliseconds = self._bounded_int(step.data.get("milliseconds", 500), 0, 10_000)
+                await page.wait_for_timeout(milliseconds)
             elif step.action == "scroll":
-                amount = int(step.data.get("pixels", 1200))
+                amount = self._bounded_int(step.data.get("pixels", 1200), -100_000, 100_000)
                 await page.evaluate("pixels => window.scrollBy(0, pixels)", amount)
             elif step.action == "extract":
                 locator = page.locator(self._selector(step))
-                extracted.append({"selector": step.selector, "text": await locator.all_inner_texts()})
+                texts = await locator.all_inner_texts()
+                max_items = self._bounded_int(step.data.get("max_items", 100), 1, 500)
+                max_chars = self._bounded_int(step.data.get("max_chars", 5_000), 100, 20_000)
+                extracted.append(
+                    {
+                        "selector": step.selector,
+                        "text": [str(text)[:max_chars] for text in texts[:max_items]],
+                    }
+                )
         return extracted
 
     @staticmethod
@@ -43,3 +53,11 @@ class PlaywrightRecipeExecutor:
         if not step.selector:
             raise RecipeExecutionError(f"{step.action} requires selector")
         return step.selector
+
+    @staticmethod
+    def _bounded_int(value: Any, minimum: int, maximum: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise RecipeExecutionError("recipe numeric value is invalid") from exc
+        return max(minimum, min(maximum, parsed))
