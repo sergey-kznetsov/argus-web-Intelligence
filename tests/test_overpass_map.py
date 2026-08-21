@@ -22,6 +22,17 @@ def map_request(**values):
     return MapSearchRequest(**payload)
 
 
+def settings(**values):
+    defaults = {
+        "overpass_url": "https://overpass.example/api/interpreter",
+        "overpass_min_interval_seconds": 0,
+        "direct_provider_retry_base_seconds": 0,
+        "direct_provider_retry_max_seconds": 0,
+    }
+    defaults.update(values)
+    return Settings(**defaults)
+
+
 @pytest.mark.asyncio
 async def test_overpass_normalizes_places_and_provenance():
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -51,8 +62,7 @@ async def test_overpass_normalizes_places_and_provenance():
             },
         )
 
-    settings = Settings(overpass_url="https://overpass.example/api/interpreter")
-    provider = OverpassMapProvider(settings, transport=httpx.MockTransport(handler))
+    provider = OverpassMapProvider(settings(), transport=httpx.MockTransport(handler))
     result = await provider.search(map_request())
     assert not result.errors
     assert result.places[0].name == "Школа 1"
@@ -71,29 +81,56 @@ async def test_overpass_rejects_unknown_category_before_request():
         called = True
         return httpx.Response(200, json={"elements": []})
 
-    settings = Settings(overpass_url="https://overpass.example/api/interpreter")
-    provider = OverpassMapProvider(settings, transport=httpx.MockTransport(handler))
+    provider = OverpassMapProvider(settings(), transport=httpx.MockTransport(handler))
     result = await provider.search(map_request(categories=["unknown-category"]))
     assert result.errors[0].code == "MAP_CATEGORY_UNSUPPORTED"
     assert called is False
 
 
 @pytest.mark.asyncio
-async def test_overpass_rate_limit_is_blocked():
+async def test_overpass_rate_limit_is_blocked_after_retry_budget():
+    calls = 0
+
     async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
         del request
+        calls += 1
         return httpx.Response(429, text="rate limited")
 
-    settings = Settings(overpass_url="https://overpass.example/api/interpreter")
-    provider = OverpassMapProvider(settings, transport=httpx.MockTransport(handler))
+    provider = OverpassMapProvider(
+        settings(direct_provider_max_retries=1),
+        transport=httpx.MockTransport(handler),
+    )
     result = await provider.search(map_request())
+    assert calls == 2
     assert result.blocked is True
     assert result.errors[0].code == "MAP_PROVIDER_BLOCKED"
 
 
+@pytest.mark.asyncio
+async def test_overpass_retries_503_then_succeeds():
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        del request
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503, text="temporary")
+        return httpx.Response(200, json={"elements": []})
+
+    provider = OverpassMapProvider(
+        settings(direct_provider_max_retries=1),
+        transport=httpx.MockTransport(handler),
+    )
+    result = await provider.search(map_request())
+    assert calls == 2
+    assert result.errors == []
+    assert result.places == []
+
+
 def test_overpass_text_query_is_regex_escaped():
-    settings = Settings(overpass_url="https://overpass.example/api/interpreter")
-    provider = OverpassMapProvider(settings)
+    provider = OverpassMapProvider(settings())
     query = provider._build_query(map_request(query='Школа [1] "центр"'), 1000)
     assert "\\[1\\]" in query
     assert '\\"центр\\"' in query
