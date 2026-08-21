@@ -47,6 +47,13 @@ class DuckDuckGoBrowserDiscoveryProvider:
                     RecipeStep(action="press", selector='input[name="q"]', value="Enter"),
                     RecipeStep(
                         action="wait",
+                        data={
+                            "state": "domcontentloaded",
+                            "timeout_ms": int(self.settings.browser_timeout_seconds * 1_000),
+                        },
+                    ),
+                    RecipeStep(
+                        action="wait",
                         data={"milliseconds": self.settings.browser_serp_wait_ms},
                     ),
                 ],
