@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     nominatim_max_results: int = Field(default=3, ge=1, le=10)
     nominatim_min_interval_seconds: float = Field(default=1.0, ge=0, le=300)
 
+    wayback_cdx_url: str | None = None
+    wayback_capture_base_url: str = "https://web.archive.org/web"
+    wayback_timeout_seconds: float = Field(default=20.0, gt=0, le=300)
+    wayback_max_captures: int = Field(default=5, ge=1, le=20)
+    wayback_min_interval_seconds: float = Field(default=2.0, ge=0, le=300)
+
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
     agent_backend: str = "browser-use"
@@ -77,7 +83,14 @@ class Settings(BaseSettings):
             raise ValueError(f"log_level must be one of {sorted(allowed)}")
         return level
 
-    @field_validator("searxng_url", "overpass_url", "nominatim_url", mode="before")
+    @field_validator(
+        "searxng_url",
+        "overpass_url",
+        "nominatim_url",
+        "wayback_cdx_url",
+        "wayback_capture_base_url",
+        mode="before",
+    )
     @classmethod
     def normalize_service_url(cls, value: object) -> str | None:
         if value is None or not str(value).strip():
