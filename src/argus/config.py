@@ -40,9 +40,11 @@ class Settings(BaseSettings):
 
     overpass_url: str | None = None
     overpass_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    overpass_min_interval_seconds: float = Field(default=1.0, ge=0, le=300)
     nominatim_url: str | None = None
     nominatim_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     nominatim_max_results: int = Field(default=3, ge=1, le=10)
+    nominatim_min_interval_seconds: float = Field(default=1.0, ge=0, le=300)
 
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
