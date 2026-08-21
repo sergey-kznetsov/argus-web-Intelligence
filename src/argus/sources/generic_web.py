@@ -322,7 +322,6 @@ class GenericWebAdapter:
             if "alternate" not in rel or mime not in {
                 "application/rss+xml",
                 "application/atom+xml",
-                "application/feed+json",
             }:
                 continue
             url = urldefrag(urljoin(base_url, tag["href"]))[0]
