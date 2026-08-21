@@ -10,7 +10,7 @@ from argus.config import Settings
 from argus.crawler.lifecycle import FetchBroker
 from argus.crawler.models import FetchResult
 from argus.crawler.request_manager import build_request_manager
-from argus.security.urls import UnsafeUrlError, UrlGuard
+from argus.security.urls import UrlGuard
 
 
 class FastCrawlerRuntime:
@@ -31,7 +31,10 @@ class FastCrawlerRuntime:
         try:
             request = Request.from_url(url, unique_key=key)
             await self._crawler.add_requests([request])
-            return await asyncio.wait_for(future, timeout=self.settings.fetch_wait_timeout_seconds)
+            return await asyncio.wait_for(
+                future,
+                timeout=self.settings.fetch_wait_timeout_seconds,
+            )
         except TimeoutError as exc:
             raise TimeoutError("FAST runtime result timeout") from exc
         finally:
@@ -57,15 +60,30 @@ class FastCrawlerRuntime:
                 from crawlee import ConcurrencySettings
                 from crawlee.crawlers import BasicCrawlingContext, HttpCrawler, HttpCrawlingContext
                 from crawlee.errors import HttpStatusCodeError, SessionError
+                from crawlee.http_clients import HttpxHttpClient
             except ImportError as exc:
-                raise RuntimeError("Crawlee is required for FAST runtime") from exc
+                raise RuntimeError("Crawlee with the httpx extra is required for FAST runtime") from exc
 
             storage_client, request_manager = await build_request_manager(
-                self.settings, "argus-fast-runtime"
+                self.settings,
+                "argus-fast-runtime",
+            )
+
+            async def validate_outbound_request(request) -> None:
+                # HTTPX executes request hooks for the initial request and every redirect hop.
+                # Validate before the transport sees the request, not after a redirect is fetched.
+                await self.url_guard.validate(str(request.url))
+
+            http_client = HttpxHttpClient(
+                event_hooks={"request": [validate_outbound_request]},
+                follow_redirects=True,
+                max_redirects=self.settings.http_max_redirects,
+                trust_env=False,
             )
             crawler = HttpCrawler(
                 request_manager=request_manager,
                 storage_client=storage_client,
+                http_client=http_client,
                 keep_alive=True,
                 max_request_retries=3,
                 use_session_pool=True,
@@ -86,6 +104,7 @@ class FastCrawlerRuntime:
                 response = context.http_response
                 requested_url = context.request.url
                 final_url = context.request.loaded_url or requested_url
+                # Defense in depth. Each hop was already checked by the HTTPX request hook.
                 await self.url_guard.validate_redirect(requested_url, final_url)
                 content_length = self._content_length(response.headers.get("content-length"))
                 if content_length is not None and content_length > self.settings.max_response_bytes:
@@ -160,7 +179,9 @@ class FastCrawlerRuntime:
 
     @staticmethod
     def _html_metadata(
-        text: str, base_url: str, content_type: str | None
+        text: str,
+        base_url: str,
+        content_type: str | None,
     ) -> tuple[str | None, list[str]]:
         if content_type and "html" not in content_type.lower():
             return None, []
