@@ -89,3 +89,16 @@ async def test_blocked_provider_is_recorded_and_fallback_can_continue():
     assert outcome.blocked is True
     assert outcome.errors[0].code == "DISCOVERY_BLOCKED"
     assert [task.url for task in outcome.tasks] == ["https://example.org/b"]
+
+
+@pytest.mark.asyncio
+async def test_all_empty_providers_report_no_results():
+    first = FakeProvider("first")
+    second = FakeProvider("second")
+    outcome = await DiscoveryService([first, second], FakeGuard()).discover(
+        ["query"], request()
+    )
+    assert outcome.tasks == []
+    assert outcome.providers_attempted == ["first", "second"]
+    assert [error.code for error in outcome.errors] == ["DISCOVERY_NO_RESULTS"]
+    assert outcome.blocked is False
