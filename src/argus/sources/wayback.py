@@ -75,13 +75,14 @@ class WaybackSourceAdapter:
                 )
             )
 
+        errors = [error for error in fetched.errors if error.code != "ARCHIVE_NO_CAPTURES"]
         return SourceResult(
             observations=observations,
             evidence=evidence_items,
             discovered_tasks=discovered_tasks,
             blocked=fetched.blocked,
-            partial=bool(fetched.errors and fetched.captures),
-            errors=list(fetched.errors),
+            partial=bool(errors and fetched.captures),
+            errors=errors,
         )
 
     async def normalize(self, result: SourceResult) -> SourceResult:
