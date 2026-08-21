@@ -115,6 +115,21 @@ class BrowserCrawlerRuntime:
                 key = context.request.unique_key
                 recipe = self._recipes.get(key)
                 recipe_extracted: list[dict[str, Any]] = []
+                document_response = context.response
+
+                def track_document_response(response: Any) -> None:
+                    nonlocal document_response
+                    try:
+                        request = response.request
+                        if (
+                            request.resource_type == "document"
+                            and response.frame == context.page.main_frame
+                        ):
+                            document_response = response
+                    except Exception:
+                        return
+
+                context.page.on("response", track_document_response)
                 if recipe is not None:
                     recipe_extracted = await self.recipe_executor.execute(context.page, recipe)
                 requested_url = context.request.url
@@ -128,7 +143,7 @@ class BrowserCrawlerRuntime:
                     "els => els.map(a => a.href).filter(Boolean).slice(0, 1000)"
                 )
                 text_sample = (await context.page.locator("body").inner_text())[:50_000].lower()
-                status_code = context.response.status
+                status_code = document_response.status
                 blocked = status_code in {401, 403, 429} or any(
                     marker in text_sample
                     for marker in (
@@ -138,7 +153,7 @@ class BrowserCrawlerRuntime:
                         "robot check",
                     )
                 )
-                content_type = await context.response.header_value("content-type") or "text/html"
+                content_type = await document_response.header_value("content-type") or "text/html"
                 metadata: dict[str, object] = {}
                 if recipe is not None:
                     metadata = {
