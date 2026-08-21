@@ -72,10 +72,27 @@ async def test_wayback_provider_uses_exact_url_json_cdx_and_builds_capture_url(t
     assert len(requests) == 1
     params = requests[0].url.params
     assert params["url"] == "https://example.com/page"
+    assert params["matchType"] == "exact"
     assert params["output"] == "json"
     assert params["filter"] == "statuscode:200"
     assert params["collapse"] == "digest"
     assert params["limit"] == "3"
+
+
+@pytest.mark.asyncio
+async def test_wayback_empty_capture_set_is_normal_empty_result(tmp_path: Path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = [["timestamp", "original", "mimetype", "statuscode", "digest", "length"]]
+        return httpx.Response(200, content=json.dumps(payload).encode(), request=request)
+
+    provider = WaybackCDXProvider(
+        settings(tmp_path),
+        transport=httpx.MockTransport(handler),
+    )
+    result = await provider.captures("https://example.com/missing")
+    assert result.captures == []
+    assert result.errors == []
+    assert result.blocked is False
 
 
 @pytest.mark.asyncio
