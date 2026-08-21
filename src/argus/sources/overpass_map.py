@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from argus.contracts.models import CollectionRequest, Evidence, EvidenceSource, Observation
+from argus.history.snapshots import SnapshotService
 from argus.maps.contracts import MapPlace, MapSearchRequest, MapSearchResult
 from argus.maps.overpass import SUPPORTED_CATEGORIES, OverpassMapProvider
 from argus.normalization.identity import stable_evidence_id, stable_observation_id
@@ -17,8 +18,9 @@ class OverpassSourceAdapter:
     source_id = "openstreetmap_overpass"
     intents = set(SUPPORTED_CATEGORIES)
 
-    def __init__(self, provider: OverpassMapProvider) -> None:
+    def __init__(self, provider: OverpassMapProvider, snapshots: SnapshotService) -> None:
         self.provider = provider
+        self.snapshots = snapshots
 
     async def discover(self, request: CollectionRequest) -> list[SourceTask]:
         categories = sorted(set(request.intents) & SUPPORTED_CATEGORIES)
@@ -56,7 +58,7 @@ class OverpassSourceAdapter:
         observations: list[Observation] = []
         evidence_items: list[Evidence] = []
         for place in fetched.places:
-            observation, evidence = self._normalize_place(place, collection_id, request)
+            observation, evidence = await self._normalize_place(place, collection_id, request)
             observations.append(observation)
             evidence_items.append(evidence)
         return SourceResult(
@@ -73,7 +75,7 @@ class OverpassSourceAdapter:
     async def health(self) -> dict[str, object]:
         return await self.provider.health()
 
-    def _normalize_place(
+    async def _normalize_place(
         self,
         place: MapPlace,
         collection_id: str,
@@ -95,6 +97,12 @@ class OverpassSourceAdapter:
             default=self._json_default,
         )
         content_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        snapshot = await self.snapshots.capture(
+            self.source_id,
+            place.source_url,
+            canonical,
+            "application/json",
+        )
         entity_id = f"{place.provider}:{place.provider_place_id or place.source_url}"
         observation_id = stable_observation_id(
             collection_id=collection_id,
@@ -105,6 +113,7 @@ class OverpassSourceAdapter:
             content_hash=content_hash,
         )
         provenance = {
+            "snapshot_id": snapshot.snapshot_id,
             "map_provider": place.provider,
             **place.provenance,
         }
