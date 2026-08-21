@@ -6,11 +6,11 @@ Core rule: **ARGUS = find + obtain + prove + store. Consumers = interpret + calc
 
 ## Current foundation
 
-The service includes strict protocol `1.0.0` contracts, asynchronous collections, SQLite storage behind a repository abstraction, persistent Crawlee FAST/BROWSER runtimes, Generic Web and RSS/Atom adapters, Research Planner with optional local Ollama, recursive research tasks, agent abstraction, SiteRecipe replay/recovery, SHA-256 snapshots/diffs, Bearer authentication, redirect-aware SSRF validation, resource/rate limits, cancellation, restart checkpoints, structured secret-safe logging, CLI, tests and CI.
+The service includes strict protocol `1.0.0` contracts, asynchronous collections, SQLite storage behind a repository abstraction, persistent Crawlee FAST/BROWSER runtimes, Generic Web and RSS/Atom adapters, Research Planner with optional local Ollama, recursive research tasks, ordered discovery providers, agent abstraction, SiteRecipe replay/recovery, SHA-256 snapshots/diffs, Bearer authentication, redirect-aware SSRF validation, resource/rate limits, cancellation, restart checkpoints, structured secret-safe logging, CLI, tests and CI.
 
-The first free discovery provider is SearXNG. It is optional and runs as a separate/self-hosted service. Research Planner queries are sent to discovery, returned URLs are validated, and only destination pages fetched by ARGUS become observations/evidence. Search-result snippets are not treated as factual evidence.
+Discovery is provider-neutral. Search results only seed destination URLs; snippets are never treated as factual evidence. Destination pages must be fetched by ARGUS before Observation/Evidence is created.
 
-Specific map/public-portal/developer-site adapters are still separate later milestones.
+A provider-neutral map foundation (`argus.maps`) is also present for future 2GIS/Yandex/Google/public-map implementations. No placeholder map provider is registered as a working source.
 
 ## Install
 
@@ -40,17 +40,20 @@ By default ARGUS binds to `127.0.0.1:8787`.
 ## CLI
 
 ```bash
+argus collect --consumer test --address "Ижевск, Пушкинская, 277" --intent public_mentions
 argus collect --consumer test --address "Ижевск, Пушкинская, 277" --intent public_mentions --seed-url https://example.org/
 argus status <collection_id>
 argus result <collection_id>
 argus sources
 ```
 
-Without a discovery provider, Generic Web/RSS collection requires seed URLs. With SearXNG configured, a collection can start from territory + intents: Research Planner creates queries and discovery supplies public destination URLs.
+With browser SERP discovery enabled (default), a collection can start from territory + intents without a seed URL. If a self-hosted SearXNG is configured it is tried first; the low-volume Playwright DuckDuckGo HTML provider is only a fallback. If every discovery path is blocked by an anti-bot challenge, ARGUS reports `blocked` and does not attempt a bypass.
 
 All API endpoints except `/v1/health` require `Authorization: Bearer <token>`.
 
-## Optional SearXNG discovery
+## Free discovery
+
+### Preferred: self-hosted SearXNG
 
 ARGUS does not bundle or import SearXNG. Run an unmodified/self-hosted SearXNG separately and enable JSON in its `search.formats` configuration. For example:
 
@@ -70,6 +73,18 @@ ARGUS_SEARXNG_MAX_RESULTS_PER_QUERY=10
 ```
 
 The provider uses SearXNG's documented `/search` HTTP API with POST and `format=json`. Public SearXNG instances are not assumed to expose JSON; a local/private instance is the intended baseline.
+
+### Fallback: DuckDuckGo HTML through Playwright
+
+The fallback uses the existing BROWSER runtime and submits DuckDuckGo's public no-JS HTML search form. It is intentionally low volume and does not reverse-engineer or call private search APIs.
+
+```bash
+ARGUS_BROWSER_SERP_ENABLED=true
+ARGUS_BROWSER_SERP_MAX_RESULTS_PER_QUERY=5
+ARGUS_BROWSER_SERP_WAIT_MS=750
+```
+
+Disable it with `ARGUS_BROWSER_SERP_ENABLED=false` when only explicitly configured discovery providers are desired.
 
 ## API
 
@@ -101,6 +116,12 @@ The core has an `AgentBackend` interface. Browser Use + Ollama is the default op
 The current standalone runtime uses SQLite. The orchestrator depends on the repository protocol rather than SQLite directly, so PostgreSQL can be added later without rewriting collection logic.
 
 Every successful document collection creates a persisted snapshot with `collected_at`, content hash, source URL, source ID and extractor version. Unchanged pages still create a temporal snapshot; changed pages additionally store a diff against the previous snapshot.
+
+## Map provider foundation
+
+`MapSearchRequest`, `MapPlace`, `MapSearchResult`, `MapProviderCapabilities` and `MapProviderRegistry` form the common boundary for future public map providers. `MapPlace.source_url` must be a credential-free HTTP(S) source so map facts can later enter the same evidence/provenance pipeline as ordinary web documents.
+
+Map contracts contain collection facts only. Competition scoring, demand interpretation, risk assessment and other consumer analytics remain in Kraken/Janus/Historical/future modules.
 
 ## Development rules
 
