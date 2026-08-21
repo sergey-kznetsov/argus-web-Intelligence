@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from argus.sources.base import SourceResult, SourceTask
@@ -32,6 +34,19 @@ class BlockedSource(Source):
     async def extract(self, task, fetched, request):
         del task, fetched, request
         return SourceResult(observations=[], blocked=True)
+
+
+class CancelOnSecondFetchSource(Source):
+    source_id = "cancelled"
+
+    def __init__(self) -> None:
+        self.fetches = 0
+
+    async def fetch(self, task):
+        self.fetches += 1
+        if self.fetches == 2:
+            raise asyncio.CancelledError
+        return task
 
 
 def test_registry_filters_intents():
@@ -75,3 +90,26 @@ async def test_registry_health_reports_blocked_result():
     health = await registry.health("blocked")
     assert health["status"] == "blocked"
     assert health["operational"]["last_error_code"] == "SOURCE_BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_registry_cancellation_restores_previous_stable_health():
+    registry = SourceRegistry()
+    registry.register(CancelOnSecondFetchSource())
+    source = registry.get("cancelled")
+    task = SourceTask(source_id="cancelled", goal="reviews", url="https://example.com")
+
+    fetched = await source.fetch(task)
+    result = await source.extract(task, fetched, object())
+    await source.normalize(result)
+    before = await registry.health("cancelled")
+    assert before["status"] == "ok"
+    last_success = before["operational"]["last_success_at"]
+
+    with pytest.raises(asyncio.CancelledError):
+        await source.fetch(task)
+
+    after = await registry.health("cancelled")
+    assert after["status"] == "ok"
+    assert after["operational"]["last_success_at"] == last_success
+    assert after["operational"]["last_error_code"] is None
