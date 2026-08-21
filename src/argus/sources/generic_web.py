@@ -185,10 +185,23 @@ class GenericWebAdapter:
         data = {"runtime": fetched.runtime, "status_code": fetched.status_code}
         if fetched.metadata:
             data["fetch_metadata"] = fetched.metadata
-        provenance = {"snapshot_id": snapshot.snapshot_id}
+        provenance: dict[str, object] = {"snapshot_id": snapshot.snapshot_id}
         if "recipe_id" in fetched.metadata:
             provenance["recipe_id"] = fetched.metadata["recipe_id"]
             provenance["recipe_version"] = fetched.metadata.get("recipe_version")
+        discovery_provider = task.metadata.get("discovery_provider")
+        if discovery_provider:
+            engines_raw = task.metadata.get("discovery_engines", [])
+            engines = (
+                [str(item) for item in engines_raw]
+                if isinstance(engines_raw, list)
+                else []
+            )
+            provenance["discovery"] = {
+                "provider": str(discovery_provider),
+                "engines": engines,
+                "rank": task.metadata.get("discovery_rank"),
+            }
         observation = Observation(
             observation_id=observation_id,
             collection_id=collection_id,
