@@ -10,7 +10,7 @@ The service includes strict protocol `1.0.0` contracts, asynchronous collections
 
 Discovery is provider-neutral. Search results only seed destination URLs; snippets are never treated as factual evidence. Destination pages must be fetched by ARGUS before Observation/Evidence is created.
 
-A provider-neutral map foundation (`argus.maps`) is also present for future 2GIS/Yandex/Google/public-map implementations. No placeholder map provider is registered as a working source.
+`argus.maps` provides provider-neutral map contracts. The first actual map implementation is optional OpenStreetMap Overpass. It is registered only when `ARGUS_OVERPASS_URL` is configured, and its places enter the same collection Observation/Evidence/snapshot pipeline as web sources. 2GIS, Yandex Maps and Google Maps remain separate future providers rather than hardcoded branches.
 
 ## Install
 
@@ -86,6 +86,19 @@ ARGUS_BROWSER_SERP_WAIT_MS=750
 
 Disable it with `ARGUS_BROWSER_SERP_ENABLED=false` when only explicitly configured discovery providers are desired.
 
+## Optional OpenStreetMap Overpass map source
+
+ARGUS does not enable a public Overpass endpoint automatically. Configure a self-hosted or explicitly approved interpreter endpoint:
+
+```bash
+ARGUS_OVERPASS_URL=https://overpass.example/api/interpreter
+ARGUS_OVERPASS_TIMEOUT_SECONDS=30
+```
+
+When configured, `openstreetmap_overpass` is both a map provider and a factual SourceAdapter. It currently responds to neutral POI intents: `school`, `kindergarten`, `college`, `university`, `hospital`, `clinic`, `pharmacy`, `restaurant`, `cafe`, `supermarket`, `mall`, and `park`.
+
+The collection request must include `territory.point`; the adapter uses `territory.radius_meters` or a 1000 m default. Each returned place has a direct `openstreetmap.org` source URL, ODbL attribution, deterministic Observation/Evidence IDs, and a persisted snapshot of normalized map facts. Map-source rate limits/access blocks are returned as structured `blocked`/`partial` coverage rather than bypassed.
+
 ## API
 
 - `GET /v1/health`
@@ -115,11 +128,11 @@ The core has an `AgentBackend` interface. Browser Use + Ollama is the default op
 
 The current standalone runtime uses SQLite. The orchestrator depends on the repository protocol rather than SQLite directly, so PostgreSQL can be added later without rewriting collection logic.
 
-Every successful document collection creates a persisted snapshot with `collected_at`, content hash, source URL, source ID and extractor version. Unchanged pages still create a temporal snapshot; changed pages additionally store a diff against the previous snapshot.
+Every successful factual collection creates persisted temporal evidence. Web documents store fetched content snapshots; map places store canonical normalized fact snapshots. Unchanged facts still create a temporal snapshot; changed content additionally stores a diff against the previous snapshot.
 
 ## Map provider foundation
 
-`MapSearchRequest`, `MapPlace`, `MapSearchResult`, `MapProviderCapabilities` and `MapProviderRegistry` form the common boundary for future public map providers. `MapPlace.source_url` must be a credential-free HTTP(S) source so map facts can later enter the same evidence/provenance pipeline as ordinary web documents.
+`MapSearchRequest`, `MapPlace`, `MapSearchResult`, `MapProviderCapabilities` and `MapProviderRegistry` form the common boundary for public map providers. `MapPlace.source_url` must be a credential-free HTTP(S) source so map facts can enter the same evidence/provenance pipeline as ordinary web documents.
 
 Map contracts contain collection facts only. Competition scoring, demand interpretation, risk assessment and other consumer analytics remain in Kraken/Janus/Historical/future modules.
 
