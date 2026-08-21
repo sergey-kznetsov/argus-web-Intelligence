@@ -22,6 +22,7 @@ def test_health_and_auth(tmp_path: Path):
         assert payload["storage"] == "sqlite"
         assert payload["map_providers"] == []
         assert payload["geocoding_providers"] == []
+        assert payload["archive_providers"] == []
         assert "duckduckgo_browser" in payload["discovery_providers"]
 
         source_health = client.get(
@@ -35,12 +36,13 @@ def test_health_and_auth(tmp_path: Path):
         assert health_payload["operational"]["last_attempt_at"] is None
 
 
-def test_capabilities_only_lists_configured_map_and_geocoding_providers(tmp_path: Path):
+def test_capabilities_only_lists_configured_optional_providers(tmp_path: Path):
     settings = Settings(
         db_path=tmp_path / "db.sqlite",
         token_file=tmp_path / "token",
         overpass_url="https://overpass.example/api/interpreter",
         nominatim_url="https://nominatim.example",
+        wayback_cdx_url="https://web.archive.org/cdx/search/cdx",
         browser_serp_enabled=False,
     )
     with TestClient(create_app(settings)) as client:
@@ -49,4 +51,9 @@ def test_capabilities_only_lists_configured_map_and_geocoding_providers(tmp_path
         payload = response.json()
         assert payload["map_providers"] == ["openstreetmap_overpass"]
         assert payload["geocoding_providers"] == ["nominatim"]
+        assert payload["archive_providers"] == ["wayback_cdx"]
         assert payload["discovery_providers"] == []
+
+        sources = client.get("/v1/sources", headers=auth_headers(settings)).json()
+        source_ids = {item["source_id"] for item in sources}
+        assert "wayback_cdx" in source_ids
