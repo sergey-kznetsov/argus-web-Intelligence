@@ -131,12 +131,19 @@ class DiscoveryService:
             if len(outcome.tasks) > before:
                 break
 
-        if (
-            not outcome.tasks
-            and outcome.providers_attempted
-            and not outcome.blocked
-            and not outcome.errors
-        ):
+        if not outcome.tasks and outcome.providers_attempted and outcome.blocked:
+            outcome.errors.append(
+                StructuredError(
+                    code="DISCOVERY_INCOMPLETE",
+                    message=(
+                        "Discovery was blocked before any valid destination URL was found. "
+                        "ARGUS did not attempt to bypass the access challenge."
+                    ),
+                    retryable=True,
+                    source_id="discovery",
+                )
+            )
+        elif not outcome.tasks and outcome.providers_attempted and not outcome.errors:
             outcome.errors.append(
                 StructuredError(
                     code="DISCOVERY_NO_RESULTS",
