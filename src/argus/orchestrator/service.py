@@ -11,10 +11,12 @@ from argus.contracts.models import (
     CollectionRequest,
     CollectionResult,
     CollectionStatus,
+    Observation,
     SourceCoverage,
     StructuredError,
 )
 from argus.research.discovery import DiscoveryService
+from argus.research.historical import HistoricalBranchPlanner
 from argus.research.planner import ResearchPlanner
 from argus.security.redaction import safe_error_message
 from argus.sources.base import SourceTask
@@ -52,11 +54,13 @@ class CollectionOrchestrator:
         planner: ResearchPlanner,
         max_concurrency: int = 4,
         discovery: DiscoveryService | None = None,
+        historical_branch_planner: HistoricalBranchPlanner | None = None,
     ) -> None:
         self.repository = repository
         self.registry = registry
         self.planner = planner
         self.discovery = discovery
+        self.historical_branch_planner = historical_branch_planner
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._jobs: dict[str, asyncio.Task[None]] = {}
         self._cancelled: set[str] = set()
@@ -222,6 +226,9 @@ class CollectionOrchestrator:
                     "discovery_queries": discovery_queries,
                     "discovery_providers": discovery_providers,
                     "discovery_blocked": discovery_blocked,
+                    "historical_branch_queries": record.checkpoint.get(
+                        "historical_branch_queries", []
+                    ),
                     "pending_tasks": [self._task_dict(t) for t in pending],
                     "visited": record.checkpoint.get("visited", []),
                 }
@@ -337,6 +344,9 @@ class CollectionOrchestrator:
 
     async def _process_tasks(self, record: CollectionRecord, pending: list[SourceTask]) -> None:
         visited = set(record.checkpoint.get("visited", []))
+        historical_branch_queries = set(
+            record.checkpoint.get("historical_branch_queries", [])
+        )
         total_budget = record.request.constraints.max_pages
         processed = len(visited)
         while pending and processed < total_budget:
@@ -399,6 +409,15 @@ class CollectionOrchestrator:
                     if child_key not in visited and child_key not in queued_keys:
                         queued_keys.add(child_key)
                         pending.append(child)
+
+                await self._expand_historical(
+                    record,
+                    task,
+                    result.observations,
+                    pending,
+                    visited,
+                    historical_branch_queries,
+                )
             except Exception as exc:
                 message = safe_error_message(exc, max_length=300)
                 coverage.status = "error"
@@ -431,6 +450,7 @@ class CollectionOrchestrator:
             record.checkpoint = {
                 **record.checkpoint,
                 "visited": sorted(visited),
+                "historical_branch_queries": sorted(historical_branch_queries),
                 "pending_tasks": [self._task_dict(t) for t in pending],
             }
             await self.repository.update_collection(record)
@@ -473,10 +493,73 @@ class CollectionOrchestrator:
         record.updated_at = now()
         record.checkpoint = {
             **record.checkpoint,
+            "historical_branch_queries": sorted(historical_branch_queries),
             "pending_tasks": [self._task_dict(t) for t in pending] if budget_exhausted else [],
         }
         await self.repository.update_collection(record)
         logger.info("collection finished", extra=_log_extra(record, "collection_finished"))
+
+    async def _expand_historical(
+        self,
+        record: CollectionRecord,
+        task: SourceTask,
+        observations: list[Observation],
+        pending: list[SourceTask],
+        visited: set[str],
+        seen_queries: set[str],
+    ) -> None:
+        if (
+            self.discovery is None
+            or self.historical_branch_planner is None
+            or "historical_context" not in record.request.intents
+            or not observations
+        ):
+            return
+
+        raw_depth = task.metadata.get("historical_branch_depth", 0)
+        try:
+            branch_depth = max(0, int(raw_depth))
+        except (TypeError, ValueError):
+            branch_depth = 0
+        if branch_depth >= record.request.constraints.max_depth:
+            return
+
+        queries = self.historical_branch_planner.expand(
+            record.request,
+            observations,
+            seen_queries=seen_queries,
+        )
+        if not queries:
+            return
+        seen_queries.update(queries)
+
+        branch_request = record.request.model_copy(update={"intents": ["historical_context"]})
+        outcome = await self.discovery.discover(queries, branch_request)
+        for error in outcome.errors:
+            if error.code != "DISCOVERY_NO_RESULTS":
+                record.errors.append(error)
+
+        additions: list[SourceTask] = []
+        for branch_task in outcome.tasks:
+            if branch_task.dedupe_key in visited:
+                continue
+            branch_task.metadata["historical_branch_depth"] = branch_depth + 1
+            branch_task.metadata["historical_branch_from"] = task.url
+            branch_task.metadata["historical_branch_queries"] = list(queries)
+            additions.append(branch_task)
+        self._merge_tasks(pending, additions, record.collection_id)
+
+        logger.info(
+            "historical branch expanded",
+            extra=_log_extra(
+                record,
+                "historical_branch",
+                source_id=task.source_id,
+                queries=len(queries),
+                discovered_tasks=len(additions),
+                branch_depth=branch_depth + 1,
+            ),
+        )
 
     @staticmethod
     def _task_dict(task: SourceTask) -> dict[str, object]:
