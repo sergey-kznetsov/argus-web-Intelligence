@@ -119,8 +119,12 @@ async def test_browser_runtime_blocks_private_redirect_before_second_request():
     runtime = BrowserCrawlerRuntime(settings, guard)
     try:
         with server() as port:
-            with pytest.raises(Exception):
+            caught: BaseException | None = None
+            try:
                 await runtime.fetch(f"http://localhost:{port}/redirect")
+            except BaseException as exc:  # test asserts failure without depending on Crawlee wrapper type
+                caught = exc
+            assert caught is not None
             assert Handler.secret_hits == 0
     finally:
         await runtime.shutdown()
