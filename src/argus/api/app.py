@@ -106,7 +106,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     registry.register(RSSAdapter(fast, snapshots))
     if settings.overpass_url:
         overpass_provider = map_registry.get("openstreetmap_overpass")
-        registry.register(OverpassSourceAdapter(overpass_provider))
+        registry.register(OverpassSourceAdapter(overpass_provider, snapshots))
     planner = OllamaResearchPlanner(settings)
     orchestrator = CollectionOrchestrator(
         repository=repository,
