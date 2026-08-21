@@ -14,3 +14,4 @@ class FetchResult:
     links: list[str] = field(default_factory=list)
     blocked: bool = False
     runtime: str = "fast"
+    metadata: dict[str, object] = field(default_factory=dict)
