@@ -15,6 +15,8 @@ class SourceOperationalState:
     last_success_at: datetime | None = None
     last_failure_at: datetime | None = None
     last_error_code: str | None = None
+    _stable_status: str = "ready"
+    _stable_error_code: str | None = None
 
     def start(self) -> None:
         self.status = "running"
@@ -23,17 +25,22 @@ class SourceOperationalState:
 
     def success(self) -> None:
         self.status = "ok"
+        self._stable_status = "ok"
         self.last_success_at = utcnow()
         self.last_error_code = None
+        self._stable_error_code = None
 
     def failure(self, error_code: str | None = None, *, blocked: bool = False) -> None:
-        self.status = "blocked" if blocked else "degraded"
+        outcome = "blocked" if blocked else "degraded"
+        self.status = outcome
+        self._stable_status = outcome
         self.last_failure_at = utcnow()
         self.last_error_code = error_code
+        self._stable_error_code = error_code
 
     def cancelled(self) -> None:
-        self.status = "ready"
-        self.last_error_code = None
+        self.status = self._stable_status
+        self.last_error_code = self._stable_error_code
 
     def as_dict(self) -> dict[str, object]:
         return {
