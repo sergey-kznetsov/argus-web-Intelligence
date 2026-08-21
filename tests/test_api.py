@@ -24,6 +24,16 @@ def test_health_and_auth(tmp_path: Path):
         assert payload["geocoding_providers"] == []
         assert "duckduckgo_browser" in payload["discovery_providers"]
 
+        source_health = client.get(
+            "/v1/sources/generic_web/health",
+            headers=auth_headers(settings),
+        )
+        assert source_health.status_code == 200
+        health_payload = source_health.json()
+        assert health_payload["status"] == "ready"
+        assert health_payload["adapter_status"] == "ok"
+        assert health_payload["operational"]["last_attempt_at"] is None
+
 
 def test_capabilities_only_lists_configured_map_and_geocoding_providers(tmp_path: Path):
     settings = Settings(
