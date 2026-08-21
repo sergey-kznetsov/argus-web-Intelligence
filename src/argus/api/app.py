@@ -21,6 +21,7 @@ from argus.history.snapshots import SnapshotService
 from argus.observability import configure_logging
 from argus.orchestrator.service import CollectionOrchestrator
 from argus.recipes.service import RecipeManager
+from argus.research.browser_serp import DuckDuckGoBrowserDiscoveryProvider
 from argus.research.discovery import DiscoveryService
 from argus.research.planner import OllamaResearchPlanner
 from argus.research.searxng import SearxngDiscoveryProvider
@@ -43,10 +44,25 @@ def build_agent(settings: Settings, guard: UrlGuard) -> AgentBackend | None:
     raise ValueError(f"unsupported ARGUS agent backend: {settings.agent_backend}")
 
 
-def build_discovery(settings: Settings, guard: UrlGuard) -> DiscoveryService | None:
+def configured_discovery_provider_names(settings: Settings) -> list[str]:
+    names: list[str] = []
+    if settings.searxng_url:
+        names.append("searxng")
+    if settings.browser_serp_enabled:
+        names.append("duckduckgo_browser")
+    return names
+
+
+def build_discovery(
+    settings: Settings,
+    guard: UrlGuard,
+    browser: BrowserCrawlerRuntime,
+) -> DiscoveryService | None:
     providers = []
     if settings.searxng_url:
         providers.append(SearxngDiscoveryProvider(settings))
+    if settings.browser_serp_enabled:
+        providers.append(DuckDuckGoBrowserDiscoveryProvider(settings, browser))
     if not providers:
         return None
     return DiscoveryService(
@@ -65,7 +81,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     snapshots = SnapshotService(repository)
     recipes = RecipeManager(repository)
     agent = build_agent(settings, guard)
-    discovery = build_discovery(settings, guard)
+    discovery = build_discovery(settings, guard, browser)
     registry = SourceRegistry()
     registry.register(
         GenericWebAdapter(
@@ -134,7 +150,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "storage": "sqlite",
             "history": True,
             "site_recipes": True,
-            "discovery_providers": ["searxng"] if settings.searxng_url else [],
+            "discovery_providers": configured_discovery_provider_names(settings),
             "agent_enabled": settings.agent_enabled,
             "agent_backend": settings.agent_backend if settings.agent_enabled else None,
             "agent_backends": ["browser-use", "stagehand"],
