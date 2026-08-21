@@ -314,7 +314,7 @@ class CollectionOrchestrator:
                     covered_intents.update(requested_intents & adapter.intents)
             for task in discovered:
                 task.metadata["collection_id"] = record.collection_id
-                key = f"{task.source_id}:{task.url}"
+                key = task.dedupe_key
                 if key not in seen:
                     seen.add(key)
                     tasks.append(task)
@@ -326,10 +326,10 @@ class CollectionOrchestrator:
         additions: list[SourceTask],
         collection_id: str,
     ) -> list[SourceTask]:
-        keys = {f"{task.source_id}:{task.url}" for task in existing}
+        keys = {task.dedupe_key for task in existing}
         for task in additions:
             task.metadata["collection_id"] = collection_id
-            key = f"{task.source_id}:{task.url}"
+            key = task.dedupe_key
             if key not in keys:
                 keys.add(key)
                 existing.append(task)
@@ -343,7 +343,7 @@ class CollectionOrchestrator:
             if record.collection_id in self._cancelled:
                 return
             task = pending.pop(0)
-            key = f"{task.source_id}:{task.url}"
+            key = task.dedupe_key
             if key in visited:
                 continue
             adapter = self.registry.get(task.source_id)
@@ -392,10 +392,10 @@ class CollectionOrchestrator:
                         ),
                     )
 
-                queued_keys = {f"{item.source_id}:{item.url}" for item in pending}
+                queued_keys = {item.dedupe_key for item in pending}
                 for child in result.discovered_tasks:
                     child.metadata["collection_id"] = record.collection_id
-                    child_key = f"{child.source_id}:{child.url}"
+                    child_key = child.dedupe_key
                     if child_key not in visited and child_key not in queued_keys:
                         queued_keys.add(child_key)
                         pending.append(child)
@@ -486,6 +486,7 @@ class CollectionOrchestrator:
             "url": task.url,
             "depth": task.depth,
             "metadata": task.metadata,
+            "task_key": task.task_key,
         }
 
     @staticmethod
