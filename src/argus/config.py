@@ -40,6 +40,9 @@ class Settings(BaseSettings):
 
     overpass_url: str | None = None
     overpass_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    nominatim_url: str | None = None
+    nominatim_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
+    nominatim_max_results: int = Field(default=3, ge=1, le=10)
 
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
@@ -68,7 +71,7 @@ class Settings(BaseSettings):
             raise ValueError(f"log_level must be one of {sorted(allowed)}")
         return level
 
-    @field_validator("searxng_url", "overpass_url", mode="before")
+    @field_validator("searxng_url", "overpass_url", "nominatim_url", mode="before")
     @classmethod
     def normalize_service_url(cls, value: object) -> str | None:
         if value is None or not str(value).strip():
