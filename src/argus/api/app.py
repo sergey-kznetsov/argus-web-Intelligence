@@ -17,6 +17,8 @@ from argus.crawler.agent.browser_use import BrowserUseAgent
 from argus.crawler.agent.stagehand import StagehandAgent
 from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
+from argus.geocoding.contracts import GeocodeProvider
+from argus.geocoding.nominatim import NominatimGeocoder
 from argus.history.snapshots import SnapshotService
 from argus.maps.overpass import OverpassMapProvider
 from argus.maps.registry import MapProviderRegistry
@@ -56,6 +58,10 @@ def configured_discovery_provider_names(settings: Settings) -> list[str]:
     return names
 
 
+def configured_geocoding_provider_names(settings: Settings) -> list[str]:
+    return ["nominatim"] if settings.nominatim_url else []
+
+
 def build_discovery(
     settings: Settings,
     guard: UrlGuard,
@@ -75,6 +81,12 @@ def build_discovery(
     )
 
 
+def build_geocoder(settings: Settings) -> GeocodeProvider | None:
+    if settings.nominatim_url:
+        return NominatimGeocoder(settings)
+    return None
+
+
 def build_map_registry(settings: Settings) -> MapProviderRegistry:
     registry = MapProviderRegistry()
     if settings.overpass_url:
@@ -92,6 +104,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     recipes = RecipeManager(repository)
     agent = build_agent(settings, guard)
     discovery = build_discovery(settings, guard, browser)
+    geocoder = build_geocoder(settings)
     map_registry = build_map_registry(settings)
     registry = SourceRegistry()
     registry.register(
@@ -106,7 +119,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     registry.register(RSSAdapter(fast, snapshots))
     if settings.overpass_url:
         overpass_provider = map_registry.get("openstreetmap_overpass")
-        registry.register(OverpassSourceAdapter(overpass_provider, snapshots))
+        registry.register(OverpassSourceAdapter(overpass_provider, snapshots, geocoder))
     planner = OllamaResearchPlanner(settings)
     orchestrator = CollectionOrchestrator(
         repository=repository,
@@ -167,6 +180,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "history": True,
             "site_recipes": True,
             "discovery_providers": configured_discovery_provider_names(settings),
+            "geocoding_providers": configured_geocoding_provider_names(settings),
             "map_providers": [provider.provider_id for provider in services.map_registry.all()],
             "agent_enabled": settings.agent_enabled,
             "agent_backend": settings.agent_backend if settings.agent_enabled else None,
