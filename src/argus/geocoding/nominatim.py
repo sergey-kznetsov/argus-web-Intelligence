@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import quote_plus, urljoin
 
 import httpx
 
@@ -147,7 +147,9 @@ class NominatimGeocoder:
 
         osm_type = str(item.get("osm_type") or "").lower().strip()
         osm_id = item.get("osm_id")
-        source_url = self.settings.nominatim_url or self.endpoint
+        source_url = (
+            "https://www.openstreetmap.org/search?query=" + quote_plus(display_name)
+        )
         type_segment = {
             "n": "node",
             "node": "node",
