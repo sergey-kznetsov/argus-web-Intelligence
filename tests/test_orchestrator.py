@@ -6,6 +6,7 @@ import pytest
 from argus.contracts.models import CollectionRequest, CollectionStatus, Observation
 from argus.history.snapshots import sha256_text
 from argus.orchestrator.service import CollectionOrchestrator
+from argus.research.discovery import DiscoveryOutcome
 from argus.research.planner import HeuristicResearchPlanner
 from argus.sources.base import SourceResult, SourceTask
 from argus.sources.registry import SourceRegistry
@@ -16,12 +17,21 @@ class FakeAdapter:
     source_id = "fake"
     intents = {"reviews"}
 
-    def __init__(self, *, blocked: bool = False, children: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        blocked: bool = False,
+        children: int = 0,
+        seed_task: bool = True,
+    ) -> None:
         self.blocked = blocked
         self.children = children
+        self.seed_task = seed_task
 
     async def discover(self, request):
         del request
+        if not self.seed_task:
+            return []
         return [
             SourceTask(
                 source_id=self.source_id,
@@ -67,12 +77,34 @@ class FakeAdapter:
         return {"status": "ok"}
 
 
-async def run_collection(tmp_path: Path, adapter, **request_overrides):
+class FakeDiscovery:
+    async def discover(self, queries, request):
+        assert queries
+        del request
+        return DiscoveryOutcome(
+            tasks=[
+                SourceTask(
+                    source_id="fake",
+                    goal="reviews",
+                    url="https://example.com/discovered",
+                    metadata={"discovery_provider": "fake-search"},
+                )
+            ],
+            providers_attempted=["fake-search"],
+        )
+
+
+async def run_collection(tmp_path: Path, adapter, discovery=None, **request_overrides):
     repo = SQLiteRepository(tmp_path / "db.sqlite")
     registry = SourceRegistry()
     if adapter:
         registry.register(adapter)
-    orchestrator = CollectionOrchestrator(repo, registry, HeuristicResearchPlanner())
+    orchestrator = CollectionOrchestrator(
+        repo,
+        registry,
+        HeuristicResearchPlanner(),
+        discovery=discovery,
+    )
     await orchestrator.start()
     payload = {
         "consumer": "test",
@@ -93,6 +125,20 @@ async def test_collection_without_executable_sources_fails_explicitly(tmp_path: 
     _, record = await run_collection(tmp_path, None)
     assert record and record.status == CollectionStatus.FAILED
     assert record.errors[0].code == "NO_SOURCE_TASKS"
+
+
+@pytest.mark.asyncio
+async def test_discovery_can_seed_collection_without_source_seed_urls(tmp_path: Path):
+    repo, record = await run_collection(
+        tmp_path,
+        FakeAdapter(seed_task=False),
+        discovery=FakeDiscovery(),
+    )
+    assert record and record.status == CollectionStatus.COMPLETED
+    assert record.checkpoint["discovery_providers"] == ["fake-search"]
+    observations = await repo.list_observations(record.collection_id)
+    assert len(observations) == 1
+    assert observations[0].url == "https://example.com/discovered"
 
 
 @pytest.mark.asyncio
