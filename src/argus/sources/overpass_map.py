@@ -37,23 +37,25 @@ class OverpassSourceAdapter:
 
     async def discover(self, request: CollectionRequest) -> list[SourceTask]:
         categories = sorted(set(request.intents) & SUPPORTED_CATEGORIES)
-        if not categories:
-            return []
-        map_request = MapSearchRequest(
-            territory=request.territory,
-            categories=categories,
-            radius_meters=request.territory.radius_meters,
-            language=request.constraints.language,
-        )
-        return [
-            SourceTask(
-                source_id=self.source_id,
-                goal="map_search",
-                url=self.provider.endpoint,
-                depth=0,
-                metadata={"map_request": map_request.model_dump(mode="json")},
+        tasks: list[SourceTask] = []
+        for category in categories:
+            map_request = MapSearchRequest(
+                territory=request.territory,
+                categories=[category],
+                radius_meters=request.territory.radius_meters,
+                language=request.constraints.language,
             )
-        ]
+            tasks.append(
+                SourceTask(
+                    source_id=self.source_id,
+                    goal=category,
+                    url=self.provider.endpoint,
+                    depth=0,
+                    metadata={"map_request": map_request.model_dump(mode="json")},
+                    task_key=f"{self.source_id}:{self.provider.endpoint}:{category}",
+                )
+            )
+        return tasks
 
     async def fetch(self, task: SourceTask) -> MapSearchResult:
         raw = task.metadata.get("map_request")
