@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     throttle_base_delay_seconds: float = Field(default=2.0, gt=0, le=300)
     throttle_max_delay_seconds: float = Field(default=60.0, gt=0, le=3600)
 
+    direct_provider_max_retries: int = Field(default=2, ge=0, le=5)
+    direct_provider_retry_base_seconds: float = Field(default=1.0, ge=0, le=300)
+    direct_provider_retry_max_seconds: float = Field(default=30.0, ge=0, le=3600)
+
     discovery_max_queries: int = Field(default=8, ge=1, le=50)
     searxng_url: str | None = None
     searxng_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
@@ -90,6 +94,10 @@ class Settings(BaseSettings):
     def validate_throttling(self) -> "Settings":
         if self.throttle_max_delay_seconds < self.throttle_base_delay_seconds:
             raise ValueError("throttle_max_delay_seconds must be >= throttle_base_delay_seconds")
+        if self.direct_provider_retry_max_seconds < self.direct_provider_retry_base_seconds:
+            raise ValueError(
+                "direct_provider_retry_max_seconds must be >= direct_provider_retry_base_seconds"
+            )
         if self.browser_max_concurrency > self.max_concurrency:
             self.browser_max_concurrency = self.max_concurrency
         return self
