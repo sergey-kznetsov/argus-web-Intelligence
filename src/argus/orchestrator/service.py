@@ -157,45 +157,76 @@ class CollectionOrchestrator:
             try:
                 plan = await self.planner.plan(record.request)
                 pending = self._load_tasks(record)
+                planning_complete = bool(record.checkpoint.get("planning_complete", False))
+                covered_intents = set(record.checkpoint.get("covered_intents", []))
                 discovery_providers: list[str] = list(
                     record.checkpoint.get("discovery_providers", [])
                 )
+                discovery_queries: list[str] = list(
+                    record.checkpoint.get("discovery_queries", [])
+                )
                 discovery_blocked = bool(record.checkpoint.get("discovery_blocked", False))
-                if not pending:
-                    pending = await self._initial_tasks(record)
-                    if self.discovery is not None and plan.queries:
-                        record.stage = "discovery"
-                        record.updated_at = now()
-                        await self.repository.update_collection(record)
-                        outcome = await self.discovery.discover(plan.queries, record.request)
-                        discovery_providers = outcome.providers_attempted
-                        discovery_blocked = outcome.blocked
-                        record.errors.extend(outcome.errors)
-                        pending = self._merge_tasks(pending, outcome.tasks, record.collection_id)
-                        if outcome.errors:
-                            logger.warning(
-                                "discovery provider degraded",
-                                extra=_log_extra(
-                                    record,
-                                    "discovery_error",
-                                    error_code=(
-                                        "DISCOVERY_BLOCKED"
-                                        if outcome.blocked
-                                        else "DISCOVERY_ERROR"
-                                    ),
-                                ),
+
+                if not planning_complete:
+                    pending, covered_intents = await self._initial_tasks(record)
+                    uncovered_intents = [
+                        intent for intent in record.request.intents if intent not in covered_intents
+                    ]
+                    if self.discovery is not None and uncovered_intents:
+                        discovery_request = record.request.model_copy(
+                            update={"intents": uncovered_intents}
+                        )
+                        discovery_plan = (
+                            plan
+                            if uncovered_intents == record.request.intents
+                            else await self.planner.plan(discovery_request)
+                        )
+                        discovery_queries = discovery_plan.queries
+                        if discovery_queries:
+                            record.stage = "discovery"
+                            record.updated_at = now()
+                            await self.repository.update_collection(record)
+                            outcome = await self.discovery.discover(
+                                discovery_queries,
+                                discovery_request,
                             )
+                            discovery_providers = outcome.providers_attempted
+                            discovery_blocked = outcome.blocked
+                            record.errors.extend(outcome.errors)
+                            pending = self._merge_tasks(
+                                pending,
+                                outcome.tasks,
+                                record.collection_id,
+                            )
+                            if outcome.errors:
+                                logger.warning(
+                                    "discovery provider degraded",
+                                    extra=_log_extra(
+                                        record,
+                                        "discovery_error",
+                                        error_code=(
+                                            "DISCOVERY_BLOCKED"
+                                            if outcome.blocked
+                                            else "DISCOVERY_ERROR"
+                                        ),
+                                    ),
+                                )
                     pending = self._merge_tasks(pending, plan.tasks, record.collection_id)
+                    planning_complete = True
+
                 record.checkpoint = {
                     "queries": plan.queries,
                     "planner_notes": plan.notes,
+                    "planning_complete": planning_complete,
+                    "covered_intents": sorted(covered_intents),
+                    "discovery_queries": discovery_queries,
                     "discovery_providers": discovery_providers,
                     "discovery_blocked": discovery_blocked,
                     "pending_tasks": [self._task_dict(t) for t in pending],
                     "visited": record.checkpoint.get("visited", []),
                 }
                 await self.repository.update_collection(record)
-                if not pending:
+                if not pending and not record.checkpoint.get("visited"):
                     if discovery_blocked:
                         record.status = CollectionStatus.BLOCKED
                         record.partial = False
@@ -269,17 +300,25 @@ class CollectionOrchestrator:
             finally:
                 self._cancelled.discard(collection_id)
 
-    async def _initial_tasks(self, record: CollectionRecord) -> list[SourceTask]:
+    async def _initial_tasks(self, record: CollectionRecord) -> tuple[list[SourceTask], set[str]]:
         tasks: list[SourceTask] = []
         seen: set[str] = set()
+        covered_intents: set[str] = set()
+        requested_intents = set(record.request.intents)
         for adapter in self.registry.for_intents(record.request.intents):
-            for task in await adapter.discover(record.request):
+            discovered = await adapter.discover(record.request)
+            if discovered:
+                if "*" in adapter.intents:
+                    covered_intents.update(requested_intents)
+                else:
+                    covered_intents.update(requested_intents & adapter.intents)
+            for task in discovered:
                 task.metadata["collection_id"] = record.collection_id
                 key = f"{task.source_id}:{task.url}"
                 if key not in seen:
                     seen.add(key)
                     tasks.append(task)
-        return tasks
+        return tasks, covered_intents
 
     @staticmethod
     def _merge_tasks(
