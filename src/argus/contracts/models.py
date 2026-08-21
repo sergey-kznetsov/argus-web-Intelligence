@@ -19,6 +19,7 @@ class CollectionStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     PARTIAL = "partial"
+    BLOCKED = "blocked"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
