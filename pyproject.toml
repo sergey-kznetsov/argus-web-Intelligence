@@ -16,7 +16,7 @@ dependencies = [
   "typer>=0.15,<1",
   "uvicorn[standard]>=0.34,<1",
   "beautifulsoup4>=4.12,<5",
-  "crawlee[playwright]>=1.9.1,<2",
+  "crawlee[httpx,playwright]>=1.9.1,<2",
 ]
 
 [project.optional-dependencies]
