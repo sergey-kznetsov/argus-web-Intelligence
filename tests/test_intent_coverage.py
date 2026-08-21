@@ -3,10 +3,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from argus.contracts.models import CollectionRequest, Observation
+from argus.contracts.models import CollectionRequest, CollectionStatus, Observation
 from argus.history.snapshots import sha256_text
 from argus.orchestrator.service import CollectionOrchestrator
-from argus.research.discovery import DiscoveryOutcome
+from argus.research.discovery import DiscoveryOutcome, DiscoveryService
 from argus.research.planner import HeuristicResearchPlanner
 from argus.sources.base import SourceResult, SourceTask
 from argus.sources.registry import SourceRegistry
@@ -59,7 +59,23 @@ class RecordingDiscovery:
         return DiscoveryOutcome(providers_attempted=["fake"])
 
 
-async def run(tmp_path: Path, intents: list[str], discovery: RecordingDiscovery):
+class EmptyProvider:
+    name = "empty"
+
+    async def discover(self, queries, request):
+        del queries, request
+        return []
+
+    async def health(self):
+        return {"provider": self.name, "status": "ok"}
+
+
+class FakeGuard:
+    async def validate(self, url):
+        return url
+
+
+async def run(tmp_path: Path, intents: list[str], discovery):
     repo = SQLiteRepository(tmp_path / "db.sqlite")
     registry = SourceRegistry()
     registry.register(CoveringAdapter())
@@ -101,3 +117,13 @@ async def test_mixed_request_discovers_only_uncovered_intent(tmp_path: Path):
     assert len(discovery.requests) == 1
     _, discovered_intents = discovery.requests[0]
     assert discovered_intents == ["public_mentions"]
+
+
+@pytest.mark.asyncio
+async def test_mixed_request_with_empty_discovery_is_partial(tmp_path: Path):
+    discovery = DiscoveryService([EmptyProvider()], FakeGuard())
+    record = await run(tmp_path, ["school", "public_mentions"], discovery)
+    assert record is not None
+    assert record.status == CollectionStatus.PARTIAL
+    assert record.partial is True
+    assert any(error.code == "DISCOVERY_NO_RESULTS" for error in record.errors)
