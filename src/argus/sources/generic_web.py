@@ -10,6 +10,7 @@ from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.crawler.models import FetchResult
 from argus.history.snapshots import SnapshotService, sha256_text
+from argus.normalization.identity import stable_evidence_id, stable_observation_id
 from argus.recipes.compiler import AgentRecipeCompiler
 from argus.recipes.service import RecipeManager
 from argus.security.urls import UnsafeUrlError
@@ -172,6 +173,15 @@ class GenericWebAdapter:
             fetched.content_type,
         )
         text = self._main_text(fetched.text, fetched.content_type)
+        content_hash = sha256_text(text)
+        collection_id = str(task.metadata.get("collection_id", ""))
+        observation_id = stable_observation_id(
+            collection_id=collection_id,
+            source_id=self.source_id,
+            entity_type="document",
+            source_url=fetched.final_url,
+            content_hash=content_hash,
+        )
         data = {"runtime": fetched.runtime, "status_code": fetched.status_code}
         if fetched.metadata:
             data["fetch_metadata"] = fetched.metadata
@@ -180,7 +190,8 @@ class GenericWebAdapter:
             provenance["recipe_id"] = fetched.metadata["recipe_id"]
             provenance["recipe_version"] = fetched.metadata.get("recipe_version")
         observation = Observation(
-            collection_id=str(task.metadata.get("collection_id", "")),
+            observation_id=observation_id,
+            collection_id=collection_id,
             analysis_id=request.analysis_id,
             consumer=request.consumer,
             source=self.source_id,
@@ -190,14 +201,21 @@ class GenericWebAdapter:
             title=fetched.title,
             text=text[:100_000],
             data=data,
-            content_hash=sha256_text(text),
+            content_hash=content_hash,
             provenance=provenance,
             quality={"evidence_backed": True},
         )
+        evidence_text = text[:10_000]
         evidence = Evidence(
+            evidence_id=stable_evidence_id(
+                observation_id=observation.observation_id,
+                evidence_type="document",
+                source_url=fetched.final_url,
+                text=evidence_text,
+            ),
             observation_id=observation.observation_id,
             type="document",
-            text=text[:10_000],
+            text=evidence_text,
             source=EvidenceSource(
                 provider=self.source_id,
                 url=fetched.final_url,
