@@ -5,8 +5,13 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from argus.contracts.models import (
-    CollectionAccepted, CollectionRecord, CollectionRequest, CollectionResult,
-    CollectionStatus, SourceCoverage, StructuredError,
+    CollectionAccepted,
+    CollectionRecord,
+    CollectionRequest,
+    CollectionResult,
+    CollectionStatus,
+    SourceCoverage,
+    StructuredError,
 )
 from argus.research.planner import ResearchPlanner
 from argus.sources.base import SourceTask
@@ -19,8 +24,13 @@ def now():
 
 
 class CollectionOrchestrator:
-    def __init__(self, repository: Repository, registry: SourceRegistry, planner: ResearchPlanner,
-                 max_concurrency: int = 4) -> None:
+    def __init__(
+        self,
+        repository: Repository,
+        registry: SourceRegistry,
+        planner: ResearchPlanner,
+        max_concurrency: int = 4,
+    ) -> None:
         self.repository = repository
         self.registry = registry
         self.planner = planner
@@ -71,6 +81,14 @@ class CollectionOrchestrator:
         record = await self.repository.get_collection(collection_id)
         if not record:
             return None
+        if record.status in {
+            CollectionStatus.COMPLETED,
+            CollectionStatus.PARTIAL,
+            CollectionStatus.BLOCKED,
+            CollectionStatus.FAILED,
+            CollectionStatus.CANCELLED,
+        }:
+            return record
         self._cancelled.add(collection_id)
         task = self._jobs.get(collection_id)
         if task:
@@ -113,12 +131,32 @@ class CollectionOrchestrator:
                 pending = self._load_tasks(record)
                 if not pending:
                     pending = await self._initial_tasks(record)
+                    for task in plan.tasks:
+                        task.metadata["collection_id"] = record.collection_id
+                        pending.append(task)
                 record.checkpoint = {
                     "queries": plan.queries,
+                    "planner_notes": plan.notes,
                     "pending_tasks": [self._task_dict(t) for t in pending],
                     "visited": record.checkpoint.get("visited", []),
                 }
                 await self.repository.update_collection(record)
+                if not pending:
+                    record.errors.append(
+                        StructuredError(
+                            code="NO_SOURCE_TASKS",
+                            message=(
+                                "Research plan produced no executable source tasks. "
+                                "Provide seed URLs or enable a discovery adapter such as SERP."
+                            ),
+                            retryable=False,
+                        )
+                    )
+                    record.status = CollectionStatus.FAILED
+                    record.stage = "failed:no_sources"
+                    record.updated_at = now()
+                    await self.repository.update_collection(record)
+                    return
                 await self._process_tasks(record, pending)
             except asyncio.CancelledError:
                 raise
@@ -137,13 +175,19 @@ class CollectionOrchestrator:
                 record.stage = "failed"
                 record.updated_at = now()
                 await self.repository.update_collection(record)
+            finally:
+                self._cancelled.discard(collection_id)
 
     async def _initial_tasks(self, record: CollectionRecord) -> list[SourceTask]:
         tasks: list[SourceTask] = []
+        seen: set[str] = set()
         for adapter in self.registry.for_intents(record.request.intents):
             for task in await adapter.discover(record.request):
                 task.metadata["collection_id"] = record.collection_id
-                tasks.append(task)
+                key = f"{task.source_id}:{task.url}"
+                if key not in seen:
+                    seen.add(key)
+                    tasks.append(task)
         return tasks
 
     async def _process_tasks(self, record: CollectionRecord, pending: list[SourceTask]) -> None:
@@ -169,10 +213,12 @@ class CollectionOrchestrator:
                 coverage.observations = len(result.observations)
                 coverage.blocked = result.blocked
                 coverage.status = "blocked" if result.blocked else "ok"
+                queued_keys = {f"{item.source_id}:{item.url}" for item in pending}
                 for child in result.discovered_tasks:
                     child.metadata["collection_id"] = record.collection_id
                     child_key = f"{child.source_id}:{child.url}"
-                    if child_key not in visited:
+                    if child_key not in visited and child_key not in queued_keys:
+                        queued_keys.add(child_key)
                         pending.append(child)
             except Exception as exc:
                 coverage.status = "error"
@@ -201,18 +247,42 @@ class CollectionOrchestrator:
             await self.repository.update_collection(record)
 
         observations = await self.repository.list_observations(record.collection_id)
-        had_errors = bool(record.errors) or any(item.blocked for item in record.coverage)
-        if had_errors and record.request.allow_partial and observations:
-            record.status = CollectionStatus.PARTIAL
-            record.partial = True
-        elif had_errors and not observations:
+        blocked = any(item.blocked for item in record.coverage)
+        source_errors = bool(record.errors)
+        budget_exhausted = bool(pending)
+        if budget_exhausted:
+            record.errors.append(
+                StructuredError(
+                    code="PAGE_BUDGET_EXHAUSTED",
+                    message=f"Collection stopped after reaching max_pages={total_budget}.",
+                    retryable=False,
+                )
+            )
+
+        if observations and (blocked or source_errors or budget_exhausted):
+            if record.request.allow_partial:
+                record.status = CollectionStatus.PARTIAL
+                record.partial = True
+            else:
+                record.status = CollectionStatus.FAILED
+                record.partial = False
+        elif not observations and blocked and not source_errors:
+            record.status = CollectionStatus.BLOCKED
+            record.partial = False
+        elif not observations and (source_errors or budget_exhausted):
             record.status = CollectionStatus.FAILED
+            record.partial = False
         else:
             record.status = CollectionStatus.COMPLETED
+            record.partial = False
+
         record.progress_percent = 100
-        record.stage = "completed"
+        record.stage = record.status.value
         record.updated_at = now()
-        record.checkpoint = {**record.checkpoint, "pending_tasks": []}
+        record.checkpoint = {
+            **record.checkpoint,
+            "pending_tasks": [self._task_dict(t) for t in pending] if budget_exhausted else [],
+        }
         await self.repository.update_collection(record)
 
     @staticmethod
