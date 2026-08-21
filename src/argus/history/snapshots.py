@@ -16,16 +16,26 @@ class SnapshotService:
         self.repository = repository
         self.extractor_version = extractor_version
 
-    async def capture(self, source_id: str, source_url: str, content: str,
-                      content_type: str | None = None) -> Snapshot:
+    async def capture(
+        self,
+        source_id: str,
+        source_url: str,
+        content: str,
+        content_type: str | None = None,
+    ) -> Snapshot:
         previous = await self.repository.latest_snapshot(source_url)
         content_hash = sha256_text(content)
         diff = None
         if previous and previous.content_hash != content_hash:
-            diff = "\n".join(difflib.unified_diff(
-                previous.content.splitlines(), content.splitlines(),
-                fromfile=previous.snapshot_id, tofile="current", lineterm="",
-            ))
+            diff = "\n".join(
+                difflib.unified_diff(
+                    previous.content.splitlines(),
+                    content.splitlines(),
+                    fromfile=previous.snapshot_id,
+                    tofile="current",
+                    lineterm="",
+                )
+            )
         snapshot = Snapshot(
             source_id=source_id,
             source_url=source_url,
@@ -36,6 +46,7 @@ class SnapshotService:
             previous_snapshot_id=previous.snapshot_id if previous else None,
             diff=diff,
         )
-        if not previous or previous.content_hash != content_hash:
-            await self.repository.add_snapshot(snapshot)
+        # Every successful collection is a historical observation, even when the content is unchanged.
+        # This preserves a real collected_at timestamp and guarantees that provenance references exist.
+        await self.repository.add_snapshot(snapshot)
         return snapshot
