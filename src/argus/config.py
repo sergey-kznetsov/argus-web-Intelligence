@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     browser_serp_enabled: bool = True
     browser_serp_max_results_per_query: int = Field(default=5, ge=1, le=20)
     browser_serp_wait_ms: int = Field(default=750, ge=250, le=5_000)
+    sitemap_discovery_enabled: bool = True
+    sitemap_max_urls: int = Field(default=20, ge=1, le=100)
+    sitemap_max_indexes: int = Field(default=5, ge=1, le=20)
 
     overpass_url: str | None = None
     overpass_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
