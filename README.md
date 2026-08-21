@@ -6,9 +6,9 @@ Core rule: **ARGUS = find + obtain + prove + store. Consumers = interpret + calc
 
 ## Current foundation
 
-The service includes strict protocol `1.0.0` contracts, asynchronous collections, SQLite storage behind a repository abstraction, persistent Crawlee FAST/BROWSER runtimes, Generic Web and RSS/Atom adapters, Research Planner with optional local Ollama, recursive research tasks, ordered discovery providers, agent abstraction, SiteRecipe replay/recovery, SHA-256 snapshots/diffs, Bearer authentication, redirect-aware SSRF validation, resource/rate limits, cancellation, restart checkpoints, structured secret-safe logging, CLI, tests and CI.
+The service includes strict protocol `1.0.0` contracts, asynchronous collections, SQLite storage behind a repository abstraction, persistent Crawlee FAST/BROWSER runtimes, Generic Web and RSS/Atom adapters, Research Planner with optional local Ollama, bounded recursive historical research, ordered discovery providers, optional Wayback CDX archive lookup, agent abstraction, SiteRecipe replay/recovery, SHA-256 snapshots/diffs, Bearer authentication, redirect-aware SSRF validation, resource/rate limits, cancellation, restart checkpoints, operational source health, structured secret-safe logging, CLI, tests and CI.
 
-Discovery is provider-neutral. Search results only seed destination URLs; snippets are never treated as factual evidence. Destination pages must be fetched by ARGUS before Observation/Evidence is created. If configured providers complete normally but produce no valid destination URL, ARGUS records `DISCOVERY_NO_RESULTS` so a mixed request cannot be reported as fully complete when only some intents were covered.
+Discovery is provider-neutral. Search results only seed destination URLs; snippets are never treated as factual evidence. Destination pages must be fetched by ARGUS before Observation/Evidence is created. If configured providers complete normally but produce no valid destination URL, ARGUS records `DISCOVERY_NO_RESULTS` so a mixed request cannot be reported as fully complete when only some intents were covered. Fully blocked discovery without any valid destination produces `DISCOVERY_INCOMPLETE`; ARGUS never attempts to bypass the challenge.
 
 `argus.maps` provides provider-neutral map contracts. The first actual map implementation is optional OpenStreetMap Overpass. It is registered only when `ARGUS_OVERPASS_URL` is configured, and its places enter the same collection Observation/Evidence/snapshot pipeline as web sources. Address-only map requests can additionally use an explicitly configured Nominatim geocoder. 2GIS, Yandex Maps and Google Maps remain separate future providers rather than hardcoded branches.
 
@@ -76,7 +76,7 @@ The provider uses SearXNG's documented `/search` HTTP API with POST and `format=
 
 ### Fallback: DuckDuckGo HTML through Playwright
 
-The fallback uses the existing BROWSER runtime and submits DuckDuckGo's public no-JS HTML search form. It is intentionally low volume and does not reverse-engineer or call private search APIs.
+The fallback uses the existing BROWSER runtime and submits DuckDuckGo's public no-JS search form. It is intentionally low volume and does not reverse-engineer or call private search APIs.
 
 ```bash
 ARGUS_BROWSER_SERP_ENABLED=true
@@ -85,6 +85,37 @@ ARGUS_BROWSER_SERP_WAIT_MS=750
 ```
 
 Disable it with `ARGUS_BROWSER_SERP_ENABLED=false` when only explicitly configured discovery providers are desired.
+
+## Recursive historical research
+
+The neutral `historical_context` intent enables a second research layer after factual pages have already been collected. `HistoricalBranchPlanner` can use conservative labels from Observation `title`, `name`, `former_name`, `old_name`, `operator` and `brand` fields to form follow-up search queries.
+
+These labels are navigation hypotheses only. They do not become facts until the follow-up destination is opened and produces its own Observation/Evidence.
+
+Historical recursion is bounded by `constraints.max_depth`, a maximum of three follow-up queries per expansion, a maximum of twelve branch queries per collection, the normal `max_pages` page budget, and checkpoint de-duplication. `historical_branch_queries` is persisted so a process restart does not repeat completed branch searches.
+
+An empty secondary search ends that branch normally. A blocked/error secondary search degrades an otherwise useful result to `partial` rather than silently reporting full coverage.
+
+## Optional Wayback CDX historical source
+
+ARGUS can use a configured Wayback CDX server for exact-URL historical capture discovery. No CDX endpoint is enabled automatically.
+
+For the Internet Archive public CDX endpoint, an operator may explicitly configure:
+
+```bash
+ARGUS_WAYBACK_CDX_URL=https://web.archive.org/cdx/search/cdx
+ARGUS_WAYBACK_CAPTURE_BASE_URL=https://web.archive.org/web
+ARGUS_WAYBACK_MAX_CAPTURES=5
+ARGUS_WAYBACK_MIN_INTERVAL_SECONDS=2
+```
+
+The integration performs exact-URL lookups only. It requests a bounded set of unique successful captures and does not perform bulk domain/prefix crawling.
+
+A CDX row creates `archive_capture_index` Observation/Evidence proving that the capture exists. ARGUS then schedules the concrete `.../web/<timestamp>id_/<original-url>` capture as a normal `generic_web` task. The archived page content is therefore not trusted from CDX metadata: it must pass through the same fetch, SSRF, size-limit, snapshot and Evidence pipeline as any other page.
+
+When `historical_context` discovery finds a current URL and Wayback is configured, ARGUS automatically creates both the current-page task and an exact archive lookup companion task. Manual historical seed URLs also trigger Wayback lookup.
+
+Archive access-control/rate blocks are surfaced as structured coverage. ARGUS does not bypass archive restrictions. A URL with no captures is treated as a normal empty archive branch, not as a collection failure.
 
 ## Optional OpenStreetMap Overpass map source
 
@@ -111,7 +142,7 @@ No public Nominatim endpoint is enabled automatically. The selected geocoding ca
 
 Overpass uses `territory.radius_meters` or a 1000 m default. Each returned place has a direct `openstreetmap.org` source URL, ODbL attribution, deterministic Observation/Evidence IDs, and a persisted snapshot of normalized map facts. Map/geocoding provider access blocks are returned as structured `blocked`/`partial` coverage rather than bypassed.
 
-Direct Overpass/Nominatim HTTP clients have a process-local minimum interval gate in addition to their remote service policies. The default is one request start per second per provider instance; a self-hosted deployment can explicitly set the corresponding `*_MIN_INTERVAL_SECONDS=0` if that is appropriate for its own capacity.
+Direct Overpass/Nominatim/Wayback HTTP clients have process-local minimum interval gates in addition to remote service policies. They share the bounded direct-provider 429/503 retry policy; valid `Retry-After` is respected and otherwise exponential delay is used. A self-hosted deployment can explicitly lower the corresponding `*_MIN_INTERVAL_SECONDS` where appropriate.
 
 ## API
 
@@ -126,7 +157,9 @@ Direct Overpass/Nominatim HTTP clients have a process-local minimum interval gat
 
 `POST /v1/collections` returns `202 Accepted`. Work continues asynchronously and survives process restarts through persisted task/checkpoint state. Reprocessing the same source content within the same collection uses deterministic Observation/Evidence identities to avoid duplicates after a crash/restart window.
 
-`GET /v1/capabilities` lists only actually configured discovery, geocoding and map providers. A provider marked `configured` has valid local configuration; it is not a claim that the external endpoint has just been probed successfully.
+`GET /v1/capabilities` lists only actually configured discovery, archive, geocoding and map providers.
+
+`GET /v1/sources/{id}/health` distinguishes readiness from observed runtime state. Before any factual request a source reports `ready`; after success `ok`; after a partial/error result `degraded`; after an access/rate block `blocked`. The response also contains `adapter_status`, `last_attempt_at`, `last_success_at`, `last_failure_at` and `last_error_code`. Health reporting itself does not generate external probe traffic.
 
 ## Security boundary
 
@@ -144,7 +177,7 @@ The core has an `AgentBackend` interface. Browser Use + Ollama is the default op
 
 The current standalone runtime uses SQLite. The orchestrator depends on the repository protocol rather than SQLite directly, so PostgreSQL can be added later without rewriting collection logic.
 
-Every successful factual collection creates persisted temporal evidence. Web documents store fetched content snapshots; map places store canonical normalized fact snapshots. Unchanged facts still create a temporal snapshot; changed content additionally stores a diff against the previous snapshot.
+Every successful factual collection creates persisted temporal evidence. Web documents store fetched content snapshots; map places store canonical normalized fact snapshots; archive capture-index rows store canonical capture metadata snapshots. Unchanged facts still create a temporal snapshot; changed content additionally stores a diff against the previous snapshot.
 
 ## Map provider foundation
 
