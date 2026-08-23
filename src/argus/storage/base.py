@@ -10,6 +10,16 @@ class IdempotencyConflictError(RuntimeError):
     """An explicit idempotency key was reused for a different request."""
 
 
+class QueueCapacityError(RuntimeError):
+    """A new collection cannot be admitted because an active queue limit is full."""
+
+    def __init__(self, scope: str, current: int, limit: int) -> None:
+        self.scope = scope
+        self.current = current
+        self.limit = limit
+        super().__init__(f"{scope} active collection limit reached: {current}/{limit}")
+
+
 class Repository(Protocol):
     async def initialize(self) -> None: ...
     async def close(self) -> None: ...
@@ -21,6 +31,8 @@ class Repository(Protocol):
         *,
         idempotency_key: str,
         request_hash: str,
+        max_active_collections: int | None = None,
+        max_active_per_consumer: int | None = None,
     ) -> tuple[CollectionRecord, bool]: ...
     async def get_collection(self, collection_id: str) -> CollectionRecord | None: ...
     async def list_recoverable_collections(self) -> list[CollectionRecord]: ...
