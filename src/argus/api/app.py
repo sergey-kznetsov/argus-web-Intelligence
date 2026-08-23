@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
 
@@ -18,10 +19,14 @@ from argus.contracts.models import (
     CollectionRecord,
     CollectionRequest,
     CollectionResult,
+    CollectionStatus,
+    utcnow,
 )
+from argus.idempotency import request_fingerprint, storage_idempotency_key
 from argus.module_protocol import MODULE_ID, runtime_manifest
 from argus.observability import configure_logging
 from argus.security.auth import bearer_dependency, ensure_token
+from argus.storage.base import IdempotencyConflictError
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -119,7 +124,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         dependencies=[Depends(require_bearer)],
     )
     async def create_collection(request: CollectionRequest):
-        return await orchestrator.submit(request)
+        if settings.execution_role != "api":
+            return await orchestrator.submit(request)
+
+        fingerprint = request_fingerprint(request)
+        idempotency_key = storage_idempotency_key(request, fingerprint)
+        timestamp = utcnow()
+        record = CollectionRecord(
+            collection_id=str(uuid4()),
+            request=request,
+            status=CollectionStatus.QUEUED,
+            created_at=timestamp,
+            updated_at=timestamp,
+            stage="queued",
+        )
+        try:
+            stored, _created = await repository.create_collection_idempotent(
+                record,
+                idempotency_key=idempotency_key,
+                request_hash=fingerprint,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="idempotency key is already used by a different collection request",
+            ) from exc
+        return CollectionAccepted(
+            collection_id=stored.collection_id,
+            status=stored.status,
+        )
 
     @app.get(
         "/v1/collections/{collection_id}",
