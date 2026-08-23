@@ -103,6 +103,35 @@ async def test_nominatim_rate_limit_is_blocked_after_retry_budget(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_nominatim_does_not_retry_before_long_retry_after(tmp_path):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "120"},
+            content=b"rate limited",
+            request=request,
+        )
+
+    geocoder = NominatimGeocoder(
+        settings(
+            tmp_path,
+            direct_provider_max_retries=2,
+            direct_provider_retry_max_seconds=30,
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    result = await geocoder.search("Ижевск")
+
+    assert calls == 1
+    assert result.blocked is True
+    assert result.errors[0].code == "GEOCODING_PROVIDER_BLOCKED"
+
+
+@pytest.mark.asyncio
 async def test_nominatim_retries_503_then_succeeds(tmp_path):
     calls = 0
 
