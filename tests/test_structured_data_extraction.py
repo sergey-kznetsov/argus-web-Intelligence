@@ -9,6 +9,8 @@ def extractor(**overrides):
         "max_cell_chars": 100,
         "max_json_depth": 10,
         "max_json_nodes": 100,
+        "max_xml_depth": 10,
+        "max_xml_nodes": 100,
     }
     defaults.update(overrides)
     return BoundedStructuredDataExtractor(**defaults)
@@ -98,6 +100,68 @@ def test_non_utf8_network_json_is_rejected_instead_of_guessed():
 
     assert result.payload is None
     assert result.error_code == "STRUCTURED_DATA_DECODE_ERROR"
+
+
+def test_xml_preserves_tree_attributes_text_and_namespaces():
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<root xmlns="urn:test" id="1">'
+        '<name>Школа</name><value unit="шт">3</value>'
+        '</root>'
+    ).encode("utf-8")
+
+    result = extractor().extract(
+        body,
+        content_type="application/xml",
+        url="https://example.com/data.xml",
+    )
+
+    assert result.error_code is None
+    assert result.document_type == "xml"
+    assert result.encoding == "utf-8"
+    assert result.node_count == 3
+    assert result.max_depth == 1
+    assert result.payload["tag"] == "{urn:test}root"
+    assert result.payload["attributes"] == {"id": "1"}
+    assert result.payload["children"][0] == {"tag": "{urn:test}name", "text": "Школа"}
+    assert result.payload["children"][1]["attributes"] == {"unit": "шт"}
+
+
+def test_xml_declaration_allows_plain_text_detection():
+    result = extractor().extract(
+        b'<?xml version="1.0"?><root><item>ok</item></root>',
+        content_type="text/plain",
+        url="https://example.com/raw",
+    )
+
+    assert result.error_code is None
+    assert result.document_type == "xml"
+    assert result.payload["children"][0]["text"] == "ok"
+
+
+def test_unsafe_xml_entity_is_rejected_without_expansion():
+    body = b'<!DOCTYPE root [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><root>&xxe;</root>'
+
+    result = extractor().extract(
+        body,
+        content_type="application/xml",
+        url="https://example.com/data.xml",
+    )
+
+    assert result.payload is None
+    assert result.error_code == "STRUCTURED_DATA_PARSE_ERROR"
+
+
+def test_xml_node_limit_fails_explicitly_instead_of_truncating():
+    result = extractor(max_xml_nodes=3).extract(
+        b"<root><a/><b/><c/></root>",
+        content_type="application/xml",
+        url="https://example.com/data.xml",
+    )
+
+    assert result.payload is None
+    assert result.error_code == "STRUCTURED_DATA_LIMIT_EXCEEDED"
+    assert result.truncated is False
 
 
 def test_json_container_limit_fails_explicitly_instead_of_truncating():
