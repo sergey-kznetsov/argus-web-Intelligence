@@ -90,6 +90,20 @@ async def test_postgres_bounded_result_and_keyset_pages():
         assert stats.evidence_count == 3
         assert stats.stored_bytes > 0
 
+        async with repository._pool.connection() as conn:
+            access = await (
+                await conn.execute(
+                    """
+                    SELECT last_accessed_at
+                    FROM argus.collection_result_access
+                    WHERE collection_id=%s
+                    """,
+                    (collection_id,),
+                )
+            ).fetchone()
+        assert access is not None
+        assert access["last_accessed_at"] is not None
+
         with pytest.raises(ResultTooLargeError):
             await read_store.read_bounded_result(
                 collection_id,
