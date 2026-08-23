@@ -61,6 +61,10 @@ class BoundedStructuredDataExtractor:
     }
     _DELIMITED_FALLBACK_ENCODINGS = ("utf-8-sig", "cp1251")
     _XML_ENCODING_RE = re.compile(br"encoding\s*=\s*['\"]([A-Za-z0-9._:-]+)['\"]", re.I)
+    _XML_DECL_ENCODING_TEXT_RE = re.compile(
+        r"(<\?xml\b[^?>]*?)\s+encoding\s*=\s*(['\"])[^'\"]+\2",
+        re.I,
+    )
 
     def __init__(
         self,
@@ -200,9 +204,16 @@ class BoundedStructuredDataExtractor:
         body: bytes,
         content_type: str | None,
     ) -> StructuredDataExtraction:
-        encoding = self._xml_encoding(body, content_type)
+        parse_input, encoding = self._xml_parse_input(body, content_type)
+        if parse_input is None:
+            return StructuredDataExtraction(
+                document_type="xml",
+                encoding=encoding,
+                error_code="STRUCTURED_DATA_DECODE_ERROR",
+                error_message="XML bytes do not match the authoritative transport charset",
+            )
         try:
-            root = DefusedET.fromstring(body)
+            root = DefusedET.fromstring(parse_input)
         except (DefusedXmlException, ParseError, ValueError, RecursionError) as exc:
             return StructuredDataExtraction(
                 document_type="xml",
@@ -437,6 +448,25 @@ class BoundedStructuredDataExtractor:
         if tail:
             node["tail"] = tail
         return node
+
+    @classmethod
+    def _xml_parse_input(
+        cls,
+        body: bytes,
+        content_type: str | None,
+    ) -> tuple[bytes | str | None, str]:
+        bom_encoding = cls._bom_encoding(body)
+        if bom_encoding:
+            return body, bom_encoding
+        declared_http = cls._declared_charset(content_type)
+        if declared_http:
+            try:
+                text = body.decode(declared_http, errors="strict")
+            except (LookupError, UnicodeDecodeError):
+                return None, declared_http
+            text = cls._XML_DECL_ENCODING_TEXT_RE.sub(r"\1", text, count=1)
+            return text, declared_http
+        return body, cls._xml_encoding(body, content_type)
 
     @classmethod
     def _xml_encoding(cls, body: bytes, content_type: str | None) -> str:
