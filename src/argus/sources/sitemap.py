@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import zlib
 from urllib.parse import urldefrag, unquote, urljoin, urlsplit
 from xml.etree.ElementTree import Element, ParseError
 
@@ -26,6 +27,11 @@ class SitemapDiscoveryAdapter:
 
     source_id = "site_discovery"
     intents: set[str] = set()
+
+    _GZIP_MEDIA_TYPES = {
+        "application/gzip",
+        "application/x-gzip",
+    }
 
     def __init__(self, settings: Settings, fast: FastCrawlerRuntime) -> None:
         self.settings = settings
@@ -72,6 +78,8 @@ class SitemapDiscoveryAdapter:
             "mode": "robots_sitemap",
             "max_urls": self.settings.sitemap_max_urls,
             "max_indexes": self.settings.sitemap_max_indexes,
+            "gzip_sitemaps": True,
+            "gzip_max_uncompressed_bytes": self.settings.max_response_bytes,
         }
 
     def _robots_tasks(
@@ -100,7 +108,7 @@ class SitemapDiscoveryAdapter:
         seen: set[str] = set()
         for raw in candidates:
             url = urldefrag(raw)[0]
-            if url in seen or not self._same_host_url(url, root_host) or self._is_gzip(url):
+            if url in seen or not self._same_host_url(url, root_host):
                 continue
             seen.add(url)
             tasks.append(
@@ -129,8 +137,11 @@ class SitemapDiscoveryAdapter:
     ) -> list[SourceTask]:
         if fetched is None or fetched.blocked:
             return []
+        payload = self._xml_payload(fetched)
+        if payload is None:
+            return []
         try:
-            root = DefusedET.fromstring(fetched.text)
+            root = DefusedET.fromstring(payload)
         except (DefusedXmlException, ParseError):
             return []
 
@@ -143,6 +154,39 @@ class SitemapDiscoveryAdapter:
         if root_name == "urlset":
             return self._page_tasks(task, root, root_host, request)
         return []
+
+    def _xml_payload(self, fetched: FetchResult) -> bytes | str | None:
+        body = fetched.body
+        if self._is_gzip_payload(fetched):
+            if body is None:
+                return None
+            return self._bounded_gzip_decompress(body)
+        if body is not None:
+            return body
+        return fetched.text
+
+    def _bounded_gzip_decompress(self, body: bytes) -> bytes | None:
+        limit = self.settings.max_response_bytes
+        try:
+            decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            payload = decompressor.decompress(body, limit + 1)
+        except zlib.error:
+            return None
+        if len(payload) > limit:
+            return None
+        if decompressor.unconsumed_tail or not decompressor.eof:
+            return None
+        if decompressor.unused_data and decompressor.unused_data.strip(b"\x00"):
+            return None
+        return payload
+
+    @classmethod
+    def _is_gzip_payload(cls, fetched: FetchResult) -> bool:
+        body = fetched.body or b""
+        if body.startswith(b"\x1f\x8b"):
+            return True
+        media_type = str(fetched.content_type or "").split(";", 1)[0].strip().casefold()
+        return media_type in cls._GZIP_MEDIA_TYPES
 
     def _index_tasks(
         self,
@@ -162,7 +206,7 @@ class SitemapDiscoveryAdapter:
             if not raw:
                 continue
             url = urldefrag(urljoin(task.url, raw))[0]
-            if url in seen or not self._same_host_url(url, root_host) or self._is_gzip(url):
+            if url in seen or not self._same_host_url(url, root_host):
                 continue
             seen.add(url)
             tasks.append(
@@ -278,7 +322,3 @@ class SitemapDiscoveryAdapter:
         if parsed.username or parsed.password:
             return False
         return parsed.hostname.lower().strip(".") == root_host
-
-    @staticmethod
-    def _is_gzip(url: str) -> bool:
-        return urlsplit(url).path.casefold().endswith(".gz")
