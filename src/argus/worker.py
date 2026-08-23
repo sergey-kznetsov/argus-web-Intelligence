@@ -281,6 +281,9 @@ class CollectionWorker:
                     idempotency_window_seconds=self.settings.idempotency_window_seconds,
                     collection_retention_days=self.settings.retention_collection_days,
                     snapshot_retention_days=self.settings.retention_snapshot_days,
+                    worker_registration_retention_days=(
+                        self.settings.retention_worker_registration_days
+                    ),
                     batch_size=self.settings.retention_batch_size,
                 )
                 if any(result.as_dict().values()):
