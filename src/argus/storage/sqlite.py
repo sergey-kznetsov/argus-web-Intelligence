@@ -107,7 +107,12 @@ class SQLiteRepository:
         *,
         idempotency_key: str,
         request_hash: str,
+        max_active_collections: int | None = None,
+        max_active_per_consumer: int | None = None,
     ) -> tuple[CollectionRecord, bool]:
+        # Queue admission limits are a server/PostgreSQL concern. Embedded SQLite keeps
+        # the same call signature so it remains substitutable for idempotency tests/tools.
+        del max_active_collections, max_active_per_consumer
         return await self._run(
             self._create_collection_idempotent_sync,
             record,
