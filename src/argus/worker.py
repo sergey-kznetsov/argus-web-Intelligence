@@ -37,9 +37,7 @@ class CollectionWorker:
             raise TypeError("CollectionWorker requires PostgresRepository")
         self.repository = self.services.repository
         self.orchestrator = self.services.orchestrator
-        self.worker_id = (
-            f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:12]}"
-        )
+        self.worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:12]}"
         self.probe_host = probe_host
         self.probe_port = probe_port
         self._stop = asyncio.Event()
@@ -185,10 +183,11 @@ class CollectionWorker:
                     execute_task.cancel()
             await execute_task
         finally:
+            if not execute_task.done():
+                execute_task.cancel()
             if not lease_task.done():
                 lease_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await lease_task
+            await asyncio.gather(execute_task, lease_task, return_exceptions=True)
             with suppress(Exception):
                 await self.repository.release_collection_lease(
                     collection_id,
