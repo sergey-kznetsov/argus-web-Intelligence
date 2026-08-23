@@ -168,20 +168,7 @@ class AtomicCollectionOrchestrator(CollectionOrchestrator):
                             self._task_dict(item) for item in working_pending
                         ],
                     }
-
-                    await self._commit_task_success(
-                        working_record,
-                        observations=result.observations,
-                        evidence=result.evidence,
-                        snapshots=list(snapshot_batch.snapshots),
-                    )
-
-                record = working_record
-                pending = working_pending
-                visited = working_visited
-                historical_branch_queries = working_historical_queries
-                processed = working_processed
-                continue
+                    task_snapshots = list(snapshot_batch.snapshots)
 
             except asyncio.CancelledError:
                 raise
@@ -207,24 +194,40 @@ class AtomicCollectionOrchestrator(CollectionOrchestrator):
                         error_code="SOURCE_ERROR",
                     ),
                 )
+                coverage.finished_at = now()
+                record.coverage.append(coverage)
+                visited.add(key)
+                processed += 1
+                record.progress_percent = min(
+                    99,
+                    int(processed / max(1, total_budget) * 100),
+                )
+                record.stage = f"collecting:{task.source_id}"
+                record.updated_at = now()
+                record.checkpoint = {
+                    **record.checkpoint,
+                    "visited": sorted(visited),
+                    "historical_branch_queries": sorted(historical_branch_queries),
+                    "pending_tasks": [self._task_dict(item) for item in pending],
+                }
+                await self.repository.update_collection(record)
+                continue
 
-            coverage.finished_at = now()
-            record.coverage.append(coverage)
-            visited.add(key)
-            processed += 1
-            record.progress_percent = min(
-                99,
-                int(processed / max(1, total_budget) * 100),
+            # Storage commit is deliberately outside the source-error handler. Any database
+            # failure or lost lease aborts this worker attempt with the task still unvisited
+            # in persisted state, so a replacement worker can replay it safely.
+            await self._commit_task_success(
+                working_record,
+                observations=result.observations,
+                evidence=result.evidence,
+                snapshots=task_snapshots,
             )
-            record.stage = f"collecting:{task.source_id}"
-            record.updated_at = now()
-            record.checkpoint = {
-                **record.checkpoint,
-                "visited": sorted(visited),
-                "historical_branch_queries": sorted(historical_branch_queries),
-                "pending_tasks": [self._task_dict(item) for item in pending],
-            }
-            await self.repository.update_collection(record)
+
+            record = working_record
+            pending = working_pending
+            visited = working_visited
+            historical_branch_queries = working_historical_queries
+            processed = working_processed
 
         if await self._is_cancelled(record.collection_id):
             return
