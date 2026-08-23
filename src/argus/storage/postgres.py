@@ -9,8 +9,10 @@ from psycopg_pool import AsyncConnectionPool
 
 from argus.contracts.models import CollectionRecord, Evidence, Observation, Snapshot
 from argus.recipes.models import SiteRecipe
-from argus.storage.base import IdempotencyConflictError
+from argus.storage.base import IdempotencyConflictError, QueueCapacityError
 from argus.storage.postgres_migrations import EXPECTED_SCHEMA_VERSION
+
+_ADMISSION_LOCK_KEY = 0x415247555341444D  # Stable signed-safe bigint: "ARGUSADM".
 
 
 class PostgresRepository:
@@ -130,9 +132,35 @@ class PostgresRepository:
         *,
         idempotency_key: str,
         request_hash: str,
+        max_active_collections: int | None = None,
+        max_active_per_consumer: int | None = None,
     ) -> tuple[CollectionRecord, bool]:
+        """Atomically return an existing retry or admit one new server collection."""
+
         async with self._pool.connection() as conn:
             async with conn.transaction():
+                # Serialize the short admission critical section across API processes. This
+                # keeps count+insert capacity decisions atomic without a process-local lock.
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(%s)",
+                    (_ADMISSION_LOCK_KEY,),
+                )
+
+                existing = await self._idempotent_collection(
+                    conn,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                )
+                if existing is not None:
+                    return existing, False
+
+                await self._enforce_queue_capacity(
+                    conn,
+                    consumer=record.request.consumer,
+                    max_active_collections=max_active_collections,
+                    max_active_per_consumer=max_active_per_consumer,
+                )
+
                 await conn.execute(
                     """
                     INSERT INTO argus.collections(
@@ -147,13 +175,11 @@ class PostgresRepository:
                         record.updated_at,
                     ),
                 )
-                cursor = await conn.execute(
+                await conn.execute(
                     """
                     INSERT INTO argus.collection_idempotency(
                       idempotency_key, collection_id, request_hash, created_at
                     ) VALUES(%s, %s, %s, %s)
-                    ON CONFLICT (idempotency_key) DO NOTHING
-                    RETURNING collection_id
                     """,
                     (
                         idempotency_key,
@@ -162,37 +188,82 @@ class PostgresRepository:
                         record.created_at,
                     ),
                 )
-                inserted = await cursor.fetchone()
-                if inserted is not None:
-                    return record, True
+                return record, True
 
-                await conn.execute(
-                    "DELETE FROM argus.collections WHERE collection_id=%s",
-                    (record.collection_id,),
+    async def _idempotent_collection(
+        self,
+        conn: Any,
+        *,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> CollectionRecord | None:
+        cursor = await conn.execute(
+            """
+            SELECT collection_id, request_hash
+            FROM argus.collection_idempotency
+            WHERE idempotency_key=%s
+            """,
+            (idempotency_key,),
+        )
+        mapping = await cursor.fetchone()
+        if mapping is None:
+            return None
+        if str(mapping["request_hash"]) != request_hash:
+            raise IdempotencyConflictError(
+                "idempotency key is already bound to another collection request"
+            )
+        cursor = await conn.execute(
+            "SELECT body FROM argus.collections WHERE collection_id=%s",
+            (str(mapping["collection_id"]),),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError("idempotency mapping references a missing collection")
+        return CollectionRecord.model_validate(row["body"])
+
+    async def _enforce_queue_capacity(
+        self,
+        conn: Any,
+        *,
+        consumer: str,
+        max_active_collections: int | None,
+        max_active_per_consumer: int | None,
+    ) -> None:
+        if max_active_per_consumer is not None:
+            cursor = await conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM argus.collections
+                WHERE status IN ('queued', 'running')
+                  AND body #>> '{request,consumer}' = %s
+                """,
+                (consumer,),
+            )
+            row = await cursor.fetchone()
+            current = int(row["count"]) if row else 0
+            if current >= max_active_per_consumer:
+                raise QueueCapacityError(
+                    "consumer",
+                    current,
+                    max_active_per_consumer,
                 )
-                cursor = await conn.execute(
-                    """
-                    SELECT collection_id, request_hash
-                    FROM argus.collection_idempotency
-                    WHERE idempotency_key=%s
-                    """,
-                    (idempotency_key,),
+
+        if max_active_collections is not None:
+            cursor = await conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM argus.collections
+                WHERE status IN ('queued', 'running')
+                """
+            )
+            row = await cursor.fetchone()
+            current = int(row["count"]) if row else 0
+            if current >= max_active_collections:
+                raise QueueCapacityError(
+                    "global",
+                    current,
+                    max_active_collections,
                 )
-                mapping = await cursor.fetchone()
-                if mapping is None:
-                    raise RuntimeError("idempotency mapping disappeared during collection create")
-                if str(mapping["request_hash"]) != request_hash:
-                    raise IdempotencyConflictError(
-                        "idempotency key is already bound to another collection request"
-                    )
-                cursor = await conn.execute(
-                    "SELECT body FROM argus.collections WHERE collection_id=%s",
-                    (str(mapping["collection_id"]),),
-                )
-                row = await cursor.fetchone()
-                if row is None:
-                    raise RuntimeError("idempotency mapping references a missing collection")
-                return CollectionRecord.model_validate(row["body"]), False
 
     async def update_collection(self, record: CollectionRecord) -> None:
         """Persist collection state without allowing stale workers to resurrect cancellation."""
