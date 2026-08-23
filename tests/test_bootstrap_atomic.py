@@ -35,6 +35,7 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     adapter = getattr(tracked, "_adapter", None)
     assert isinstance(adapter, DocumentAwareGenericWebAdapter)
     assert isinstance(adapter, OfficeAwareGenericWebAdapter)
+
     extractor = adapter.structured_data_extractor
     assert extractor.max_bytes == 123_456
     assert extractor.max_records == 7
@@ -44,3 +45,15 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     assert extractor.max_json_nodes == 77
     assert extractor.max_xml_depth == 9
     assert extractor.max_xml_nodes == 77
+
+    ooxml = adapter.ooxml_extractor
+    assert ooxml is not None
+    assert ooxml.max_bytes == 123_456
+    assert ooxml.max_uncompressed_bytes == 493_824
+    assert ooxml.max_member_bytes == 246_912
+    assert ooxml.max_xml_depth == 9
+    assert ooxml.max_xml_nodes == 77
+    assert ooxml.max_records == 7
+    assert ooxml.max_columns == 8
+    assert ooxml.max_cell_chars == 321
+    assert ooxml.max_sheets == 8
