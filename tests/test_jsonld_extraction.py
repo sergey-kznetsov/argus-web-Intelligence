@@ -47,6 +47,18 @@ def test_jsonld_invalid_and_oversized_blocks_are_skipped():
     assert result.blocks_oversized == 1
 
 
+def test_jsonld_rejects_python_non_standard_nan_and_infinity_constants():
+    html = """
+    <script type="application/ld+json">{"@type":"Place","latitude":NaN}</script>
+    <script type="application/ld+json">{"@type":"Place","latitude":Infinity}</script>
+    """
+
+    result = EmbeddedJsonLdExtractor().extract(html, "text/html")
+
+    assert result.entities == []
+    assert result.blocks_invalid == 2
+
+
 def test_jsonld_entity_count_and_string_size_are_bounded():
     extractor = EmbeddedJsonLdExtractor(max_entities=2, max_string_chars=100)
     html = """
