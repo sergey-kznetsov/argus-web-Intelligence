@@ -193,3 +193,43 @@ class CollectionResult(BaseModel):
     evidence: list[Evidence]
     coverage: list[SourceCoverage]
     errors: list[StructuredError]
+
+
+class ResultDeliveryLimits(BaseModel):
+    full_result_max_items: int = Field(ge=1)
+    full_result_max_bytes: int = Field(ge=1024)
+    page_max_size: int = Field(ge=1)
+
+
+class CollectionResultSummary(BaseModel):
+    protocol_version: Literal["1.0.0"] = PROTOCOL_VERSION
+    collection_id: str
+    analysis_id: str
+    consumer: str
+    status: CollectionStatus
+    partial: bool
+    observation_count: int = Field(ge=0)
+    evidence_count: int = Field(ge=0)
+    stored_bytes: int = Field(ge=0)
+    full_result_available: bool
+    delivery_limits: ResultDeliveryLimits
+    coverage: list[SourceCoverage]
+    errors: list[StructuredError]
+
+
+class ObservationPage(BaseModel):
+    protocol_version: Literal["1.0.0"] = PROTOCOL_VERSION
+    collection_id: str
+    status: CollectionStatus
+    total_count: int = Field(ge=0)
+    items: list[Observation]
+    next_cursor: str | None = None
+
+
+class EvidencePage(BaseModel):
+    protocol_version: Literal["1.0.0"] = PROTOCOL_VERSION
+    collection_id: str
+    status: CollectionStatus
+    total_count: int = Field(ge=0)
+    items: list[Evidence]
+    next_cursor: str | None = None
