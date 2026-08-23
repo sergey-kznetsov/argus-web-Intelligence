@@ -14,6 +14,7 @@ from argus import __version__
 from argus.bootstrap import build_services
 from argus.config import Settings, get_settings
 from argus.observability import configure_logging
+from argus.storage.lease_fencing import lease_fence
 from argus.storage.postgres import PostgresRepository
 
 logger = logging.getLogger("argus.worker")
@@ -196,9 +197,13 @@ class CollectionWorker:
                     },
                 )
 
+    async def _execute_owned_collection(self, collection_id: str) -> None:
+        with lease_fence(collection_id, self.worker_id):
+            await self.orchestrator.execute(collection_id)
+
     async def _execute_claim(self, collection_id: str) -> None:
         execute_task = asyncio.create_task(
-            self.orchestrator.execute(collection_id),
+            self._execute_owned_collection(collection_id),
             name=f"argus-execute:{collection_id}",
         )
         lease_task = asyncio.create_task(
