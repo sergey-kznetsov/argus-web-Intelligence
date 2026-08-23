@@ -372,20 +372,62 @@ class CollectionOrchestrator:
                     tasks.append(task)
         return tasks, covered_intents
 
-    @staticmethod
+    @classmethod
     def _merge_tasks(
+        cls,
         existing: list[SourceTask],
         additions: list[SourceTask],
         collection_id: str,
     ) -> list[SourceTask]:
-        keys = {task.dedupe_key for task in existing}
+        by_key = {task.dedupe_key: task for task in existing}
         for task in additions:
             task.metadata["collection_id"] = collection_id
             key = task.dedupe_key
-            if key not in keys:
-                keys.add(key)
-                existing.append(task)
+            current = by_key.get(key)
+            if current is not None:
+                cls._merge_task_context(current, task)
+                continue
+            by_key[key] = task
+            existing.append(task)
         return existing
+
+    @staticmethod
+    def _merge_task_context(current: SourceTask, incoming: SourceTask) -> None:
+        current_goals = current.metadata.get("research_goals", [])
+        incoming_goals = incoming.metadata.get("research_goals", [])
+        goals: list[str] = []
+        for raw in (current_goals, incoming_goals):
+            if not isinstance(raw, list):
+                continue
+            for value in raw:
+                goal = str(value).strip()
+                if goal and goal not in goals:
+                    goals.append(goal)
+        if goals:
+            current.metadata["research_goals"] = goals
+
+        current_engines = current.metadata.get("discovery_engines", [])
+        incoming_engines = incoming.metadata.get("discovery_engines", [])
+        engines: list[str] = []
+        for raw in (current_engines, incoming_engines):
+            if not isinstance(raw, list):
+                continue
+            for value in raw:
+                engine = str(value).strip()
+                if engine and engine not in engines:
+                    engines.append(engine)
+        if engines:
+            current.metadata["discovery_engines"] = engines
+
+        if not current.metadata.get("discovery_provider") and incoming.metadata.get(
+            "discovery_provider"
+        ):
+            current.metadata["discovery_provider"] = incoming.metadata["discovery_provider"]
+        current_rank = current.metadata.get("discovery_rank")
+        incoming_rank = incoming.metadata.get("discovery_rank")
+        ranks = [value for value in (current_rank, incoming_rank) if isinstance(value, int)]
+        if ranks:
+            current.metadata["discovery_rank"] = min(ranks)
 
     async def _process_tasks(self, record: CollectionRecord, pending: list[SourceTask]) -> None:
         visited = set(record.checkpoint.get("visited", []))
