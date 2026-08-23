@@ -5,7 +5,7 @@ from typing import Any, NoReturn
 
 from psycopg.types.json import Jsonb
 
-from argus.contracts.models import CollectionRecord, Snapshot
+from argus.contracts.models import CollectionRecord, Evidence, Observation, Snapshot
 from argus.recipes.models import SiteRecipe
 from argus.storage.lease_fencing import (
     LeaseFence,
@@ -95,6 +95,131 @@ class FencedPostgresRepository(PostgresRepository):
             raise LeaseLostError(
                 f"worker {fence.worker_id} no longer owns lease for {record.collection_id}"
             )
+
+    async def commit_task_success(
+        self,
+        record: CollectionRecord,
+        *,
+        observations: list[Observation],
+        evidence: list[Evidence],
+        snapshots: list[Snapshot],
+    ) -> None:
+        """Atomically persist one successful source task and its resulting checkpoint."""
+
+        if any(item.collection_id != record.collection_id for item in observations):
+            raise ValueError("task observation collection_id does not match collection")
+        fence = current_lease_fence(record.collection_id)
+
+        try:
+            async with self._pool.connection() as conn:
+                async with conn.transaction():
+                    cursor = await conn.execute(
+                        "SELECT status FROM argus.collections "
+                        "WHERE collection_id=%s FOR UPDATE",
+                        (record.collection_id,),
+                    )
+                    collection_row = await cursor.fetchone()
+                    if collection_row is None:
+                        raise RuntimeError("collection disappeared before task commit")
+                    if str(collection_row["status"]) == "cancelled":
+                        if fence is not None:
+                            raise LeaseLostError(
+                                f"collection {record.collection_id} is no longer writable"
+                            )
+                        raise RuntimeError("collection was cancelled before task commit")
+
+                    if fence is not None:
+                        cursor = await conn.execute(
+                            """
+                            SELECT worker_id
+                            FROM argus.collection_leases
+                            WHERE collection_id=%s
+                              AND worker_id=%s
+                              AND lease_until > NOW()
+                            FOR UPDATE
+                            """,
+                            (record.collection_id, fence.worker_id),
+                        )
+                        lease_row = await cursor.fetchone()
+                        if lease_row is None:
+                            raise LeaseLostError(
+                                f"worker {fence.worker_id} no longer owns lease for "
+                                f"{record.collection_id}"
+                            )
+
+                    for snapshot in snapshots:
+                        await conn.execute(
+                            """
+                            INSERT INTO argus.snapshots(snapshot_id, source_url, collected_at, body)
+                            VALUES(%s, %s, %s, %s)
+                            ON CONFLICT (snapshot_id) DO NOTHING
+                            """,
+                            (
+                                snapshot.snapshot_id,
+                                snapshot.source_url,
+                                snapshot.collected_at,
+                                Jsonb(snapshot.model_dump(mode="json")),
+                            ),
+                        )
+
+                    for observation in observations:
+                        await conn.execute(
+                            """
+                            INSERT INTO argus.observations(
+                              observation_id, collection_id, body
+                            ) VALUES(%s, %s, %s)
+                            ON CONFLICT (observation_id) DO UPDATE
+                            SET collection_id=EXCLUDED.collection_id,
+                                body=EXCLUDED.body
+                            """,
+                            (
+                                observation.observation_id,
+                                record.collection_id,
+                                Jsonb(observation.model_dump(mode="json")),
+                            ),
+                        )
+
+                    for item in evidence:
+                        await conn.execute(
+                            """
+                            INSERT INTO argus.evidence(evidence_id, collection_id, body)
+                            VALUES(%s, %s, %s)
+                            ON CONFLICT (evidence_id) DO UPDATE
+                            SET collection_id=EXCLUDED.collection_id,
+                                body=EXCLUDED.body
+                            """,
+                            (
+                                item.evidence_id,
+                                record.collection_id,
+                                Jsonb(item.model_dump(mode="json")),
+                            ),
+                        )
+
+                    cursor = await conn.execute(
+                        """
+                        UPDATE argus.collections
+                        SET status=%s, body=%s, updated_at=%s
+                        WHERE collection_id=%s AND status <> 'cancelled'
+                        """,
+                        (
+                            record.status.value,
+                            Jsonb(record.model_dump(mode="json")),
+                            record.updated_at,
+                            record.collection_id,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        if fence is not None:
+                            raise LeaseLostError(
+                                f"worker {fence.worker_id} lost collection write authority"
+                            )
+                        raise RuntimeError("collection task commit was rejected")
+        except (LeaseLostError, WorkerStorageError):
+            raise
+        except Exception as exc:
+            if fence is not None:
+                self._abort_storage_attempt(fence, "commit_task_success", exc)
+            raise
 
     async def _upsert_collection_json(
         self,
