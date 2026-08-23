@@ -20,6 +20,18 @@ def test_worker_heartbeat_must_be_shorter_than_lease():
         )
 
 
+def test_snapshot_retention_cannot_be_shorter_than_collection_retention():
+    with pytest.raises(ValidationError):
+        Settings(
+            retention_collection_days=365,
+            retention_snapshot_days=180,
+        )
+
+
+def test_idempotency_defaults_to_24_hours():
+    assert Settings().idempotency_window_seconds == 86_400
+
+
 def test_server_roles_require_postgresql():
     with pytest.raises(ValidationError):
         Settings(execution_role="api", storage_backend="sqlite")
