@@ -297,6 +297,8 @@ class DocumentAwareGenericWebAdapter(GenericWebAdapter):
             "row_count": extraction.row_count,
             "rows_extracted": extraction.rows_extracted,
             "column_count": extraction.column_count,
+            "node_count": extraction.node_count,
+            "max_depth": extraction.max_depth,
             "truncated": extraction.truncated,
             "extractor_version": extraction.extractor_version,
             "research_goals": research_goals,
@@ -314,6 +316,8 @@ class DocumentAwareGenericWebAdapter(GenericWebAdapter):
                 "binary_sha256": binary_hash,
                 "extractor_version": extraction.extractor_version,
                 "parser_network_access": False,
+                "node_count": extraction.node_count,
+                "max_depth": extraction.max_depth,
             },
         }
         discovery_provider = task.metadata.get("discovery_provider")
@@ -374,9 +378,12 @@ class DocumentAwareGenericWebAdapter(GenericWebAdapter):
             metadata={
                 "document_type": extraction.document_type,
                 "binary_sha256": binary_hash,
+                "encoding": extraction.encoding,
                 "row_count": extraction.row_count,
                 "rows_extracted": extraction.rows_extracted,
                 "column_count": extraction.column_count,
+                "node_count": extraction.node_count,
+                "max_depth": extraction.max_depth,
                 "extractor_version": extraction.extractor_version,
                 "research_goals": research_goals,
             },
@@ -393,7 +400,7 @@ class DocumentAwareGenericWebAdapter(GenericWebAdapter):
         payload["pdf_extraction"] = True
         payload["structured_data_extraction"] = self.structured_data_extractor is not None
         if self.structured_data_extractor is not None:
-            payload["structured_data_formats"] = ["csv", "tsv", "json"]
+            payload["structured_data_formats"] = ["csv", "tsv", "json", "xml"]
         return payload
 
     @staticmethod
@@ -443,6 +450,8 @@ class DocumentAwareGenericWebAdapter(GenericWebAdapter):
             "row_count": extraction.row_count,
             "rows_extracted": extraction.rows_extracted,
             "column_count": extraction.column_count,
+            "node_count": extraction.node_count,
+            "max_depth": extraction.max_depth,
             "truncated": extraction.truncated,
             "error_code": extraction.error_code,
         }
