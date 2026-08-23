@@ -159,6 +159,26 @@ MIGRATIONS: tuple[PostgresMigration, ...] = (
             """,
         ),
     ),
+    PostgresMigration(
+        version=5,
+        name="collection_operations_indexes",
+        statements=(
+            f"""
+            CREATE INDEX IF NOT EXISTS ix_argus_collections_created
+            ON {_SCHEMA}.collections(created_at DESC, collection_id DESC)
+            """,
+            f"""
+            CREATE INDEX IF NOT EXISTS ix_argus_collections_status_created
+            ON {_SCHEMA}.collections(status, created_at DESC, collection_id DESC)
+            """,
+            f"""
+            CREATE INDEX IF NOT EXISTS ix_argus_collections_consumer_created
+            ON {_SCHEMA}.collections(
+              (body #>> '{{request,consumer}}'), created_at DESC, collection_id DESC
+            )
+            """,
+        ),
+    ),
 )
 
 
