@@ -3,10 +3,15 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import unquote, urlparse
+from xml.etree.ElementTree import Element, ParseError
+
+from defusedxml import ElementTree as DefusedET
+from defusedxml.common import DefusedXmlException
 
 
 @dataclass(slots=True)
@@ -19,6 +24,8 @@ class StructuredDataExtraction:
     row_count: int | None = None
     rows_extracted: int | None = None
     column_count: int | None = None
+    node_count: int | None = None
+    max_depth: int | None = None
     truncated: bool = False
     extractor_version: str = "stdlib/1"
     error_code: str | None = None
@@ -26,7 +33,7 @@ class StructuredDataExtraction:
 
 
 class BoundedStructuredDataExtractor:
-    """Bounded parser for public JSON and delimited-text documents.
+    """Bounded parser for public JSON, XML and delimited-text documents.
 
     The parser never performs network access and only returns source-declared data.
     Input is already transport-bounded, but parser-specific limits keep normalized
@@ -37,6 +44,10 @@ class BoundedStructuredDataExtractor:
         "application/json",
         "text/json",
         "application/geo+json",
+    }
+    _XML_MEDIA_TYPES = {
+        "application/xml",
+        "text/xml",
     }
     _CSV_MEDIA_TYPES = {
         "text/csv",
@@ -49,6 +60,7 @@ class BoundedStructuredDataExtractor:
         "application/tsv",
     }
     _DELIMITED_FALLBACK_ENCODINGS = ("utf-8-sig", "cp1251")
+    _XML_ENCODING_RE = re.compile(br"encoding\s*=\s*['\"]([A-Za-z0-9._:-]+)['\"]", re.I)
 
     def __init__(
         self,
@@ -59,6 +71,8 @@ class BoundedStructuredDataExtractor:
         max_cell_chars: int = 10_000,
         max_json_depth: int = 32,
         max_json_nodes: int = 20_000,
+        max_xml_depth: int | None = None,
+        max_xml_nodes: int | None = None,
     ) -> None:
         self.max_bytes = max_bytes
         self.max_records = max_records
@@ -66,6 +80,8 @@ class BoundedStructuredDataExtractor:
         self.max_cell_chars = max_cell_chars
         self.max_json_depth = max_json_depth
         self.max_json_nodes = max_json_nodes
+        self.max_xml_depth = max_json_depth if max_xml_depth is None else max_xml_depth
+        self.max_xml_nodes = max_json_nodes if max_xml_nodes is None else max_xml_nodes
 
     def detect(self, content_type: str | None, url: str, body: bytes | None = None) -> str | None:
         media_type = self._media_type(content_type)
@@ -75,6 +91,8 @@ class BoundedStructuredDataExtractor:
             return "tsv"
         if media_type in self._JSON_MEDIA_TYPES or media_type.endswith("+json"):
             return "json"
+        if media_type in self._XML_MEDIA_TYPES or media_type.endswith("+xml"):
+            return "xml"
 
         suffix = PurePosixPath(unquote(urlparse(url).path)).suffix.casefold()
         if suffix == ".csv":
@@ -83,11 +101,15 @@ class BoundedStructuredDataExtractor:
             return "tsv"
         if suffix in {".json", ".geojson"}:
             return "json"
+        if suffix == ".xml":
+            return "xml"
 
         if media_type in {"text/plain", "application/octet-stream", ""} and body:
             sample = body[:4096].lstrip(b"\xef\xbb\xbf \t\r\n")
             if sample.startswith((b"{", b"[")):
                 return "json"
+            if sample.startswith(b"<?xml"):
+                return "xml"
         return None
 
     def extract(
@@ -106,6 +128,8 @@ class BoundedStructuredDataExtractor:
             )
         if document_type == "json":
             return self._extract_json(body)
+        if document_type == "xml":
+            return self._extract_xml(body, content_type)
         if document_type in {"csv", "tsv"}:
             return self._extract_delimited(body, content_type, document_type)
         return StructuredDataExtraction(
@@ -167,7 +191,46 @@ class BoundedStructuredDataExtractor:
             row_count=row_count,
             rows_extracted=row_count,
             column_count=column_count,
+            node_count=nodes,
             extractor_version=f"stdlib-json/1;nodes={nodes}",
+        )
+
+    def _extract_xml(
+        self,
+        body: bytes,
+        content_type: str | None,
+    ) -> StructuredDataExtraction:
+        encoding = self._xml_encoding(body, content_type)
+        try:
+            root = DefusedET.fromstring(body)
+        except (DefusedXmlException, ParseError, ValueError, RecursionError) as exc:
+            return StructuredDataExtraction(
+                document_type="xml",
+                encoding=encoding,
+                error_code="STRUCTURED_DATA_PARSE_ERROR",
+                error_message=f"XML document is invalid or unsafe: {type(exc).__name__}",
+            )
+
+        within_limits, nodes, max_depth = self._xml_within_limits(root)
+        if not within_limits:
+            return StructuredDataExtraction(
+                document_type="xml",
+                encoding=encoding,
+                node_count=nodes,
+                max_depth=max_depth,
+                error_code="STRUCTURED_DATA_LIMIT_EXCEEDED",
+                error_message=(
+                    "XML structure exceeds configured depth, node, attribute, child, or text limits"
+                ),
+            )
+        payload = self._xml_element(root)
+        return StructuredDataExtraction(
+            document_type="xml",
+            payload=payload,
+            encoding=encoding,
+            node_count=nodes,
+            max_depth=max_depth,
+            extractor_version=f"defusedxml/1;nodes={nodes};depth={max_depth}",
         )
 
     def _extract_delimited(
@@ -336,6 +399,60 @@ class BoundedStructuredDataExtractor:
                 for item in value:
                     stack.append((item, depth + 1))
         return True, nodes
+
+    def _xml_within_limits(self, root: Element) -> tuple[bool, int, int]:
+        stack: list[tuple[Element, int]] = [(root, 0)]
+        nodes = 0
+        max_depth_seen = 0
+        while stack:
+            element, depth = stack.pop()
+            nodes += 1
+            max_depth_seen = max(max_depth_seen, depth)
+            if nodes > self.max_xml_nodes or depth > self.max_xml_depth:
+                return False, nodes, max_depth_seen
+            children = list(element)
+            if len(children) > self.max_records or len(element.attrib) > self.max_columns:
+                return False, nodes, max_depth_seen
+            strings = [str(element.tag), element.text or "", element.tail or ""]
+            strings.extend(str(key) for key in element.attrib)
+            strings.extend(str(value) for value in element.attrib.values())
+            if any(len(value) > self.max_cell_chars for value in strings):
+                return False, nodes, max_depth_seen
+            stack.extend((child, depth + 1) for child in reversed(children))
+        return True, nodes, max_depth_seen
+
+    def _xml_element(self, element: Element) -> dict[str, Any]:
+        node: dict[str, Any] = {"tag": str(element.tag)}
+        if element.attrib:
+            node["attributes"] = {
+                str(key): str(value) for key, value in sorted(element.attrib.items())
+            }
+        text = (element.text or "").strip()
+        if text:
+            node["text"] = text
+        children = list(element)
+        if children:
+            node["children"] = [self._xml_element(child) for child in children]
+        tail = (element.tail or "").strip()
+        if tail:
+            node["tail"] = tail
+        return node
+
+    @classmethod
+    def _xml_encoding(cls, body: bytes, content_type: str | None) -> str:
+        bom_encoding = cls._bom_encoding(body)
+        if bom_encoding:
+            return bom_encoding
+        declared_http = cls._declared_charset(content_type)
+        if declared_http:
+            return declared_http
+        match = cls._XML_ENCODING_RE.search(body[:512])
+        if match:
+            try:
+                return match.group(1).decode("ascii").casefold()
+            except UnicodeDecodeError:
+                pass
+        return "xml-auto"
 
     @staticmethod
     def _reject_json_constant(value: str) -> None:
