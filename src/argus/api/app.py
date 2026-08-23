@@ -126,6 +126,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 {
                     "collection_days": settings.retention_collection_days,
                     "snapshot_days": settings.retention_snapshot_days,
+                    "worker_registration_days": (
+                        settings.retention_worker_registration_days
+                    ),
                     "maintenance_interval_seconds": (
                         settings.retention_maintenance_interval_seconds
                     ),
