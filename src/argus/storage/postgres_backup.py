@@ -201,7 +201,7 @@ def restore_argus_schema(
     safe_conninfo, environment = _command_context(dsn)
     command = [
         pg_restore_binary,
-        "--exit-on-error",
+        "--single-transaction",
         "--clean",
         "--if-exists",
         f"--schema={_ARGUS_SCHEMA}",
