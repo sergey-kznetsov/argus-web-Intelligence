@@ -18,6 +18,7 @@ from argus.extraction.structured_data import (
     StructuredDataExtraction,
 )
 from argus.normalization.identity import stable_evidence_id, stable_observation_id
+from argus.security.urls import UnsafeUrlError
 from argus.sources.base import SourceResult, SourceTask
 from argus.sources.generic_web import GenericWebAdapter
 
@@ -37,6 +38,43 @@ class DocumentAwareGenericWebAdapter(GenericWebAdapter):
         self.structured_data_extractor = (
             structured_data_extractor or BoundedStructuredDataExtractor()
         )
+
+    async def fetch(self, task: SourceTask):
+        """Preserve deterministic document bodies instead of escalating them as HTML."""
+        recipe_failed = False
+        if self.recipes is not None:
+            recipe = await self.recipes.get(task.url, task.goal)
+            if recipe is not None:
+                try:
+                    result = await self.browser.fetch(task.url, recipe=recipe)
+                    if not result.blocked:
+                        await self.recipes.mark_success(recipe)
+                    return result
+                except UnsafeUrlError:
+                    raise
+                except Exception:
+                    recipe_failed = True
+                    await self.recipes.mark_failure(recipe)
+
+        if recipe_failed and self.agent is not None:
+            guided = await self._agent_guided_fetch(task)
+            if guided is not None:
+                return guided
+
+        try:
+            result = await self.fast.fetch(task.url)
+            if self._is_document_response(result):
+                return result
+            if result.blocked or self._needs_browser(result.text):
+                return await self._browser_or_agent(task)
+            return result
+        except UnsafeUrlError:
+            raise
+        except Exception:
+            return await self._browser_or_agent(task)
+
+    def _is_document_response(self, fetched) -> bool:
+        return self._is_pdf(fetched) or self._structured_type(fetched) is not None
 
     async def extract(
         self,
