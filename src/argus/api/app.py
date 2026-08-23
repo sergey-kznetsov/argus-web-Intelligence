@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 
 from argus import __version__
 from argus.bootstrap import (
@@ -16,6 +16,7 @@ from argus.config import Settings, get_settings
 from argus.contracts.models import (
     PROTOCOL_VERSION,
     CollectionAccepted,
+    CollectionListPage,
     CollectionRecord,
     CollectionRequest,
     CollectionResult,
@@ -25,8 +26,14 @@ from argus.contracts.models import (
 from argus.idempotency import request_fingerprint, storage_idempotency_key
 from argus.module_protocol import MODULE_ID, runtime_manifest
 from argus.observability import configure_logging
+from argus.pagination import (
+    InvalidCursorError,
+    decode_collection_cursor,
+    encode_collection_cursor,
+)
 from argus.security.auth import bearer_dependency, ensure_token
 from argus.storage.base import IdempotencyConflictError, QueueCapacityError
+from argus.storage.postgres_operations import PostgresOperationsStore
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -37,6 +44,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     registry = services.registry
     orchestrator = services.orchestrator
     require_bearer = bearer_dependency(settings)
+    operations_store: PostgresOperationsStore | None = None
+    if settings.execution_role == "api":
+        dsn = settings.database_dsn_value()
+        if not dsn:
+            raise RuntimeError("server API operations require PostgreSQL DSN")
+        operations_store = PostgresOperationsStore(dsn)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -138,6 +151,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if server_queue
                 else None
             ),
+            "operations": (
+                {
+                    "queue_metrics": True,
+                    "collection_listing": True,
+                    "collection_page_max_size": 100,
+                    "pagination": "keyset",
+                }
+                if settings.execution_role == "api"
+                else None
+            ),
             "history": True,
             "site_recipes": True,
             "sitemap_discovery": settings.sitemap_discovery_enabled,
@@ -171,6 +194,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
         )
         return payload
+
+    @app.get(
+        "/v1/operations/collections",
+        response_model=CollectionListPage,
+        dependencies=[Depends(require_bearer)],
+    )
+    async def collection_operations(
+        limit: int = Query(default=50, ge=1, le=100),
+        status_filter: CollectionStatus | None = Query(default=None, alias="status"),
+        consumer: str | None = Query(default=None, min_length=1, max_length=128),
+        cursor: str | None = Query(default=None, max_length=2048),
+    ) -> CollectionListPage:
+        if operations_store is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="collection operations are available only in server API mode",
+            )
+        consumer_filter = consumer.strip() if consumer is not None else None
+        if consumer is not None and not consumer_filter:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="consumer filter must not be blank",
+            )
+        decoded_cursor = None
+        if cursor is not None:
+            try:
+                decoded_cursor = decode_collection_cursor(cursor)
+            except InvalidCursorError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="invalid collection pagination cursor",
+                ) from exc
+
+        items, has_more = await operations_store.list_collections(
+            limit=limit,
+            status=status_filter,
+            consumer=consumer_filter,
+            cursor=decoded_cursor,
+        )
+        next_cursor = None
+        if has_more and items:
+            last = items[-1]
+            next_cursor = encode_collection_cursor(last.created_at, last.collection_id)
+        return CollectionListPage(items=items, next_cursor=next_cursor)
 
     @app.post(
         "/v1/collections",
