@@ -10,7 +10,7 @@ from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.security.urls import UrlGuard
 
 
-PDF_BODY = b"%PDF-1.7\nsynthetic-binary-body\n%%EOF"
+PDF_BODY = b"%PDF-1.7\naccess denied is source text, not an HTTP block\n%%EOF"
 
 
 class PdfHandler(http.server.BaseHTTPRequestHandler):
@@ -52,6 +52,7 @@ async def test_fast_runtime_preserves_bounded_raw_pdf_body():
             result = await runtime.fetch(f"http://127.0.0.1:{port}/report.pdf")
         assert result.content_type == "application/pdf"
         assert result.body == PDF_BODY
+        assert result.blocked is False
         assert result.final_url.endswith("/report.pdf")
     finally:
         await runtime.shutdown()
