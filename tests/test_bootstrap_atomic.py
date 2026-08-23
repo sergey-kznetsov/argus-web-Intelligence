@@ -3,10 +3,11 @@ from pathlib import Path
 from argus.bootstrap import build_services
 from argus.config import Settings
 from argus.orchestrator.atomic import AtomicCollectionOrchestrator
+from argus.sources.document_web import DocumentAwareGenericWebAdapter
 from argus.storage.atomic_sqlite import AtomicSQLiteRepository
 
 
-def test_bootstrap_uses_atomic_orchestrator_and_repository(tmp_path: Path):
+def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path: Path):
     settings = Settings(
         execution_role="embedded",
         storage_backend="sqlite",
@@ -23,3 +24,4 @@ def test_bootstrap_uses_atomic_orchestrator_and_repository(tmp_path: Path):
 
     assert isinstance(services.orchestrator, AtomicCollectionOrchestrator)
     assert isinstance(services.repository, AtomicSQLiteRepository)
+    assert isinstance(services.registry.get("generic_web"), DocumentAwareGenericWebAdapter)
