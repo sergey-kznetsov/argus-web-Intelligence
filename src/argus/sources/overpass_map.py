@@ -206,6 +206,7 @@ class OverpassSourceAdapter:
             place.source_url,
             canonical,
             "application/json",
+            collection_id=collection_id,
         )
         entity_id = f"{place.provider}:{place.provider_place_id or place.source_url}"
         observation_id = stable_observation_id(
