@@ -435,6 +435,7 @@ class PostgresRepository:
         idempotency_window_seconds: int,
         collection_retention_days: int,
         snapshot_retention_days: int,
+        worker_registration_retention_days: int,
         batch_size: int,
     ) -> RetentionResult:
         """Run one bounded retention pass; a PostgreSQL lock elects one maintainer."""
@@ -442,6 +443,7 @@ class PostgresRepository:
         idempotency_window = max(1, int(idempotency_window_seconds))
         collection_days = max(1, int(collection_retention_days))
         snapshot_days = max(collection_days, int(snapshot_retention_days))
+        worker_days = max(1, int(worker_registration_retention_days))
         limit = max(1, int(batch_size))
 
         async with self._pool.connection() as conn:
@@ -518,10 +520,28 @@ class PostgresRepository:
                 )
                 snapshots_deleted = max(0, int(cursor.rowcount or 0))
 
+                cursor = await conn.execute(
+                    """
+                    WITH targets AS (
+                      SELECT worker_id
+                      FROM argus.worker_instances
+                      WHERE heartbeat_at <= NOW() - (%s * INTERVAL '1 day')
+                      ORDER BY heartbeat_at ASC, worker_id ASC
+                      LIMIT %s
+                    )
+                    DELETE FROM argus.worker_instances AS w
+                    USING targets AS t
+                    WHERE w.worker_id=t.worker_id
+                    """,
+                    (worker_days, limit),
+                )
+                workers_deleted = max(0, int(cursor.rowcount or 0))
+
         return RetentionResult(
             idempotency_deleted=idempotency_deleted,
             collections_deleted=collections_deleted,
             snapshots_deleted=snapshots_deleted,
+            workers_deleted=workers_deleted,
         )
 
     async def claim_next_collection(
