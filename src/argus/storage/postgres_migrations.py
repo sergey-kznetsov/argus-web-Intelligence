@@ -179,6 +179,20 @@ MIGRATIONS: tuple[PostgresMigration, ...] = (
             """,
         ),
     ),
+    PostgresMigration(
+        version=6,
+        name="result_pagination_indexes",
+        statements=(
+            f"""
+            CREATE INDEX IF NOT EXISTS ix_argus_observations_collection_id
+            ON {_SCHEMA}.observations(collection_id, observation_id ASC)
+            """,
+            f"""
+            CREATE INDEX IF NOT EXISTS ix_argus_evidence_collection_id
+            ON {_SCHEMA}.evidence(collection_id, evidence_id ASC)
+            """,
+        ),
+    ),
 )
 
 
