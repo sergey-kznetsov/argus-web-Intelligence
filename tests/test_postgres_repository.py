@@ -209,16 +209,20 @@ async def test_postgres_worker_lease_is_exclusive_and_recoverable():
             is False
         )
         await repository.release_collection_lease(collection_id, worker_b)
-
-        record = await repository.get_collection(collection_id)
-        assert record is not None
-        record.status = CollectionStatus.CANCELLED
-        record.stage = "test-cleanup"
-        record.updated_at = utcnow()
-        await repository.update_collection(record)
-
+    finally:
         await repository.unregister_worker(worker_a)
         await repository.unregister_worker(worker_b)
-        assert await repository.active_worker_count(max_age_seconds=60) == 0
-    finally:
+        async with repository._pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) AS count FROM argus.worker_instances "
+                "WHERE worker_id IN (%s, %s)",
+                (worker_a, worker_b),
+            )
+            row = await cursor.fetchone()
+            assert row is not None
+            assert int(row["count"]) == 0
+            await conn.execute(
+                "DELETE FROM argus.collections WHERE collection_id=%s",
+                (collection_id,),
+            )
         await repository.close()
