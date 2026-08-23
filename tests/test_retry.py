@@ -25,7 +25,7 @@ def test_retry_delay_uses_exponential_fallback_and_cap():
     ) == 5
 
 
-def test_retry_delay_prefers_numeric_retry_after_and_caps_it():
+def test_retry_delay_prefers_numeric_retry_after_and_defers_when_too_long():
     assert retry_delay_seconds(
         attempt=0,
         headers={"Retry-After": "7"},
@@ -37,7 +37,7 @@ def test_retry_delay_prefers_numeric_retry_after_and_caps_it():
         headers={"retry-after": "100"},
         base_delay_seconds=1,
         max_delay_seconds=10,
-    ) == 10
+    ) is None
 
 
 def test_retry_delay_accepts_http_date():
@@ -50,3 +50,15 @@ def test_retry_delay_accepts_http_date():
         max_delay_seconds=30,
         now=now,
     ) == 9
+
+
+def test_retry_delay_defers_http_date_beyond_local_maximum():
+    now = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
+    target = now + timedelta(minutes=10)
+    assert retry_delay_seconds(
+        attempt=0,
+        headers={"Retry-After": format_datetime(target, usegmt=True)},
+        base_delay_seconds=1,
+        max_delay_seconds=30,
+        now=now,
+    ) is None
