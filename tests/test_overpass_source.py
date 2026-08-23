@@ -194,7 +194,7 @@ async def test_overpass_source_identity_is_stable_for_same_collection_and_facts(
     second = await adapter.extract(task, await adapter.fetch(task), request())
     assert first.observations[0].observation_id == second.observations[0].observation_id
     assert first.evidence[0].evidence_id == second.evidence[0].evidence_id
-    assert first.observations[0].provenance["snapshot_id"] != second.observations[0].provenance[
+    assert first.observations[0].provenance["snapshot_id"] == second.observations[0].provenance[
         "snapshot_id"
     ]
 
