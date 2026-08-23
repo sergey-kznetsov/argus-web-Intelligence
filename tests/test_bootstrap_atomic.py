@@ -4,6 +4,7 @@ from argus.bootstrap import build_services
 from argus.config import Settings
 from argus.orchestrator.atomic import AtomicCollectionOrchestrator
 from argus.sources.document_web import DocumentAwareGenericWebAdapter
+from argus.sources.json_feed import JSONFeedAdapter
 from argus.sources.office_web import OfficeAwareGenericWebAdapter
 from argus.storage.atomic_sqlite import AtomicSQLiteRepository
 
@@ -45,6 +46,12 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     assert extractor.max_json_nodes == 77
     assert extractor.max_xml_depth == 9
     assert extractor.max_xml_nodes == 77
+
+    json_feed_tracked = services.registry.get("json_feed")
+    json_feed = getattr(json_feed_tracked, "_adapter", None)
+    assert isinstance(json_feed, JSONFeedAdapter)
+    assert json_feed.structured_extractor is extractor
+    assert json_feed.max_items == 7
 
     ooxml = adapter.ooxml_extractor
     assert ooxml is not None
