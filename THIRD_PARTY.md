@@ -1,10 +1,11 @@
 # Third-party foundation
 
-ARGUS intentionally reuses maintained open-source components instead of reimplementing crawler infrastructure.
+ARGUS intentionally reuses maintained open-source components instead of reimplementing crawler and database infrastructure.
 
 - Crawlee for Python: queue/request management, retries, sessions, concurrency and Playwright crawler runtime. Apache-2.0.
 - Playwright: browser automation runtime. Apache-2.0.
 - FastAPI: internal HTTP API. MIT.
+- Psycopg 3 + psycopg_pool: PostgreSQL driver and native asyncio connection pool used by the product/server repository backend. LGPL-3.0-only. ARGUS uses the published package API and does not modify or vendor Psycopg code.
 - defusedxml: hardened parsing for untrusted RSS/Atom and Sitemap XML, including entity/external-reference protections. Python Software Foundation License (PSFL).
 - Browser Use: optional agent backend with Ollama/local-model support. MIT.
 - Ollama Python: optional local-model client. MIT.
@@ -16,5 +17,7 @@ ARGUS intentionally reuses maintained open-source components instead of reimplem
 - Wayback CDX: optional exact-URL historical capture discovery through a separately configured CDX HTTP endpoint. ARGUS uses documented public CDX fields only and does not vendor Wayback code. A CDX row is evidence that an archive capture exists; page content is fetched separately from the concrete capture URL before it is treated as page Evidence. Archived page content retains the rights and access restrictions of the underlying source; ARGUS does not bypass archive access controls.
 
 `robots.txt` and Sitemap support use the public protocol documents and site-published files directly; no third-party crawler code is copied for this feature.
+
+Embedded JSON-LD support follows the W3C JSON-LD data model and `application/ld+json` media type. ARGUS parses only the JSON already embedded in a fetched page and never dereferences remote `@context` values.
 
 No code is copied from these projects; ARGUS consumes published packages, documented HTTP interfaces or public browser pages.
