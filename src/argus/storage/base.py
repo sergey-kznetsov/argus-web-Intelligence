@@ -61,52 +61,6 @@ class RetentionResult:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class StoredResultStats:
-    observation_count: int
-    evidence_count: int
-    stored_bytes: int
-
-    @property
-    def total_items(self) -> int:
-        return self.observation_count + self.evidence_count
-
-
-@dataclass(frozen=True, slots=True)
-class StoredResultBundle:
-    record: CollectionRecord
-    stats: StoredResultStats
-    observations: list[Observation]
-    evidence: list[Evidence]
-
-
-@dataclass(frozen=True, slots=True)
-class StoredObservationPage:
-    record: CollectionRecord
-    total_count: int
-    items: list[Observation]
-    has_more: bool
-
-
-@dataclass(frozen=True, slots=True)
-class StoredEvidencePage:
-    record: CollectionRecord
-    total_count: int
-    items: list[Evidence]
-    has_more: bool
-
-
-class ResultTooLargeError(RuntimeError):
-    """The stored result exceeds the configured bounded full-result limits."""
-
-    def __init__(self, stats: StoredResultStats) -> None:
-        self.stats = stats
-        super().__init__(
-            "stored result requires pagination: "
-            f"items={stats.total_items}, bytes={stats.stored_bytes}"
-        )
-
-
 class Repository(Protocol):
     async def initialize(self) -> None: ...
     async def close(self) -> None: ...
@@ -129,28 +83,6 @@ class Repository(Protocol):
     async def list_observations(self, collection_id: str) -> list[Observation]: ...
     async def add_evidence(self, evidence: Evidence, collection_id: str) -> None: ...
     async def list_evidence(self, collection_id: str) -> list[Evidence]: ...
-    async def result_stats(self, collection_id: str) -> tuple[CollectionRecord, StoredResultStats] | None: ...
-    async def read_bounded_result(
-        self,
-        collection_id: str,
-        *,
-        max_items: int,
-        max_bytes: int,
-    ) -> StoredResultBundle | None: ...
-    async def observation_page(
-        self,
-        collection_id: str,
-        *,
-        after_id: str | None,
-        limit: int,
-    ) -> StoredObservationPage | None: ...
-    async def evidence_page(
-        self,
-        collection_id: str,
-        *,
-        after_id: str | None,
-        limit: int,
-    ) -> StoredEvidencePage | None: ...
     async def add_snapshot(self, snapshot: Snapshot) -> None: ...
     async def latest_snapshot(self, source_url: str) -> Snapshot | None: ...
     async def save_recipe(self, recipe: SiteRecipe) -> None: ...
