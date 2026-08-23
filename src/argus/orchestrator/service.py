@@ -162,6 +162,9 @@ class CollectionOrchestrator:
                 plan = await self.planner.plan(record.request)
                 pending = self._load_tasks(record)
                 planning_complete = bool(record.checkpoint.get("planning_complete", False))
+                initial_tasks_complete = bool(
+                    record.checkpoint.get("planning_initial_tasks_complete", False)
+                )
                 covered_intents = set(record.checkpoint.get("covered_intents", []))
                 discovery_providers: list[str] = list(
                     record.checkpoint.get("discovery_providers", [])
@@ -172,7 +175,24 @@ class CollectionOrchestrator:
                 discovery_blocked = bool(record.checkpoint.get("discovery_blocked", False))
 
                 if not planning_complete:
-                    pending, covered_intents = await self._initial_tasks(record)
+                    if not initial_tasks_complete:
+                        initial_tasks, discovered_coverage = await self._initial_tasks(record)
+                        pending = self._merge_tasks(
+                            pending,
+                            initial_tasks,
+                            record.collection_id,
+                        )
+                        covered_intents.update(discovered_coverage)
+                        initial_tasks_complete = True
+                        record.checkpoint = {
+                            **record.checkpoint,
+                            "planning_initial_tasks_complete": True,
+                            "covered_intents": sorted(covered_intents),
+                            "pending_tasks": [self._task_dict(t) for t in pending],
+                        }
+                        record.updated_at = now()
+                        await self.repository.update_collection(record)
+
                     uncovered_intents = [
                         intent for intent in record.request.intents if intent not in covered_intents
                     ]
@@ -191,9 +211,11 @@ class CollectionOrchestrator:
                     planning_complete = True
 
                 record.checkpoint = {
+                    **record.checkpoint,
                     "queries": plan.queries,
                     "planner_notes": plan.notes,
                     "planning_complete": planning_complete,
+                    "planning_initial_tasks_complete": initial_tasks_complete,
                     "covered_intents": sorted(covered_intents),
                     "discovery_queries": discovery_queries,
                     "discovery_providers": discovery_providers,
@@ -289,19 +311,22 @@ class CollectionOrchestrator:
             return pending, [], [], False
 
         query_budget = max(1, int(getattr(self.discovery, "max_queries", 8)))
-        remaining_queries = query_budget
-        discovery_queries: list[str] = []
-        discovery_providers: list[str] = []
-        discovery_blocked = False
+        discovery_queries = list(record.checkpoint.get("discovery_queries", []))
+        discovery_providers = list(record.checkpoint.get("discovery_providers", []))
+        discovery_blocked = bool(record.checkpoint.get("discovery_blocked", False))
+        completed_intents = set(record.checkpoint.get("discovery_completed_intents", []))
+        intents_to_run = [intent for intent in uncovered_intents if intent not in completed_intents]
+        remaining_queries = max(0, query_budget - len(discovery_queries))
 
         record.stage = "discovery"
         record.updated_at = now()
         await self.repository.update_collection(record)
 
-        for index, intent in enumerate(uncovered_intents):
+        for index, intent in enumerate(intents_to_run):
             if remaining_queries <= 0:
-                remaining_intents = uncovered_intents[index:]
-                record.errors.append(
+                remaining_intents = intents_to_run[index:]
+                self._append_error_once(
+                    record,
                     StructuredError(
                         code="DISCOVERY_QUERY_BUDGET_EXHAUSTED",
                         message=(
@@ -310,35 +335,62 @@ class CollectionOrchestrator:
                         ),
                         retryable=False,
                         source_id="discovery",
-                    )
+                    ),
+                )
+                await self._checkpoint_discovery_progress(
+                    record,
+                    pending,
+                    discovery_queries,
+                    discovery_providers,
+                    discovery_blocked,
+                    completed_intents,
                 )
                 break
 
             intent_request = record.request.model_copy(update={"intents": [intent]})
             intent_plan = await self.planner.plan(intent_request)
-            remaining_intent_count = len(uncovered_intents) - index
+            remaining_intent_count = len(intents_to_run) - index
             allocation = max(1, remaining_queries // remaining_intent_count)
             queries = [query for query in intent_plan.queries if query.strip()][:allocation]
             if not queries:
-                record.errors.append(
+                self._append_error_once(
+                    record,
                     StructuredError(
                         code="DISCOVERY_NO_QUERIES",
                         message=f"Research planner produced no discovery queries for intent '{intent}'.",
                         retryable=False,
                         source_id="discovery",
-                    )
+                    ),
+                )
+                completed_intents.add(intent)
+                await self._checkpoint_discovery_progress(
+                    record,
+                    pending,
+                    discovery_queries,
+                    discovery_providers,
+                    discovery_blocked,
+                    completed_intents,
                 )
                 continue
 
             remaining_queries -= len(queries)
-            discovery_queries.extend(queries)
             outcome = await self.discovery.discover(queries, intent_request)
+            discovery_queries.extend(queries)
             discovery_blocked = discovery_blocked or outcome.blocked
             for provider in outcome.providers_attempted:
                 if provider not in discovery_providers:
                     discovery_providers.append(provider)
             record.errors.extend(outcome.errors)
             pending = self._merge_tasks(pending, outcome.tasks, record.collection_id)
+            completed_intents.add(intent)
+            await self._checkpoint_discovery_progress(
+                record,
+                pending,
+                discovery_queries,
+                discovery_providers,
+                discovery_blocked,
+                completed_intents,
+            )
 
             if outcome.errors:
                 logger.warning(
@@ -354,6 +406,26 @@ class CollectionOrchestrator:
                 )
 
         return pending, discovery_queries, discovery_providers, discovery_blocked
+
+    async def _checkpoint_discovery_progress(
+        self,
+        record: CollectionRecord,
+        pending: list[SourceTask],
+        queries: list[str],
+        providers: list[str],
+        blocked: bool,
+        completed_intents: set[str],
+    ) -> None:
+        record.checkpoint = {
+            **record.checkpoint,
+            "discovery_queries": list(queries),
+            "discovery_providers": list(providers),
+            "discovery_blocked": blocked,
+            "discovery_completed_intents": sorted(completed_intents),
+            "pending_tasks": [self._task_dict(task) for task in pending],
+        }
+        record.updated_at = now()
+        await self.repository.update_collection(record)
 
     async def _initial_tasks(self, record: CollectionRecord) -> tuple[list[SourceTask], set[str]]:
         tasks: list[SourceTask] = []
@@ -428,6 +500,15 @@ class CollectionOrchestrator:
         ranks = [value for value in (current_rank, incoming_rank) if isinstance(value, int)]
         if ranks:
             current.metadata["discovery_rank"] = min(ranks)
+
+    @staticmethod
+    def _append_error_once(record: CollectionRecord, error: StructuredError) -> None:
+        if any(
+            current.code == error.code and current.source_id == error.source_id
+            for current in record.errors
+        ):
+            return
+        record.errors.append(error)
 
     async def _process_tasks(self, record: CollectionRecord, pending: list[SourceTask]) -> None:
         visited = set(record.checkpoint.get("visited", []))
