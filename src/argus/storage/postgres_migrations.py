@@ -139,6 +139,26 @@ MIGRATIONS: tuple[PostgresMigration, ...] = (
             f"ON {_SCHEMA}.collection_idempotency(created_at DESC)",
         ),
     ),
+    PostgresMigration(
+        version=4,
+        name="queue_retention_indexes",
+        statements=(
+            f"""
+            CREATE INDEX IF NOT EXISTS ix_argus_collections_active_fifo
+            ON {_SCHEMA}.collections(created_at ASC, collection_id ASC)
+            WHERE status IN ('queued', 'running')
+            """,
+            f"""
+            CREATE INDEX IF NOT EXISTS ix_argus_collections_terminal_updated
+            ON {_SCHEMA}.collections(updated_at ASC, collection_id ASC)
+            WHERE status IN ('completed', 'partial', 'blocked', 'failed', 'cancelled')
+            """,
+            f"""
+            CREATE INDEX IF NOT EXISTS ix_argus_snapshots_retention
+            ON {_SCHEMA}.snapshots(source_url, collected_at DESC, snapshot_id DESC)
+            """,
+        ),
+    ),
 )
 
 
