@@ -178,15 +178,16 @@ class GenericWebAdapter:
     async def extract(self, task: SourceTask, fetched, request: CollectionRequest) -> SourceResult:
         if fetched.blocked:
             return SourceResult(observations=[], blocked=True)
+        collection_id = str(task.metadata.get("collection_id", ""))
         snapshot = await self.snapshots.capture(
             self.source_id,
             fetched.final_url,
             fetched.text,
             fetched.content_type,
+            collection_id=collection_id,
         )
         text = self._main_text(fetched.text, fetched.content_type)
         content_hash = sha256_text(text)
-        collection_id = str(task.metadata.get("collection_id", ""))
         research_goals = self._research_goals(task)
         json_ld = self.json_ld_extractor.extract(fetched.text, fetched.content_type)
         observation_id = stable_observation_id(
