@@ -50,7 +50,6 @@ class Settings(BaseSettings):
     queue_retry_after_seconds: int = Field(default=15, ge=1, le=3600)
 
     # Idempotency protects transport retries, not intentionally repeated analyses.
-    # 24 hours matches common production API practice and is independently configurable.
     idempotency_window_seconds: int = Field(default=86_400, ge=60, le=604_800)
 
     # Retention is conservative by default. Active collections are never purged.
@@ -61,6 +60,15 @@ class Settings(BaseSettings):
     retention_batch_size: int = Field(default=500, ge=1, le=10_000)
 
     api_max_request_bytes: int = Field(default=1024 * 1024, ge=4096, le=16 * 1024 * 1024)
+    api_full_result_max_items: int = Field(default=100, ge=1, le=5000)
+    api_full_result_max_bytes: int = Field(
+        default=4 * 1024 * 1024,
+        ge=64 * 1024,
+        le=100 * 1024 * 1024,
+    )
+    api_result_page_default_size: int = Field(default=50, ge=1, le=500)
+    api_result_page_max_size: int = Field(default=100, ge=1, le=500)
+
     log_level: str = "INFO"
     max_response_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     http_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
@@ -173,6 +181,10 @@ class Settings(BaseSettings):
         if self.retention_snapshot_days < self.retention_collection_days:
             raise ValueError(
                 "retention_snapshot_days must be >= retention_collection_days"
+            )
+        if self.api_result_page_default_size > self.api_result_page_max_size:
+            raise ValueError(
+                "api_result_page_default_size must be <= api_result_page_max_size"
             )
         if self.execution_role in {"api", "worker"} and self.storage_backend != "postgresql":
             raise ValueError("server api/worker roles require PostgreSQL storage")
