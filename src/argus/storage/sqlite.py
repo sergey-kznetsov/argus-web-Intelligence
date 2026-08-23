@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -107,17 +108,17 @@ class SQLiteRepository:
         *,
         idempotency_key: str,
         request_hash: str,
+        idempotency_window_seconds: int | None = None,
         max_active_collections: int | None = None,
         max_active_per_consumer: int | None = None,
     ) -> tuple[CollectionRecord, bool]:
-        # Queue admission limits are a server/PostgreSQL concern. Embedded SQLite keeps
-        # the same call signature so it remains substitutable for idempotency tests/tools.
         del max_active_collections, max_active_per_consumer
         return await self._run(
             self._create_collection_idempotent_sync,
             record,
             idempotency_key,
             request_hash,
+            idempotency_window_seconds,
         )
 
     def _create_collection_idempotent_sync(
@@ -125,8 +126,21 @@ class SQLiteRepository:
         record: CollectionRecord,
         idempotency_key: str,
         request_hash: str,
+        idempotency_window_seconds: int | None,
     ) -> tuple[CollectionRecord, bool]:
         with self._connect() as conn:
+            if idempotency_window_seconds is not None:
+                cutoff = record.created_at - timedelta(
+                    seconds=max(1, int(idempotency_window_seconds))
+                )
+                conn.execute(
+                    """
+                    DELETE FROM collection_idempotency
+                    WHERE idempotency_key=? AND created_at<=?
+                    """,
+                    (idempotency_key, cutoff.isoformat()),
+                )
+
             existing = conn.execute(
                 """
                 SELECT collection_id, request_hash
