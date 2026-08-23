@@ -293,7 +293,12 @@ class SQLiteRepository:
             ).fetchall()
         return [row["body"] for row in rows]
 
-    async def add_snapshot(self, snapshot: Snapshot) -> None:
+    async def add_snapshot(
+        self,
+        snapshot: Snapshot,
+        collection_id: str | None = None,
+    ) -> None:
+        del collection_id
         await self._run(self._add_snapshot_sync, snapshot)
 
     def _add_snapshot_sync(self, snapshot: Snapshot) -> None:
