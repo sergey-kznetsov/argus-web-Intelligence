@@ -28,9 +28,12 @@ class ServiceContainer:
     async def shutdown(self) -> None:
         # Stop collection jobs first so no caller can enqueue new crawler requests during shutdown.
         await self.orchestrator.shutdown()
-        # FAST and BROWSER do not depend on each other, so they can drain concurrently.
-        await asyncio.gather(
-            self.browser.shutdown(),
-            self.fast.shutdown(),
-            return_exceptions=False,
-        )
+        try:
+            # FAST and BROWSER do not depend on each other, so they can drain concurrently.
+            await asyncio.gather(
+                self.browser.shutdown(),
+                self.fast.shutdown(),
+                return_exceptions=False,
+            )
+        finally:
+            await self.repository.close()
