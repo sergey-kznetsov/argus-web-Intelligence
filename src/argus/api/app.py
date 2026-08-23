@@ -197,6 +197,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "history": True,
             "site_recipes": True,
             "sitemap_discovery": settings.sitemap_discovery_enabled,
+            "structured_extractors": ["json_ld"],
             "discovery_providers": configured_discovery_provider_names(settings),
             "geocoding_providers": configured_geocoding_provider_names(settings),
             "archive_providers": configured_archive_provider_names(settings),
