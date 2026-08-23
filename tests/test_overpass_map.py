@@ -108,6 +108,33 @@ async def test_overpass_rate_limit_is_blocked_after_retry_budget():
 
 
 @pytest.mark.asyncio
+async def test_overpass_does_not_retry_before_long_retry_after():
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        del request
+        calls += 1
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "120"},
+            text="rate limited",
+        )
+
+    provider = OverpassMapProvider(
+        settings(
+            direct_provider_max_retries=2,
+            direct_provider_retry_max_seconds=30,
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    result = await provider.search(map_request())
+    assert calls == 1
+    assert result.blocked is True
+    assert result.errors[0].code == "MAP_PROVIDER_BLOCKED"
+
+
+@pytest.mark.asyncio
 async def test_overpass_retries_503_then_succeeds():
     calls = 0
 
