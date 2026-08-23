@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     worker_heartbeat_seconds: float = Field(default=20.0, ge=1, le=300)
     worker_health_max_age_seconds: float = Field(default=60.0, ge=5, le=600)
 
+    queue_max_active_collections: int = Field(default=500, ge=1, le=100_000)
+    queue_max_active_per_consumer: int = Field(default=100, ge=1, le=10_000)
+    queue_retry_after_seconds: int = Field(default=15, ge=1, le=3600)
+
     log_level: str = "INFO"
     max_response_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     http_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
@@ -150,6 +154,10 @@ class Settings(BaseSettings):
             raise ValueError("postgres_pool_min_size must be <= postgres_pool_max_size")
         if self.worker_heartbeat_seconds >= self.worker_lease_seconds:
             raise ValueError("worker_heartbeat_seconds must be shorter than worker_lease_seconds")
+        if self.queue_max_active_per_consumer > self.queue_max_active_collections:
+            raise ValueError(
+                "queue_max_active_per_consumer must be <= queue_max_active_collections"
+            )
         if self.execution_role in {"api", "worker"} and self.storage_backend != "postgresql":
             raise ValueError("server api/worker roles require PostgreSQL storage")
         return self
