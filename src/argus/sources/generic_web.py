@@ -11,6 +11,7 @@ from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.crawler.models import FetchResult
 from argus.extraction.jsonld import EmbeddedJsonLdExtractor, JsonLdExtraction
+from argus.extraction.microformats import MicroformatsExtraction, extract_microformats
 from argus.extraction.page_metadata import PageMetadataExtraction, extract_page_metadata
 from argus.history.snapshots import SnapshotService, sha256_text
 from argus.normalization.identity import stable_evidence_id, stable_observation_id
@@ -196,6 +197,11 @@ class GenericWebAdapter:
             content_type=fetched.content_type,
             base_url=fetched.final_url,
         )
+        microformats = extract_microformats(
+            fetched.text,
+            content_type=fetched.content_type,
+            base_url=fetched.final_url,
+        )
         observation_id = stable_observation_id(
             collection_id=collection_id,
             source_id=self.source_id,
@@ -216,6 +222,12 @@ class GenericWebAdapter:
             "page_metadata_summary": {
                 "fields": len(page_metadata.fields),
                 "truncated": page_metadata.truncated,
+            },
+            "microformats_summary": {
+                "roots_seen": microformats.roots_seen,
+                "roots_skipped": microformats.roots_skipped,
+                "items": len(microformats.items),
+                "truncated": microformats.truncated,
             },
         }
         if fetched.metadata:
@@ -298,6 +310,16 @@ class GenericWebAdapter:
         if metadata_observation is not None and metadata_evidence is not None:
             observations.append(metadata_observation)
             evidence_items.append(metadata_evidence)
+        microformat_observations, microformat_evidence = self._microformat_observations(
+            microformats,
+            collection_id=collection_id,
+            request=request,
+            page_url=fetched.final_url,
+            snapshot_id=snapshot.snapshot_id,
+            research_goals=research_goals,
+        )
+        observations.extend(microformat_observations)
+        evidence_items.extend(microformat_evidence)
         discovered = self._discovered_tasks(task, fetched, request, observation.collection_id)
         return SourceResult(
             observations=observations,
@@ -489,6 +511,98 @@ class GenericWebAdapter:
         )
         return observation, evidence
 
+    def _microformat_observations(
+        self,
+        extraction: MicroformatsExtraction,
+        *,
+        collection_id: str,
+        request: CollectionRequest,
+        page_url: str,
+        snapshot_id: str,
+        research_goals: list[str],
+    ) -> tuple[list[Observation], list[Evidence]]:
+        observations: list[Observation] = []
+        evidence_items: list[Evidence] = []
+        for index, item in enumerate(extraction.items):
+            canonical = json.dumps(
+                item.properties,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            content_hash = sha256_text(canonical)
+            entity_type = "review" if item.kind == "h-review" else "publication"
+            source_kind = "microformat_h_review" if item.kind == "h-review" else "microformat_h_entry"
+            observation_id = stable_observation_id(
+                collection_id=collection_id,
+                source_id=self.source_id,
+                entity_type=entity_type,
+                entity_id=item.entity_id,
+                source_url=item.source_url,
+                content_hash=content_hash,
+            )
+            observation = Observation(
+                observation_id=observation_id,
+                collection_id=collection_id,
+                analysis_id=request.analysis_id,
+                consumer=request.consumer,
+                source=self.source_id,
+                source_kind=source_kind,
+                url=item.source_url,
+                entity_type=entity_type,
+                entity_id=item.entity_id,
+                title=item.title,
+                text=item.text,
+                data={
+                    "microformat_kind": item.kind,
+                    "properties": item.properties,
+                },
+                published_at=item.published_at,
+                content_hash=content_hash,
+                provenance={
+                    "snapshot_id": snapshot_id,
+                    "page_url": page_url,
+                    "declared_url": item.source_url,
+                    "research_goals": research_goals,
+                    "extractor": extraction.extractor_version,
+                    "explicit_properties_only": True,
+                    "root_index": index,
+                },
+                quality={
+                    "evidence_backed": True,
+                    "machine_readable": True,
+                    "source_declared": True,
+                },
+            )
+            evidence_text = canonical[:10_000]
+            evidence = Evidence(
+                evidence_id=stable_evidence_id(
+                    observation_id=observation.observation_id,
+                    evidence_type=source_kind,
+                    source_url=page_url,
+                    text=evidence_text,
+                ),
+                observation_id=observation.observation_id,
+                type=source_kind,
+                text=evidence_text,
+                source=EvidenceSource(
+                    provider=self.source_id,
+                    url=page_url,
+                    collected_at=observation.collected_at,
+                    source_id=self.source_id,
+                ),
+                metadata={
+                    "microformat_kind": item.kind,
+                    "declared_url": item.source_url,
+                    "research_goals": research_goals,
+                    "extractor": extraction.extractor_version,
+                    "explicit_properties_only": True,
+                },
+            )
+            observations.append(observation)
+            evidence_items.append(evidence)
+        return observations, evidence_items
+
     @staticmethod
     def _metadata_string(fields: dict[str, object], *keys: str) -> str | None:
         for key in keys:
@@ -509,6 +623,7 @@ class GenericWebAdapter:
             "sitemap_discovery_enabled": self.sitemap_discovery_enabled,
             "json_ld_extraction": True,
             "page_metadata_extraction": True,
+            "microformats2_extraction": True,
         }
 
     def _discovered_tasks(
