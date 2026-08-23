@@ -24,6 +24,7 @@ from argus.research.planner import OllamaResearchPlanner
 from argus.research.searxng import SearxngDiscoveryProvider
 from argus.security.urls import UrlGuard
 from argus.services import ServiceContainer
+from argus.sources.json_feed import JSONFeedAdapter
 from argus.sources.office_web import OfficeAwareGenericWebAdapter
 from argus.sources.overpass_map import OverpassSourceAdapter
 from argus.sources.registry import SourceRegistry
@@ -144,6 +145,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     discovery = build_discovery(settings, guard, browser)
     geocoder = build_geocoder(settings)
     map_registry = build_map_registry(settings)
+    structured_extractor = build_structured_data_extractor(settings)
     registry = SourceRegistry()
     registry.register(
         OfficeAwareGenericWebAdapter(
@@ -154,11 +156,12 @@ def build_services(settings: Settings) -> ServiceContainer:
             agent=agent,
             sitemap_discovery_enabled=settings.sitemap_discovery_enabled,
             pdf_extractor=build_pdf_extractor(settings),
-            structured_data_extractor=build_structured_data_extractor(settings),
+            structured_data_extractor=structured_extractor,
             ooxml_extractor=build_ooxml_extractor(settings),
         )
     )
     registry.register(RSSAdapter(fast, snapshots))
+    registry.register(JSONFeedAdapter(fast, snapshots, structured_extractor))
     if settings.sitemap_discovery_enabled:
         registry.register(SitemapDiscoveryAdapter(settings, fast))
     if settings.overpass_url:
