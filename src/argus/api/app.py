@@ -26,7 +26,7 @@ from argus.idempotency import request_fingerprint, storage_idempotency_key
 from argus.module_protocol import MODULE_ID, runtime_manifest
 from argus.observability import configure_logging
 from argus.security.auth import bearer_dependency, ensure_token
-from argus.storage.base import IdempotencyConflictError
+from argus.storage.base import IdempotencyConflictError, QueueCapacityError
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -108,6 +108,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "queue_backend": "postgresql_leases" if server_queue else "embedded",
             "idempotent_submission": settings.execution_role == "api",
             "worker_required_for_readiness": settings.execution_role == "api",
+            "queue_limits": (
+                {
+                    "max_active_collections": settings.queue_max_active_collections,
+                    "max_active_per_consumer": settings.queue_max_active_per_consumer,
+                    "retry_after_seconds": settings.queue_retry_after_seconds,
+                }
+                if settings.execution_role == "api"
+                else None
+            ),
             "history": True,
             "site_recipes": True,
             "sitemap_discovery": settings.sitemap_discovery_enabled,
@@ -147,11 +156,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 record,
                 idempotency_key=idempotency_key,
                 request_hash=fingerprint,
+                max_active_collections=settings.queue_max_active_collections,
+                max_active_per_consumer=settings.queue_max_active_per_consumer,
             )
         except IdempotencyConflictError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="idempotency key is already used by a different collection request",
+            ) from exc
+        except QueueCapacityError as exc:
+            status_code = (
+                status.HTTP_429_TOO_MANY_REQUESTS
+                if exc.scope == "consumer"
+                else status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+            raise HTTPException(
+                status_code=status_code,
+                detail={
+                    "code": "QUEUE_CAPACITY_REACHED",
+                    "scope": exc.scope,
+                    "active": exc.current,
+                    "limit": exc.limit,
+                },
+                headers={"Retry-After": str(settings.queue_retry_after_seconds)},
             ) from exc
         return CollectionAccepted(
             collection_id=stored.collection_id,
