@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,7 +15,22 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = Field(default=8787, ge=1, le=65535)
     token_file: Path = Path(".argus/token")
+    storage_backend: Literal["sqlite", "postgresql"] = "sqlite"
     db_path: Path = Path(".argus/argus.sqlite3")
+    database_dsn: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("ARGUS_DATABASE_DSN", "GEOANALYZER_DATABASE_DSN"),
+    )
+    database_dsn_file: Path | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "ARGUS_DATABASE_DSN_FILE",
+            "GEOANALYZER_DATABASE_DSN_FILE",
+        ),
+    )
+    postgres_pool_min_size: int = Field(default=1, ge=0, le=32)
+    postgres_pool_max_size: int = Field(default=8, ge=1, le=128)
+    postgres_pool_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     log_level: str = "INFO"
     max_response_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     http_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
@@ -107,7 +123,7 @@ class Settings(BaseSettings):
         return url
 
     @model_validator(mode="after")
-    def validate_throttling(self) -> "Settings":
+    def validate_limits(self) -> "Settings":
         if self.throttle_max_delay_seconds < self.throttle_base_delay_seconds:
             raise ValueError("throttle_max_delay_seconds must be >= throttle_base_delay_seconds")
         if self.direct_provider_retry_max_seconds < self.direct_provider_retry_base_seconds:
@@ -116,7 +132,25 @@ class Settings(BaseSettings):
             )
         if self.browser_max_concurrency > self.max_concurrency:
             self.browser_max_concurrency = self.max_concurrency
+        if self.postgres_pool_min_size > self.postgres_pool_max_size:
+            raise ValueError("postgres_pool_min_size must be <= postgres_pool_max_size")
         return self
+
+    def database_dsn_value(self) -> str | None:
+        """Resolve the PostgreSQL DSN, preferring the deployment manager's secret file."""
+
+        if self.database_dsn_file is not None:
+            try:
+                value = self.database_dsn_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                value = ""
+            if value:
+                return value
+        if self.database_dsn is not None:
+            value = self.database_dsn.get_secret_value().strip()
+            if value:
+                return value
+        return None
 
     def ensure_dirs(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
