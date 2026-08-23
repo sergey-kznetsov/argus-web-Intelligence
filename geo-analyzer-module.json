@@ -4,7 +4,7 @@
     "module_id": "argus.web.intelligence",
     "display_name": "ARGUS Web Intelligence",
     "description": "Скрытый инфраструктурный backend сбора и доказательного хранения данных из публичных интернет-источников для серверных аналитических модулей.",
-    "module_version": "0.1.0",
+    "module_version": "0.2.0",
     "protocol_version": "1.0.0"
   },
   "runtime": {
