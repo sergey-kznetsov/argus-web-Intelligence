@@ -7,6 +7,7 @@ from argus.crawler.agent.stagehand import StagehandAgent
 from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.extraction.pdf import BoundedPdfExtractor
+from argus.extraction.structured_data import BoundedStructuredDataExtractor
 from argus.geocoding.contracts import GeocodeProvider
 from argus.geocoding.nominatim import NominatimGeocoder
 from argus.history.snapshots import SnapshotService
@@ -103,6 +104,17 @@ def build_pdf_extractor(settings: Settings) -> BoundedPdfExtractor:
     )
 
 
+def build_structured_data_extractor(settings: Settings) -> BoundedStructuredDataExtractor:
+    return BoundedStructuredDataExtractor(
+        max_bytes=settings.structured_data_max_bytes,
+        max_records=settings.structured_data_max_records,
+        max_columns=settings.structured_data_max_columns,
+        max_cell_chars=settings.structured_data_max_cell_chars,
+        max_json_depth=settings.structured_data_max_json_depth,
+        max_json_nodes=settings.structured_data_max_json_nodes,
+    )
+
+
 def build_services(settings: Settings) -> ServiceContainer:
     settings.ensure_dirs()
     repository = build_repository(settings)
@@ -125,6 +137,7 @@ def build_services(settings: Settings) -> ServiceContainer:
             agent=agent,
             sitemap_discovery_enabled=settings.sitemap_discovery_enabled,
             pdf_extractor=build_pdf_extractor(settings),
+            structured_data_extractor=build_structured_data_extractor(settings),
         )
     )
     registry.register(RSSAdapter(fast, snapshots))
