@@ -32,6 +32,7 @@ class ResultBundle:
 class ObservationSlice:
     record: CollectionRecord
     total_count: int
+    stored_bytes: int
     items: list[Observation]
     has_more: bool
 
@@ -40,6 +41,7 @@ class ObservationSlice:
 class EvidenceSlice:
     record: CollectionRecord
     total_count: int
+    stored_bytes: int
     items: list[Evidence]
     has_more: bool
 
@@ -73,6 +75,7 @@ class ResultReadStore(Protocol):
         *,
         after_id: str | None,
         limit: int,
+        max_bytes: int,
     ) -> ObservationSlice | None: ...
     async def evidence_page(
         self,
@@ -80,6 +83,7 @@ class ResultReadStore(Protocol):
         *,
         after_id: str | None,
         limit: int,
+        max_bytes: int,
     ) -> EvidenceSlice | None: ...
 
 
@@ -122,12 +126,14 @@ class SQLiteResultReadStore:
         *,
         after_id: str | None,
         limit: int,
+        max_bytes: int,
     ) -> ObservationSlice | None:
         return await self._run(
             self._observation_page_sync,
             collection_id,
             after_id,
             limit,
+            max_bytes,
         )
 
     async def evidence_page(
@@ -136,12 +142,14 @@ class SQLiteResultReadStore:
         *,
         after_id: str | None,
         limit: int,
+        max_bytes: int,
     ) -> EvidenceSlice | None:
         return await self._run(
             self._evidence_page_sync,
             collection_id,
             after_id,
             limit,
+            max_bytes,
         )
 
     async def _run(self, fn, *args):
@@ -185,6 +193,20 @@ class SQLiteResultReadStore:
         ).fetchone()
         return CollectionRecord.model_validate_json(row["body"]) if row else None
 
+    @staticmethod
+    def _has_after(
+        conn: sqlite3.Connection,
+        table: str,
+        id_column: str,
+        collection_id: str,
+        item_id: str,
+    ) -> bool:
+        row = conn.execute(
+            f"SELECT 1 FROM {table} WHERE collection_id=? AND {id_column}>? LIMIT 1",
+            (collection_id, item_id),
+        ).fetchone()
+        return row is not None
+
     def _result_stats_sync(
         self,
         collection_id: str,
@@ -194,8 +216,7 @@ class SQLiteResultReadStore:
             record = self._record(conn, collection_id)
             if record is None:
                 return None
-            stats = self._stats(conn, collection_id)
-            return record, stats
+            return record, self._stats(conn, collection_id)
 
     def _read_bounded_result_sync(
         self,
@@ -212,19 +233,11 @@ class SQLiteResultReadStore:
             if stats.total_items > max(1, max_items) or stats.stored_bytes > max(1024, max_bytes):
                 raise ResultTooLargeError(stats)
             observation_rows = conn.execute(
-                """
-                SELECT body FROM observations
-                WHERE collection_id=?
-                ORDER BY observation_id ASC
-                """,
+                "SELECT body FROM observations WHERE collection_id=? ORDER BY observation_id ASC",
                 (collection_id,),
             ).fetchall()
             evidence_rows = conn.execute(
-                """
-                SELECT body FROM evidence
-                WHERE collection_id=?
-                ORDER BY evidence_id ASC
-                """,
+                "SELECT body FROM evidence WHERE collection_id=? ORDER BY evidence_id ASC",
                 (collection_id,),
             ).fetchall()
             return ResultBundle(
@@ -241,8 +254,10 @@ class SQLiteResultReadStore:
         collection_id: str,
         after_id: str | None,
         limit: int,
+        max_bytes: int,
     ) -> ObservationSlice | None:
         page_size = max(1, limit)
+        byte_limit = max(1024, max_bytes)
         with self._connect() as conn:
             conn.execute("BEGIN")
             record = self._record(conn, collection_id)
@@ -254,34 +269,49 @@ class SQLiteResultReadStore:
                     (collection_id,),
                 ).fetchone()[0]
             )
+            params: tuple[object, ...]
             if after_id is None:
-                rows = conn.execute(
-                    """
-                    SELECT body FROM observations
+                query = """
+                    SELECT observation_id, body, LENGTH(CAST(body AS BLOB)) AS body_bytes
+                    FROM observations
                     WHERE collection_id=?
                     ORDER BY observation_id ASC
                     LIMIT ?
-                    """,
-                    (collection_id, page_size + 1),
-                ).fetchall()
+                """
+                params = (collection_id, page_size)
             else:
-                rows = conn.execute(
-                    """
-                    SELECT body FROM observations
+                query = """
+                    SELECT observation_id, body, LENGTH(CAST(body AS BLOB)) AS body_bytes
+                    FROM observations
                     WHERE collection_id=? AND observation_id>?
                     ORDER BY observation_id ASC
                     LIMIT ?
-                    """,
-                    (collection_id, after_id, page_size + 1),
-                ).fetchall()
-            has_more = len(rows) > page_size
+                """
+                params = (collection_id, after_id, page_size)
+            items: list[Observation] = []
+            used_bytes = 0
+            stopped_for_bytes = False
+            for row in conn.execute(query, params):
+                body_bytes = int(row["body_bytes"] or 0)
+                if items and used_bytes + body_bytes > byte_limit:
+                    stopped_for_bytes = True
+                    break
+                items.append(Observation.model_validate_json(row["body"]))
+                used_bytes += body_bytes
+            has_more = stopped_for_bytes
+            if items and not has_more and len(items) == page_size:
+                has_more = self._has_after(
+                    conn,
+                    "observations",
+                    "observation_id",
+                    collection_id,
+                    items[-1].observation_id,
+                )
             return ObservationSlice(
                 record=record,
                 total_count=total,
-                items=[
-                    Observation.model_validate_json(row["body"])
-                    for row in rows[:page_size]
-                ],
+                stored_bytes=used_bytes,
+                items=items,
                 has_more=has_more,
             )
 
@@ -290,8 +320,10 @@ class SQLiteResultReadStore:
         collection_id: str,
         after_id: str | None,
         limit: int,
+        max_bytes: int,
     ) -> EvidenceSlice | None:
         page_size = max(1, limit)
+        byte_limit = max(1024, max_bytes)
         with self._connect() as conn:
             conn.execute("BEGIN")
             record = self._record(conn, collection_id)
@@ -303,30 +335,48 @@ class SQLiteResultReadStore:
                     (collection_id,),
                 ).fetchone()[0]
             )
+            params: tuple[object, ...]
             if after_id is None:
-                rows = conn.execute(
-                    """
-                    SELECT body FROM evidence
+                query = """
+                    SELECT evidence_id, body, LENGTH(CAST(body AS BLOB)) AS body_bytes
+                    FROM evidence
                     WHERE collection_id=?
                     ORDER BY evidence_id ASC
                     LIMIT ?
-                    """,
-                    (collection_id, page_size + 1),
-                ).fetchall()
+                """
+                params = (collection_id, page_size)
             else:
-                rows = conn.execute(
-                    """
-                    SELECT body FROM evidence
+                query = """
+                    SELECT evidence_id, body, LENGTH(CAST(body AS BLOB)) AS body_bytes
+                    FROM evidence
                     WHERE collection_id=? AND evidence_id>?
                     ORDER BY evidence_id ASC
                     LIMIT ?
-                    """,
-                    (collection_id, after_id, page_size + 1),
-                ).fetchall()
-            has_more = len(rows) > page_size
+                """
+                params = (collection_id, after_id, page_size)
+            items: list[Evidence] = []
+            used_bytes = 0
+            stopped_for_bytes = False
+            for row in conn.execute(query, params):
+                body_bytes = int(row["body_bytes"] or 0)
+                if items and used_bytes + body_bytes > byte_limit:
+                    stopped_for_bytes = True
+                    break
+                items.append(Evidence.model_validate_json(row["body"]))
+                used_bytes += body_bytes
+            has_more = stopped_for_bytes
+            if items and not has_more and len(items) == page_size:
+                has_more = self._has_after(
+                    conn,
+                    "evidence",
+                    "evidence_id",
+                    collection_id,
+                    items[-1].evidence_id,
+                )
             return EvidenceSlice(
                 record=record,
                 total_count=total,
-                items=[Evidence.model_validate_json(row["body"]) for row in rows[:page_size]],
+                stored_bytes=used_bytes,
+                items=items,
                 has_more=has_more,
             )
