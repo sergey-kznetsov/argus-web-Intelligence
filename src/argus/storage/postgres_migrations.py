@@ -94,6 +94,34 @@ MIGRATIONS: tuple[PostgresMigration, ...] = (
             f"ON {_SCHEMA}.site_recipes(domain, goal, version DESC)",
         ),
     ),
+    PostgresMigration(
+        version=2,
+        name="worker_leases",
+        statements=(
+            f"""
+            CREATE TABLE IF NOT EXISTS {_SCHEMA}.collection_leases (
+              collection_id TEXT PRIMARY KEY
+                REFERENCES {_SCHEMA}.collections(collection_id) ON DELETE CASCADE,
+              worker_id TEXT NOT NULL,
+              leased_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              lease_until TIMESTAMPTZ NOT NULL
+            )
+            """,
+            f"CREATE INDEX IF NOT EXISTS ix_argus_collection_leases_until "
+            f"ON {_SCHEMA}.collection_leases(lease_until)",
+            f"""
+            CREATE TABLE IF NOT EXISTS {_SCHEMA}.worker_instances (
+              worker_id TEXT PRIMARY KEY,
+              started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              heartbeat_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb
+            )
+            """,
+            f"CREATE INDEX IF NOT EXISTS ix_argus_worker_instances_heartbeat "
+            f"ON {_SCHEMA}.worker_instances(heartbeat_at DESC)",
+        ),
+    ),
 )
 
 
