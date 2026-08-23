@@ -111,7 +111,10 @@ class FastCrawlerRuntime:
                     raise ValueError("response body exceeds configured limit")
                 content_type = response.headers.get("content-type")
                 text = self._decode_body(body, content_type)
-                blocked = response.status_code in {401, 403, 429} or self._looks_blocked(text)
+                blocked = response.status_code in {401, 403, 429} or self._looks_blocked(
+                    text,
+                    content_type,
+                )
                 title, links = self._html_metadata(text, final_url, content_type)
                 self._broker.resolve(
                     context.request.unique_key,
@@ -203,7 +206,9 @@ class FastCrawlerRuntime:
         return title, links
 
     @staticmethod
-    def _looks_blocked(text: str) -> bool:
+    def _looks_blocked(text: str, content_type: str | None = None) -> bool:
+        if content_type and "html" not in content_type.casefold():
+            return False
         sample = text[:50_000].lower()
         markers = ("captcha", "verify you are human", "access denied", "robot check")
         return any(marker in sample for marker in markers)
