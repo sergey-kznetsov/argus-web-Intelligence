@@ -49,6 +49,16 @@ class Settings(BaseSettings):
     queue_max_active_per_consumer: int = Field(default=100, ge=1, le=10_000)
     queue_retry_after_seconds: int = Field(default=15, ge=1, le=3600)
 
+    # Idempotency protects transport retries, not intentionally repeated analyses.
+    # 24 hours matches common production API practice and is independently configurable.
+    idempotency_window_seconds: int = Field(default=86_400, ge=60, le=604_800)
+
+    # Retention is conservative by default. Active collections are never purged.
+    retention_maintenance_interval_seconds: int = Field(default=3600, ge=60, le=86_400)
+    retention_collection_days: int = Field(default=180, ge=1, le=3650)
+    retention_snapshot_days: int = Field(default=365, ge=1, le=3650)
+    retention_batch_size: int = Field(default=500, ge=1, le=10_000)
+
     log_level: str = "INFO"
     max_response_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     http_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
@@ -157,6 +167,10 @@ class Settings(BaseSettings):
         if self.queue_max_active_per_consumer > self.queue_max_active_collections:
             raise ValueError(
                 "queue_max_active_per_consumer must be <= queue_max_active_collections"
+            )
+        if self.retention_snapshot_days < self.retention_collection_days:
+            raise ValueError(
+                "retention_snapshot_days must be >= retention_collection_days"
             )
         if self.execution_role in {"api", "worker"} and self.storage_backend != "postgresql":
             raise ValueError("server api/worker roles require PostgreSQL storage")
