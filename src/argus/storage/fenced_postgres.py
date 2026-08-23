@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any, NoReturn
 
+from psycopg import InterfaceError, OperationalError
 from psycopg.types.json import Jsonb
 
 from argus.contracts.models import CollectionRecord, Evidence, Observation, Snapshot
@@ -24,29 +25,43 @@ class FencedPostgresRepository(PostgresRepository):
 
     API/admin calls have no lease context and retain the normal repository behavior.
     Worker execution installs a per-task lease context; collection-scoped mutations are
-    accepted only while that worker still owns a non-expired lease. Storage failures
-    inside that context abort the worker attempt so the persisted checkpoint can replay.
+    accepted only while that worker still owns a non-expired lease. Retryable database
+    failures abort the current attempt so the persisted checkpoint can replay.
     """
 
     @staticmethod
-    def _abort_storage_attempt(
+    def _is_retryable_storage_error(exc: Exception) -> bool:
+        return isinstance(exc, (OperationalError, InterfaceError))
+
+    @classmethod
+    def _raise_storage_failure(
+        cls,
         fence: LeaseFence,
         operation: str,
         exc: Exception,
     ) -> NoReturn:
+        retryable = cls._is_retryable_storage_error(exc)
         logger.error(
             "lease-owned storage operation failed",
             extra={
-                "event": "worker_storage_failed",
+                "event": (
+                    "worker_storage_retryable_failed"
+                    if retryable
+                    else "worker_storage_fatal_failed"
+                ),
                 "worker_id": fence.worker_id,
                 "collection_id": fence.collection_id,
                 "operation": operation,
                 "error_type": type(exc).__name__,
+                "retryable": retryable,
             },
         )
-        raise WorkerStorageError(
-            f"storage operation '{operation}' failed for collection {fence.collection_id}"
-        ) from exc
+        if retryable:
+            raise WorkerStorageError(
+                f"retryable storage operation '{operation}' failed for collection "
+                f"{fence.collection_id}"
+            ) from exc
+        raise exc
 
     async def get_collection(self, collection_id: str) -> CollectionRecord | None:
         fence = current_lease_fence(collection_id)
@@ -55,7 +70,7 @@ class FencedPostgresRepository(PostgresRepository):
         try:
             return await super().get_collection(collection_id)
         except Exception as exc:
-            self._abort_storage_attempt(fence, "get_collection", exc)
+            self._raise_storage_failure(fence, "get_collection", exc)
 
     async def update_collection(self, record: CollectionRecord) -> None:
         fence = current_lease_fence(record.collection_id)
@@ -90,7 +105,7 @@ class FencedPostgresRepository(PostgresRepository):
                     ),
                 )
         except Exception as exc:
-            self._abort_storage_attempt(fence, "update_collection", exc)
+            self._raise_storage_failure(fence, "update_collection", exc)
         if cursor.rowcount != 1:
             raise LeaseLostError(
                 f"worker {fence.worker_id} no longer owns lease for {record.collection_id}"
@@ -218,7 +233,7 @@ class FencedPostgresRepository(PostgresRepository):
             raise
         except Exception as exc:
             if fence is not None:
-                self._abort_storage_attempt(fence, "commit_task_success", exc)
+                self._raise_storage_failure(fence, "commit_task_success", exc)
             raise
 
     async def _upsert_collection_json(
@@ -288,7 +303,7 @@ class FencedPostgresRepository(PostgresRepository):
                     ),
                 )
         except Exception as exc:
-            self._abort_storage_attempt(fence, f"upsert_{table}", exc)
+            self._raise_storage_failure(fence, f"upsert_{table}", exc)
         if cursor.rowcount != 1:
             raise LeaseLostError(
                 f"worker {fence.worker_id} no longer owns lease for {collection_id}"
@@ -301,7 +316,7 @@ class FencedPostgresRepository(PostgresRepository):
         try:
             return await super().list_observations(collection_id)
         except Exception as exc:
-            self._abort_storage_attempt(fence, "list_observations", exc)
+            self._raise_storage_failure(fence, "list_observations", exc)
 
     async def list_evidence(self, collection_id: str):
         fence = current_lease_fence(collection_id)
@@ -310,7 +325,7 @@ class FencedPostgresRepository(PostgresRepository):
         try:
             return await super().list_evidence(collection_id)
         except Exception as exc:
-            self._abort_storage_attempt(fence, "list_evidence", exc)
+            self._raise_storage_failure(fence, "list_evidence", exc)
 
     async def add_snapshot(
         self,
@@ -359,7 +374,7 @@ class FencedPostgresRepository(PostgresRepository):
                     )
                 ).fetchone()
         except Exception as exc:
-            self._abort_storage_attempt(fence, "add_snapshot", exc)
+            self._raise_storage_failure(fence, "add_snapshot", exc)
         if existing is not None:
             return
         raise LeaseLostError(
@@ -373,7 +388,7 @@ class FencedPostgresRepository(PostgresRepository):
         try:
             return await super().latest_snapshot(source_url)
         except Exception as exc:
-            self._abort_storage_attempt(fence, "latest_snapshot", exc)
+            self._raise_storage_failure(fence, "latest_snapshot", exc)
 
     async def save_recipe(self, recipe: SiteRecipe) -> None:
         fence = active_lease_fence()
@@ -383,7 +398,7 @@ class FencedPostgresRepository(PostgresRepository):
         try:
             await super().save_recipe(recipe)
         except Exception as exc:
-            self._abort_storage_attempt(fence, "save_recipe", exc)
+            self._raise_storage_failure(fence, "save_recipe", exc)
 
     async def get_recipe(self, domain: str, goal: str) -> SiteRecipe | None:
         fence = active_lease_fence()
@@ -392,4 +407,4 @@ class FencedPostgresRepository(PostgresRepository):
         try:
             return await super().get_recipe(domain, goal)
         except Exception as exc:
-            self._abort_storage_attempt(fence, "get_recipe", exc)
+            self._raise_storage_failure(fence, "get_recipe", exc)
