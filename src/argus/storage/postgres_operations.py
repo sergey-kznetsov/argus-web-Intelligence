@@ -111,6 +111,7 @@ class PostgresOperationsStore:
         return [self._summary(row) for row in rows[:page_size]], len(rows) > page_size
 
     async def result_stats(self, collection_id: str) -> tuple[CollectionRecord, ResultStats] | None:
+        await self._touch_result_access(collection_id)
         async with self._pool.connection() as conn:
             async with conn.transaction():
                 await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
@@ -124,6 +125,7 @@ class PostgresOperationsStore:
         max_items: int,
         max_bytes: int,
     ) -> ResultBundle | None:
+        await self._touch_result_access(collection_id)
         async with self._pool.connection() as conn:
             async with conn.transaction():
                 await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
@@ -156,6 +158,7 @@ class PostgresOperationsStore:
         limit: int,
         max_bytes: int,
     ) -> ObservationSlice | None:
+        await self._touch_result_access(collection_id)
         page_size = max(1, min(int(limit), 500))
         byte_limit = max(1024, int(max_bytes))
         async with self._pool.connection() as conn:
@@ -189,6 +192,7 @@ class PostgresOperationsStore:
         limit: int,
         max_bytes: int,
     ) -> EvidenceSlice | None:
+        await self._touch_result_access(collection_id)
         page_size = max(1, min(int(limit), 500))
         byte_limit = max(1024, int(max_bytes))
         async with self._pool.connection() as conn:
@@ -213,6 +217,21 @@ class PostgresOperationsStore:
                     conn, "evidence", "evidence_id", collection_id, items[-1].evidence_id
                 )
                 return EvidenceSlice(record, total, used_bytes, items, has_more)
+
+    async def _touch_result_access(self, collection_id: str) -> bool:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO argus.collection_result_access(collection_id, last_accessed_at)
+                SELECT collection_id, NOW()
+                FROM argus.collections
+                WHERE collection_id=%s
+                ON CONFLICT (collection_id) DO UPDATE
+                SET last_accessed_at=EXCLUDED.last_accessed_at
+                """,
+                (collection_id,),
+            )
+        return cursor.rowcount == 1
 
     @staticmethod
     async def _bounded_rows(
