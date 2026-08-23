@@ -107,6 +107,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "execution_role": settings.execution_role,
             "queue_backend": "postgresql_leases" if server_queue else "embedded",
             "idempotent_submission": settings.execution_role == "api",
+            "idempotency_window_seconds": (
+                settings.idempotency_window_seconds
+                if settings.execution_role == "api"
+                else None
+            ),
             "worker_required_for_readiness": settings.execution_role == "api",
             "queue_limits": (
                 {
@@ -115,6 +120,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "retry_after_seconds": settings.queue_retry_after_seconds,
                 }
                 if settings.execution_role == "api"
+                else None
+            ),
+            "retention": (
+                {
+                    "collection_days": settings.retention_collection_days,
+                    "snapshot_days": settings.retention_snapshot_days,
+                    "maintenance_interval_seconds": (
+                        settings.retention_maintenance_interval_seconds
+                    ),
+                    "batch_size": settings.retention_batch_size,
+                    "preserve_latest_snapshot_per_url": True,
+                }
+                if server_queue
                 else None
             ),
             "history": True,
@@ -129,6 +147,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "agent_backend": settings.agent_backend if settings.agent_enabled else None,
             "agent_backends": ["browser-use", "stagehand"],
         }
+
+    @app.get("/v1/operations/queue", dependencies=[Depends(require_bearer)])
+    async def queue_operations():
+        metrics_reader = getattr(repository, "queue_metrics", None)
+        if settings.execution_role != "api" or not callable(metrics_reader):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="queue operations are available only in server API mode",
+            )
+        metrics = await metrics_reader(
+            worker_max_age_seconds=settings.worker_health_max_age_seconds
+        )
+        payload = metrics.as_dict()
+        payload.update(
+            {
+                "max_active_collections": settings.queue_max_active_collections,
+                "max_active_per_consumer": settings.queue_max_active_per_consumer,
+                "idempotency_window_seconds": settings.idempotency_window_seconds,
+            }
+        )
+        return payload
 
     @app.post(
         "/v1/collections",
@@ -156,6 +195,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 record,
                 idempotency_key=idempotency_key,
                 request_hash=fingerprint,
+                idempotency_window_seconds=settings.idempotency_window_seconds,
                 max_active_collections=settings.queue_max_active_collections,
                 max_active_per_consumer=settings.queue_max_active_per_consumer,
             )
