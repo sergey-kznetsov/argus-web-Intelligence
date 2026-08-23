@@ -49,10 +49,8 @@ class Settings(BaseSettings):
     queue_max_active_per_consumer: int = Field(default=100, ge=1, le=10_000)
     queue_retry_after_seconds: int = Field(default=15, ge=1, le=3600)
 
-    # Idempotency protects transport retries, not intentionally repeated analyses.
     idempotency_window_seconds: int = Field(default=86_400, ge=60, le=604_800)
 
-    # Retention is conservative by default. Active collections are never purged.
     retention_maintenance_interval_seconds: int = Field(default=3600, ge=60, le=86_400)
     retention_collection_days: int = Field(default=180, ge=1, le=3650)
     retention_snapshot_days: int = Field(default=365, ge=1, le=3650)
@@ -68,6 +66,11 @@ class Settings(BaseSettings):
     )
     api_result_page_default_size: int = Field(default=50, ge=1, le=500)
     api_result_page_max_size: int = Field(default=100, ge=1, le=500)
+    api_result_page_max_bytes: int = Field(
+        default=2 * 1024 * 1024,
+        ge=64 * 1024,
+        le=32 * 1024 * 1024,
+    )
 
     log_level: str = "INFO"
     max_response_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
@@ -191,8 +194,6 @@ class Settings(BaseSettings):
         return self
 
     def database_dsn_value(self) -> str | None:
-        """Resolve the PostgreSQL DSN, preferring the deployment manager's secret file."""
-
         if self.database_dsn_file is not None:
             try:
                 value = self.database_dsn_file.read_text(encoding="utf-8").strip()
