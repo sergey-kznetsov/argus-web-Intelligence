@@ -117,6 +117,7 @@ async def _retention() -> None:
             worker_registration_retention_days=(
                 settings.retention_worker_registration_days
             ),
+            result_access_grace_seconds=settings.retention_result_access_grace_seconds,
             batch_size=settings.retention_batch_size,
         )
         print(
