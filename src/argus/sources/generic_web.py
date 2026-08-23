@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from urllib.parse import urldefrag, urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -9,6 +10,7 @@ from argus.crawler.agent.base import AgentBackend, AgentTask
 from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.crawler.models import FetchResult
+from argus.extraction.jsonld import EmbeddedJsonLdExtractor, JsonLdExtraction
 from argus.history.snapshots import SnapshotService, sha256_text
 from argus.normalization.identity import stable_evidence_id, stable_observation_id
 from argus.recipes.compiler import AgentRecipeCompiler
@@ -30,6 +32,7 @@ class GenericWebAdapter:
         agent: AgentBackend | None = None,
         recipe_compiler: AgentRecipeCompiler | None = None,
         sitemap_discovery_enabled: bool = False,
+        json_ld_extractor: EmbeddedJsonLdExtractor | None = None,
     ) -> None:
         self.fast = fast
         self.browser = browser
@@ -38,6 +41,7 @@ class GenericWebAdapter:
         self.agent = agent
         self.recipe_compiler = recipe_compiler or AgentRecipeCompiler()
         self.sitemap_discovery_enabled = sitemap_discovery_enabled
+        self.json_ld_extractor = json_ld_extractor or EmbeddedJsonLdExtractor()
 
     async def discover(self, request: CollectionRequest) -> list[SourceTask]:
         return [
@@ -183,6 +187,8 @@ class GenericWebAdapter:
         text = self._main_text(fetched.text, fetched.content_type)
         content_hash = sha256_text(text)
         collection_id = str(task.metadata.get("collection_id", ""))
+        research_goals = self._research_goals(task)
+        json_ld = self.json_ld_extractor.extract(fetched.text, fetched.content_type)
         observation_id = stable_observation_id(
             collection_id=collection_id,
             source_id=self.source_id,
@@ -190,11 +196,16 @@ class GenericWebAdapter:
             source_url=fetched.final_url,
             content_hash=content_hash,
         )
-        research_goals = self._research_goals(task)
         data = {
             "runtime": fetched.runtime,
             "status_code": fetched.status_code,
             "research_goals": research_goals,
+            "json_ld_summary": {
+                "blocks_seen": json_ld.blocks_seen,
+                "blocks_invalid": json_ld.blocks_invalid,
+                "blocks_oversized": json_ld.blocks_oversized,
+                "entities": len(json_ld.entities),
+            },
         }
         if fetched.metadata:
             data["fetch_metadata"] = fetched.metadata
@@ -253,12 +264,113 @@ class GenericWebAdapter:
             ),
             metadata={"research_goals": research_goals},
         )
+        observations = [observation]
+        evidence_items = [evidence]
+        structured_observations, structured_evidence = self._json_ld_observations(
+            json_ld,
+            collection_id=collection_id,
+            request=request,
+            source_url=fetched.final_url,
+            snapshot_id=snapshot.snapshot_id,
+            research_goals=research_goals,
+        )
+        observations.extend(structured_observations)
+        evidence_items.extend(structured_evidence)
         discovered = self._discovered_tasks(task, fetched, request, observation.collection_id)
         return SourceResult(
-            observations=[observation],
-            evidence=[evidence],
+            observations=observations,
+            evidence=evidence_items,
             discovered_tasks=discovered,
         )
+
+    def _json_ld_observations(
+        self,
+        extraction: JsonLdExtraction,
+        *,
+        collection_id: str,
+        request: CollectionRequest,
+        source_url: str,
+        snapshot_id: str,
+        research_goals: list[str],
+    ) -> tuple[list[Observation], list[Evidence]]:
+        observations: list[Observation] = []
+        evidence_items: list[Evidence] = []
+        for entity in extraction.entities:
+            canonical = json.dumps(
+                entity.data,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            content_hash = sha256_text(canonical)
+            entity_id = self._json_ld_entity_id(
+                entity.data,
+                entity.block_index,
+                entity.node_index,
+                content_hash,
+            )
+            observation_id = stable_observation_id(
+                collection_id=collection_id,
+                source_id=self.source_id,
+                entity_type="structured_entity",
+                entity_id=entity_id,
+                source_url=source_url,
+                content_hash=content_hash,
+            )
+            provenance = {
+                "snapshot_id": snapshot_id,
+                "page_url": source_url,
+                "research_goals": research_goals,
+                "json_ld": {
+                    "block_index": entity.block_index,
+                    "node_index": entity.node_index,
+                    "remote_contexts_resolved": False,
+                },
+            }
+            observation = Observation(
+                observation_id=observation_id,
+                collection_id=collection_id,
+                analysis_id=request.analysis_id,
+                consumer=request.consumer,
+                source=self.source_id,
+                source_kind="json_ld",
+                url=source_url,
+                entity_type="structured_entity",
+                entity_id=entity_id,
+                title=self._json_ld_label(entity.data),
+                text=self._json_ld_description(entity.data),
+                data=entity.data,
+                content_hash=content_hash,
+                provenance=provenance,
+                quality={"evidence_backed": True, "machine_readable": True},
+            )
+            evidence_text = canonical[:10_000]
+            evidence = Evidence(
+                evidence_id=stable_evidence_id(
+                    observation_id=observation.observation_id,
+                    evidence_type="json_ld",
+                    source_url=source_url,
+                    text=evidence_text,
+                ),
+                observation_id=observation.observation_id,
+                type="json_ld",
+                text=evidence_text,
+                source=EvidenceSource(
+                    provider=self.source_id,
+                    url=source_url,
+                    collected_at=observation.collected_at,
+                    source_id=self.source_id,
+                ),
+                metadata={
+                    "research_goals": research_goals,
+                    "json_ld_block_index": entity.block_index,
+                    "json_ld_node_index": entity.node_index,
+                    "remote_contexts_resolved": False,
+                },
+            )
+            observations.append(observation)
+            evidence_items.append(evidence)
+        return observations, evidence_items
 
     async def normalize(self, result: SourceResult) -> SourceResult:
         return result
@@ -270,6 +382,7 @@ class GenericWebAdapter:
             "agent_enabled": self.agent is not None,
             "recipes_enabled": self.recipes is not None,
             "sitemap_discovery_enabled": self.sitemap_discovery_enabled,
+            "json_ld_extraction": True,
         }
 
     def _discovered_tasks(
@@ -390,6 +503,34 @@ class GenericWebAdapter:
         if not goals and task.goal:
             goals.append(task.goal)
         return goals
+
+    @staticmethod
+    def _json_ld_entity_id(
+        data: dict[str, object],
+        block_index: int,
+        node_index: int,
+        content_hash: str,
+    ) -> str:
+        for key in ("@id", "url"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:2_000]
+        return f"jsonld:{block_index}:{node_index}:{content_hash[:24]}"
+
+    @staticmethod
+    def _json_ld_label(data: dict[str, object]) -> str | None:
+        for key in ("name", "headline"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:1_000]
+        return None
+
+    @staticmethod
+    def _json_ld_description(data: dict[str, object]) -> str | None:
+        value = data.get("description")
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:100_000]
+        return None
 
     @staticmethod
     def _domain_allowed(url: str, seed_host: str, allowed: set[str], denied: set[str]) -> bool:
