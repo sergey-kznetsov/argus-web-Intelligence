@@ -299,7 +299,8 @@ class SQLiteRepository:
     def _add_snapshot_sync(self, snapshot: Snapshot) -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO snapshots(snapshot_id,source_url,collected_at,body) VALUES(?,?,?,?)",
+                "INSERT OR IGNORE INTO snapshots(snapshot_id,source_url,collected_at,body) "
+                "VALUES(?,?,?,?)",
                 (
                     snapshot.snapshot_id,
                     snapshot.source_url,
