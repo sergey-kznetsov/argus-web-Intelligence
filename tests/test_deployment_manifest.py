@@ -1,4 +1,5 @@
 import json
+import tomllib
 from pathlib import Path
 
 from argus import __version__
@@ -11,12 +12,18 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_deployment_manifest_matches_hidden_runtime_contract():
     deployment = json.loads((ROOT / "geo-analyzer-module.json").read_text(encoding="utf-8"))
     runtime = runtime_manifest()
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert deployment["schema_version"] == 1
     module = deployment["module"]
     assert module["module_id"] == MODULE_ID == runtime["module_id"]
     assert module["display_name"] == runtime["display_name"]
-    assert module["module_version"] == __version__ == runtime["module_version"]
+    assert (
+        module["module_version"]
+        == __version__
+        == runtime["module_version"]
+        == pyproject["project"]["version"]
+    )
     assert module["protocol_version"] == "1.0.0" == runtime["protocol_version"]
 
     assert deployment["runtime"]["kind"] == "python"
