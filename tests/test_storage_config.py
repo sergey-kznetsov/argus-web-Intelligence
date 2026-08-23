@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from argus.config import Settings
+from argus.storage.atomic_sqlite import AtomicSQLiteRepository
 from argus.storage.factory import build_repository
 from argus.storage.fenced_postgres import FencedPostgresRepository
 from argus.storage.postgres import PostgresRepository
@@ -30,13 +31,15 @@ def test_geo_analyzer_database_secret_file_has_priority(tmp_path: Path, monkeypa
     assert "env-password" not in repr(settings)
 
 
-def test_storage_factory_uses_sqlite_for_local_backend(tmp_path: Path):
+def test_storage_factory_uses_atomic_sqlite_for_local_backend(tmp_path: Path):
     settings = Settings(
         storage_backend="sqlite",
         db_path=tmp_path / "argus.sqlite",
         token_file=tmp_path / "token",
     )
-    assert isinstance(build_repository(settings), SQLiteRepository)
+    repository = build_repository(settings)
+    assert isinstance(repository, AtomicSQLiteRepository)
+    assert isinstance(repository, SQLiteRepository)
 
 
 def test_storage_factory_builds_fenced_postgres_without_opening_network(monkeypatch):
