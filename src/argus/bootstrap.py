@@ -6,6 +6,7 @@ from argus.crawler.agent.browser_use import BrowserUseAgent
 from argus.crawler.agent.stagehand import StagehandAgent
 from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
+from argus.extraction.pdf import BoundedPdfExtractor
 from argus.geocoding.contracts import GeocodeProvider
 from argus.geocoding.nominatim import NominatimGeocoder
 from argus.history.snapshots import SnapshotService
@@ -21,7 +22,7 @@ from argus.research.planner import OllamaResearchPlanner
 from argus.research.searxng import SearxngDiscoveryProvider
 from argus.security.urls import UrlGuard
 from argus.services import ServiceContainer
-from argus.sources.generic_web import GenericWebAdapter
+from argus.sources.document_web import DocumentAwareGenericWebAdapter
 from argus.sources.overpass_map import OverpassSourceAdapter
 from argus.sources.registry import SourceRegistry
 from argus.sources.rss import RSSAdapter
@@ -92,6 +93,16 @@ def build_map_registry(settings: Settings) -> MapProviderRegistry:
     return registry
 
 
+def build_pdf_extractor(settings: Settings) -> BoundedPdfExtractor:
+    return BoundedPdfExtractor(
+        max_bytes=settings.pdf_max_bytes,
+        max_pages=settings.pdf_max_pages,
+        max_text_chars=settings.pdf_max_text_chars,
+        timeout_seconds=settings.pdf_extract_timeout_seconds,
+        memory_mb=settings.pdf_extract_memory_mb,
+    )
+
+
 def build_services(settings: Settings) -> ServiceContainer:
     settings.ensure_dirs()
     repository = build_repository(settings)
@@ -106,13 +117,14 @@ def build_services(settings: Settings) -> ServiceContainer:
     map_registry = build_map_registry(settings)
     registry = SourceRegistry()
     registry.register(
-        GenericWebAdapter(
+        DocumentAwareGenericWebAdapter(
             fast=fast,
             browser=browser,
             snapshots=snapshots,
             recipes=recipes,
             agent=agent,
             sitemap_discovery_enabled=settings.sitemap_discovery_enabled,
+            pdf_extractor=build_pdf_extractor(settings),
         )
     )
     registry.register(RSSAdapter(fast, snapshots))
