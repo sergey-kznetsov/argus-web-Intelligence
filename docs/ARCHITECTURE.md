@@ -2,7 +2,7 @@
 
 ## Boundary
 
-ARGUS `0.2.0` is a server-side infrastructure service for analytical consumers such as Kraken, Janus and future modules. It is installed and supervised by the universal Geo Analyzer module manager, but it is not a user-selectable analysis module.
+ARGUS `0.3.0` is a server-side infrastructure service for analytical consumers such as Kraken, Janus and future modules. It is installed and supervised by the universal Geo Analyzer module manager, but it is not a user-selectable analysis module.
 
 The runtime manifest intentionally publishes:
 
@@ -83,7 +83,11 @@ Claim semantics:
 - claim ordering is FIFO by `created_at` across both queued and recovered-running work;
 - an expired lease can be claimed by another worker;
 - each active worker renews collection leases periodically;
+- worker execution installs a collection/worker lease fence around `CollectionOrchestrator.execute()`;
+- collection state, Observation, Evidence and collection-scoped Snapshot mutations require a matching non-expired lease in the same SQL statement;
 - if lease renewal fails, the worker cancels its local execution instead of continuing without ownership;
+- if a lease is transferred before the old worker observes heartbeat failure, SQL fencing still rejects that stale worker's later writes;
+- a PostgreSQL failure inside lease-owned execution aborts the current attempt without marking its unfinished task visited;
 - persisted checkpoints allow the replacement worker to resume rather than restart research blindly.
 
 Worker startup publishes itself in PostgreSQL only after its local probe socket binds successfully. Failure before that point leaves no visible worker heartbeat. Startup rollback also closes service resources and cancels heartbeat/maintenance tasks.
@@ -232,6 +236,10 @@ Discovery checkpoint is updated after each intent. If a worker stops between int
 
 Source tasks have stable `dedupe_key` identity. Ordinary GET tasks default to `source_id + URL`; providers with distinct operations against one endpoint use explicit `task_key` values. Deterministic Observation/Evidence IDs protect the crash window between result persistence and checkpoint persistence.
 
+Collection-scoped Snapshot identity is also deterministic from collection ID, source ID, source URL, content hash and extractor version. Replaying the same unchanged factual task therefore converges on the same Observation, Evidence and Snapshot rows instead of inventing a second historical timestamp. A new collection still creates a distinct temporal Snapshot.
+
+Server execution is at-least-once: a task not present in the durable `visited` checkpoint may run again. Lease loss and lease-owned PostgreSQL failures use cancellation-style signals so an unfinished attempt exits without turning the collection into a terminal source failure. See `docs/RECOVERY.md` for the detailed failure windows and guarantees.
+
 ## Retention
 
 Retention runs from the worker lifecycle. Every worker may attempt the periodic pass, but `pg_try_advisory_xact_lock` elects only one maintainer for each pass.
@@ -355,11 +363,11 @@ Current schema responsibilities:
 - `snapshots` — temporal source state;
 - `site_recipes` — deterministic site-navigation recipes.
 
-The repository uses Psycopg 3 native asyncio and explicitly opened `AsyncConnectionPool`. Pool lifecycle is tied to process startup/shutdown and startup rollback.
+The product factory uses `FencedPostgresRepository`, a `PostgresRepository` specialization that enforces active worker lease ownership on collection-scoped mutations and converts lease-owned PostgreSQL failures into replay-safe worker cancellation. The underlying repository uses Psycopg 3 native asyncio and explicitly opened `AsyncConnectionPool`. Pool lifecycle is tied to process startup/shutdown and startup rollback.
 
 ### Local SQLite
 
-SQLite implements the same core Repository contract for embedded/local development. It is not the server product storage selected by `geo-analyzer-module.json`.
+SQLite implements the same core Repository contract for embedded/local development. It is not the server product storage selected by `geo-analyzer-module.json`. SQLite snapshot inserts are idempotent by `snapshot_id` so local crash-replay fixtures match the product identity semantics even though local mode has no worker leases.
 
 ## Module-management contract
 
@@ -387,7 +395,8 @@ ARGUS intentionally does not implement consumer analytics or expose itself as an
 - BROWSER intercepts unsafe page requests;
 - response/browser time, size, concurrency and rate limits;
 - hardened XML and JSON-LD parsing;
-- stale-worker cancellation protection in PostgreSQL;
+- terminal cancellation protection plus SQL lease fencing for stale workers;
+- lease-owned PostgreSQL failures abort attempts before unfinished tasks are checkpointed as visited;
 - atomic bounded queue admission;
 - structured logs/errors redact common credential forms and URL query strings;
 - CAPTCHA/access restrictions are surfaced, never bypassed.
