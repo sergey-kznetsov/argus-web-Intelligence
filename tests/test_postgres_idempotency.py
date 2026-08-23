@@ -116,3 +116,54 @@ async def test_explicit_idempotency_key_rejects_different_request_hash():
                 (first_record.collection_id, conflicting_record.collection_id),
             )
         await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_expired_idempotency_mapping_allows_new_collection():
+    dsn = postgres_dsn()
+    await run_postgres_migrations(dsn)
+    repository = PostgresRepository(dsn, min_size=1, max_size=1, timeout_seconds=10)
+    await repository.initialize()
+    key = f"argus-v1:expired-{uuid4()}"
+    first_record = record(f"idem-expired-a-{uuid4()}")
+    second_record = record(f"idem-expired-b-{uuid4()}")
+    try:
+        stored, created = await repository.create_collection_idempotent(
+            first_record,
+            idempotency_key=key,
+            request_hash="d" * 64,
+            idempotency_window_seconds=86_400,
+        )
+        assert created is True
+        assert stored.collection_id == first_record.collection_id
+
+        async with repository._pool.connection() as conn:
+            await conn.execute(
+                """
+                UPDATE argus.collection_idempotency
+                SET created_at=NOW() - INTERVAL '25 hours'
+                WHERE idempotency_key=%s
+                """,
+                (key,),
+            )
+
+        stored, created = await repository.create_collection_idempotent(
+            second_record,
+            idempotency_key=key,
+            request_hash="e" * 64,
+            idempotency_window_seconds=86_400,
+        )
+        assert created is True
+        assert stored.collection_id == second_record.collection_id
+        assert await repository.get_collection(first_record.collection_id) is not None
+    finally:
+        async with repository._pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM argus.collection_idempotency WHERE idempotency_key=%s",
+                (key,),
+            )
+            await conn.execute(
+                "DELETE FROM argus.collections WHERE collection_id IN (%s, %s)",
+                (first_record.collection_id, second_record.collection_id),
+            )
+        await repository.close()
