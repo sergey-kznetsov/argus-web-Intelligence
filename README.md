@@ -6,9 +6,9 @@ Core rule: **ARGUS = find + obtain + prove + store. Consumers = interpret + calc
 
 ## Current foundation
 
-The service includes strict protocol `1.0.0` contracts, asynchronous collections, SQLite storage behind a repository abstraction, persistent Crawlee FAST/BROWSER runtimes, Generic Web and RSS/Atom adapters, Research Planner with optional local Ollama, bounded recursive historical research, ordered discovery providers, optional Wayback CDX archive lookup, agent abstraction, SiteRecipe replay/recovery, SHA-256 snapshots/diffs, Bearer authentication, redirect-aware SSRF validation, resource/rate limits, cancellation, restart checkpoints, operational source health, structured secret-safe logging, CLI, tests and CI.
+The service includes strict protocol `1.0.0` contracts, asynchronous collections, SQLite storage behind a repository abstraction, persistent Crawlee FAST/BROWSER runtimes, Generic Web and RSS/Atom adapters, Research Planner with optional local Ollama, bounded recursive historical research, ordered discovery providers, bounded `robots.txt`/Sitemap discovery, optional Wayback CDX archive lookup, agent abstraction, SiteRecipe replay/recovery, SHA-256 snapshots/diffs, Bearer authentication, redirect-aware SSRF validation, resource/rate limits, cancellation, restart checkpoints, operational source health, hardened untrusted XML parsing, structured secret-safe logging, CLI, tests and CI.
 
-Discovery is provider-neutral. Search results only seed destination URLs; snippets are never treated as factual evidence. Destination pages must be fetched by ARGUS before Observation/Evidence is created. If configured providers complete normally but produce no valid destination URL, ARGUS records `DISCOVERY_NO_RESULTS` so a mixed request cannot be reported as fully complete when only some intents were covered. Fully blocked discovery without any valid destination produces `DISCOVERY_INCOMPLETE`; ARGUS never attempts to bypass the challenge.
+Discovery is provider-neutral. Search results, Sitemap entries and other navigation hints only seed destination URLs; snippets/navigation metadata are never treated as factual evidence. Destination pages must be fetched by ARGUS before Observation/Evidence is created. If configured providers complete normally but produce no valid destination URL, ARGUS records `DISCOVERY_NO_RESULTS` so a mixed request cannot be reported as fully complete when only some intents were covered. Fully blocked discovery without any valid destination produces `DISCOVERY_INCOMPLETE`; ARGUS never attempts to bypass the challenge.
 
 `argus.maps` provides provider-neutral map contracts. The first actual map implementation is optional OpenStreetMap Overpass. It is registered only when `ARGUS_OVERPASS_URL` is configured, and its places enter the same collection Observation/Evidence/snapshot pipeline as web sources. Address-only map requests can additionally use an explicitly configured Nominatim geocoder. 2GIS, Yandex Maps and Google Maps remain separate future providers rather than hardcoded branches.
 
@@ -76,7 +76,7 @@ The provider uses SearXNG's documented `/search` HTTP API with POST and `format=
 
 ### Fallback: DuckDuckGo HTML through Playwright
 
-The fallback uses the existing BROWSER runtime and submits DuckDuckGo's public no-JS search form. It is intentionally low volume and does not reverse-engineer or call private search APIs.
+The fallback uses the existing BROWSER runtime and submits DuckDuckGo's public no-JS HTML search form. It is intentionally low volume and does not reverse-engineer or call private search APIs.
 
 ```bash
 ARGUS_BROWSER_SERP_ENABLED=true
@@ -85,6 +85,22 @@ ARGUS_BROWSER_SERP_WAIT_MS=750
 ```
 
 Disable it with `ARGUS_BROWSER_SERP_ENABLED=false` when only explicitly configured discovery providers are desired.
+
+### Same-host robots.txt and Sitemap discovery
+
+After a top-level HTML page has been fetched, ARGUS can perform a bounded best-effort site discovery pass. It checks the site's `robots.txt` for `Sitemap:` records and also tries the conventional `/sitemap.xml` path. Sitemap indexes are followed for one bounded level; `.gz` sitemap files are currently skipped.
+
+```bash
+ARGUS_SITEMAP_DISCOVERY_ENABLED=true
+ARGUS_SITEMAP_MAX_URLS=20
+ARGUS_SITEMAP_MAX_INDEXES=5
+```
+
+Only HTTP(S) URLs on the original hostname are accepted. Denied/allowed-domain constraints still apply. Sitemap entries are ranked using neutral territory/intent hints and only the configured number of candidates are scheduled. Sitemap tasks consume the normal collection page budget, so this path cannot silently bypass `max_pages`.
+
+A Sitemap URL is only a navigation candidate. It becomes factual output only after `generic_web` fetches the selected page through the normal SSRF, redirect, size-limit, snapshot and Evidence pipeline. Sitemap/XML parse failures are fail-open because this feature is optional navigation support, not requested factual coverage.
+
+RSS/Atom and Sitemap XML are parsed with `defusedxml`; entity/external-reference payloads are rejected instead of expanded. RSS Evidence points to the fetched feed URL, while an entry URL is retained separately as navigation/provenance metadata.
 
 ## Recursive historical research
 
@@ -142,7 +158,7 @@ No public Nominatim endpoint is enabled automatically. The selected geocoding ca
 
 Overpass uses `territory.radius_meters` or a 1000 m default. Each returned place has a direct `openstreetmap.org` source URL, ODbL attribution, deterministic Observation/Evidence IDs, and a persisted snapshot of normalized map facts. Map/geocoding provider access blocks are returned as structured `blocked`/`partial` coverage rather than bypassed.
 
-Direct Overpass/Nominatim/Wayback HTTP clients have process-local minimum interval gates in addition to remote service policies. They share the bounded direct-provider 429/503 retry policy; valid `Retry-After` is respected and otherwise exponential delay is used. A self-hosted deployment can explicitly lower the corresponding `*_MIN_INTERVAL_SECONDS` where appropriate.
+Direct Overpass/Nominatim/Wayback HTTP clients have process-local minimum interval gates in addition to remote service policies. They share a bounded 429/503 retry budget. Missing/invalid `Retry-After` uses bounded exponential delay. A valid server `Retry-After` is authoritative: if it exceeds ARGUS' configured maximum wait, ARGUS stops retrying that operation instead of issuing an early request. A self-hosted deployment can explicitly lower the corresponding `*_MIN_INTERVAL_SECONDS` where appropriate.
 
 ## API
 
@@ -157,7 +173,7 @@ Direct Overpass/Nominatim/Wayback HTTP clients have process-local minimum interv
 
 `POST /v1/collections` returns `202 Accepted`. Work continues asynchronously and survives process restarts through persisted task/checkpoint state. Reprocessing the same source content within the same collection uses deterministic Observation/Evidence identities to avoid duplicates after a crash/restart window.
 
-`GET /v1/capabilities` lists only actually configured discovery, archive, geocoding and map providers.
+`GET /v1/capabilities` lists actually configured discovery, archive, geocoding and map providers and reports whether bounded Sitemap discovery is enabled.
 
 `GET /v1/sources/{id}/health` distinguishes readiness from observed runtime state. Before any factual request a source reports `ready`; after success `ok`; after a partial/error result `degraded`; after an access/rate block `blocked`. The response also contains `adapter_status`, `last_attempt_at`, `last_success_at`, `last_failure_at` and `last_error_code`. Health reporting itself does not generate external probe traffic.
 
