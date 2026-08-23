@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from pathlib import Path
 from uuid import uuid4
@@ -24,10 +25,24 @@ def auth_headers(settings: Settings) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_queue_operations_endpoint_reports_server_state(tmp_path: Path):
+def operation_body(consumer: str, analysis_id: str, *, status: str) -> str:
+    return json.dumps(
+        {
+            "request": {"consumer": consumer, "analysis_id": analysis_id},
+            "progress_percent": 100 if status == "completed" else 10,
+            "stage": status,
+            "partial": False,
+            "errors": [],
+        }
+    )
+
+
+def test_queue_and_collection_operations_endpoints(tmp_path: Path):
     dsn = postgres_dsn()
     asyncio.run(run_postgres_migrations(dsn))
-    collection_id = f"api-operations-{uuid4()}"
+    newer_id = f"api-operations-new-{uuid4()}"
+    older_id = f"api-operations-old-{uuid4()}"
+    consumer = f"api-operations-{uuid4()}"
     settings = Settings(
         execution_role="api",
         storage_backend="postgresql",
@@ -42,21 +57,24 @@ def test_queue_operations_endpoint_reports_server_state(tmp_path: Path):
         conn.execute(
             """
             INSERT INTO argus.collections(collection_id, status, body, created_at, updated_at)
-            VALUES(%s, 'queued', %s::jsonb, NOW(), NOW())
+            VALUES
+              (%s, 'queued', %s::jsonb, NOW(), NOW()),
+              (%s, 'completed', %s::jsonb,
+               NOW() - INTERVAL '1 second', NOW() - INTERVAL '1 second')
             """,
             (
-                collection_id,
-                '{"request":{"consumer":"api-operations"}}',
+                newer_id,
+                operation_body(consumer, "analysis-new", status="queued"),
+                older_id,
+                operation_body(consumer, "analysis-old", status="completed"),
             ),
         )
 
     try:
         with TestClient(create_app(settings)) as client:
+            headers = auth_headers(settings)
             assert client.get("/v1/operations/queue").status_code == 401
-            response = client.get(
-                "/v1/operations/queue",
-                headers=auth_headers(settings),
-            )
+            response = client.get("/v1/operations/queue", headers=headers)
             assert response.status_code == 200
             payload = response.json()
             assert payload["queued"] >= 1
@@ -65,9 +83,49 @@ def test_queue_operations_endpoint_reports_server_state(tmp_path: Path):
             assert payload["idempotency_window_seconds"] == 86_400
             assert "active_workers" in payload
             assert "active_leases" in payload
+
+            assert client.get("/v1/operations/collections").status_code == 401
+            first = client.get(
+                "/v1/operations/collections",
+                params={"consumer": consumer, "limit": 1},
+                headers=headers,
+            )
+            assert first.status_code == 200
+            first_payload = first.json()
+            assert [item["collection_id"] for item in first_payload["items"]] == [newer_id]
+            assert first_payload["next_cursor"]
+
+            second = client.get(
+                "/v1/operations/collections",
+                params={
+                    "consumer": consumer,
+                    "limit": 1,
+                    "cursor": first_payload["next_cursor"],
+                },
+                headers=headers,
+            )
+            assert second.status_code == 200
+            second_payload = second.json()
+            assert [item["collection_id"] for item in second_payload["items"]] == [older_id]
+            assert second_payload["next_cursor"] is None
+
+            completed = client.get(
+                "/v1/operations/collections",
+                params={"consumer": consumer, "status": "completed"},
+                headers=headers,
+            )
+            assert completed.status_code == 200
+            assert [item["collection_id"] for item in completed.json()["items"]] == [older_id]
+
+            invalid = client.get(
+                "/v1/operations/collections",
+                params={"cursor": "not-a-valid-cursor%%%"},
+                headers=headers,
+            )
+            assert invalid.status_code == 400
     finally:
         with psycopg.connect(dsn) as conn:
             conn.execute(
-                "DELETE FROM argus.collections WHERE collection_id=%s",
-                (collection_id,),
+                "DELETE FROM argus.collections WHERE collection_id IN (%s, %s)",
+                (newer_id, older_id),
             )
