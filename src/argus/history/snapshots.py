@@ -53,8 +53,6 @@ class SnapshotService:
                 extractor_version=self.extractor_version,
             )
             if previous is not None and previous.snapshot_id == snapshot_id:
-                # Recovery replay of the same source/content in the same collection.
-                # Reuse the original historical observation instead of creating a fake new timestamp.
                 return previous
 
         diff = None
@@ -81,7 +79,8 @@ class SnapshotService:
         if snapshot_id is not None:
             payload["snapshot_id"] = snapshot_id
         snapshot = Snapshot.model_validate(payload)
-        # New consumer analyses still receive a new snapshot identity because collection_id is
-        # part of the deterministic key. Only crash/retry replay inside one collection is deduped.
-        await self.repository.add_snapshot(snapshot)
+        await self.repository.add_snapshot(
+            snapshot,
+            collection_id=normalized_collection_id or None,
+        )
         return snapshot
