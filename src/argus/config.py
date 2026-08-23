@@ -10,11 +10,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="ARGUS_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="ARGUS_",
+        env_file=".env",
+        extra="ignore",
+        populate_by_name=True,
+    )
 
     host: str = "127.0.0.1"
     port: int = Field(default=8787, ge=1, le=65535)
     token_file: Path = Path(".argus/token")
+    execution_role: Literal["embedded", "api", "worker"] = "embedded"
+
     storage_backend: Literal["sqlite", "postgresql"] = "sqlite"
     db_path: Path = Path(".argus/argus.sqlite3")
     database_dsn: SecretStr | None = Field(
@@ -31,6 +38,13 @@ class Settings(BaseSettings):
     postgres_pool_min_size: int = Field(default=1, ge=0, le=32)
     postgres_pool_max_size: int = Field(default=8, ge=1, le=128)
     postgres_pool_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+
+    worker_concurrency: int = Field(default=2, ge=1, le=32)
+    worker_poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
+    worker_lease_seconds: float = Field(default=90.0, ge=15, le=3600)
+    worker_heartbeat_seconds: float = Field(default=20.0, ge=1, le=300)
+    worker_health_max_age_seconds: float = Field(default=60.0, ge=5, le=600)
+
     log_level: str = "INFO"
     max_response_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     http_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
@@ -134,6 +148,10 @@ class Settings(BaseSettings):
             self.browser_max_concurrency = self.max_concurrency
         if self.postgres_pool_min_size > self.postgres_pool_max_size:
             raise ValueError("postgres_pool_min_size must be <= postgres_pool_max_size")
+        if self.worker_heartbeat_seconds >= self.worker_lease_seconds:
+            raise ValueError("worker_heartbeat_seconds must be shorter than worker_lease_seconds")
+        if self.execution_role in {"api", "worker"} and self.storage_backend != "postgresql":
+            raise ValueError("server api/worker roles require PostgreSQL storage")
         return self
 
     def database_dsn_value(self) -> str | None:
