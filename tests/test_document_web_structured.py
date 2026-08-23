@@ -98,6 +98,60 @@ async def test_csv_document_becomes_structured_observation_and_evidence(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_xml_document_uses_same_hash_backed_structured_pipeline(tmp_path: Path):
+    repository = SQLiteRepository(tmp_path / "argus.sqlite")
+    await repository.initialize()
+    adapter = DocumentAwareGenericWebAdapter(
+        fast=object(),
+        browser=object(),
+        snapshots=SnapshotService(repository),
+        pdf_extractor=UnusedPdfExtractor(),
+        structured_data_extractor=BoundedStructuredDataExtractor(
+            max_bytes=1024 * 1024,
+            max_records=10,
+            max_columns=10,
+            max_cell_chars=100,
+            max_json_depth=10,
+            max_json_nodes=100,
+            max_xml_depth=10,
+            max_xml_nodes=100,
+        ),
+    )
+    url = "https://example.com/public.xml"
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<root xmlns="urn:test"><name>Школа</name><value>3</value></root>'
+    ).encode("utf-8")
+
+    result = await adapter.extract(
+        task(url),
+        fetched(url, body, "application/xml"),
+        request(),
+    )
+
+    assert result.partial is False
+    assert result.errors == []
+    observation = result.observations[0]
+    evidence = result.evidence[0]
+    expected_hash = hashlib.sha256(body).hexdigest()
+    assert observation.content_hash == expected_hash
+    assert observation.data["document_type"] == "xml"
+    assert observation.data["node_count"] == 3
+    assert observation.data["max_depth"] == 1
+    assert observation.data["payload"]["tag"] == "{urn:test}root"
+    assert observation.provenance["document"]["node_count"] == 3
+    assert observation.provenance["document"]["parser_network_access"] is False
+    assert evidence.type == "structured_data"
+    assert evidence.metadata["node_count"] == 3
+    assert evidence.metadata["max_depth"] == 1
+
+    snapshot = await repository.latest_snapshot(url)
+    assert snapshot is not None
+    assert expected_hash in snapshot.content
+    assert '"node_count":3' in snapshot.content
+
+
+@pytest.mark.asyncio
 async def test_invalid_json_is_partial_but_keeps_file_evidence(tmp_path: Path):
     repository = SQLiteRepository(tmp_path / "argus.sqlite")
     await repository.initialize()
