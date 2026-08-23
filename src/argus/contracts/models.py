@@ -199,6 +199,7 @@ class ResultDeliveryLimits(BaseModel):
     full_result_max_items: int = Field(ge=1)
     full_result_max_bytes: int = Field(ge=1024)
     page_max_size: int = Field(ge=1)
+    page_max_bytes: int = Field(ge=1024)
 
 
 class CollectionResultSummary(BaseModel):
@@ -222,6 +223,7 @@ class ObservationPage(BaseModel):
     collection_id: str
     status: CollectionStatus
     total_count: int = Field(ge=0)
+    page_stored_bytes: int = Field(ge=0)
     items: list[Observation]
     next_cursor: str | None = None
 
@@ -231,5 +233,6 @@ class EvidencePage(BaseModel):
     collection_id: str
     status: CollectionStatus
     total_count: int = Field(ge=0)
+    page_stored_bytes: int = Field(ge=0)
     items: list[Evidence]
     next_cursor: str | None = None
