@@ -99,11 +99,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/v1/capabilities", dependencies=[Depends(require_bearer)])
     async def capabilities():
+        server_queue = settings.execution_role in {"api", "worker"}
         return {
             "protocol_version": PROTOCOL_VERSION,
             "runtimes": ["fast", "browser", "agent"],
             "storage": settings.storage_backend,
             "execution_role": settings.execution_role,
+            "queue_backend": "postgresql_leases" if server_queue else "embedded",
+            "idempotent_submission": settings.execution_role == "api",
+            "worker_required_for_readiness": settings.execution_role == "api",
             "history": True,
             "site_recipes": True,
             "sitemap_discovery": settings.sitemap_discovery_enabled,
