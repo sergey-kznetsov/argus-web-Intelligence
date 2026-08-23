@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from psycopg import OperationalError, ProgrammingError
 
 from argus.config import Settings
 from argus.storage.fenced_postgres import FencedPostgresRepository
@@ -27,10 +28,10 @@ def test_lease_fence_is_scoped_and_resets():
 
 
 @pytest.mark.asyncio
-async def test_worker_storage_failure_becomes_retry_signal(monkeypatch):
+async def test_worker_operational_storage_failure_becomes_retry_signal(monkeypatch):
     async def failing_get_collection(self, collection_id):
         del self, collection_id
-        raise RuntimeError("database connection dropped")
+        raise OperationalError("database connection dropped")
 
     monkeypatch.setattr(PostgresRepository, "get_collection", failing_get_collection)
     repository = FencedPostgresRepository(
@@ -41,6 +42,24 @@ async def test_worker_storage_failure_becomes_retry_signal(monkeypatch):
 
     with lease_fence("collection-1", "worker-1"):
         with pytest.raises(WorkerStorageError):
+            await repository.get_collection("collection-1")
+
+
+@pytest.mark.asyncio
+async def test_worker_programming_storage_failure_is_not_retried(monkeypatch):
+    async def failing_get_collection(self, collection_id):
+        del self, collection_id
+        raise ProgrammingError("broken SQL")
+
+    monkeypatch.setattr(PostgresRepository, "get_collection", failing_get_collection)
+    repository = FencedPostgresRepository(
+        "postgresql://argus:secret@127.0.0.1:5432/argus",
+        min_size=0,
+        max_size=1,
+    )
+
+    with lease_fence("collection-1", "worker-1"):
+        with pytest.raises(ProgrammingError, match="broken SQL"):
             await repository.get_collection("collection-1")
 
 
