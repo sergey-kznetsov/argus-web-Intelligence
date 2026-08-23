@@ -70,8 +70,6 @@ class FastCrawlerRuntime:
             )
 
             async def validate_outbound_request(request) -> None:
-                # HTTPX executes request hooks for the initial request and every redirect hop.
-                # Validate before the transport sees the request, not after a redirect is fetched.
                 await self.url_guard.validate(str(request.url))
 
             http_client = HttpxHttpClient(
@@ -104,7 +102,6 @@ class FastCrawlerRuntime:
                 response = context.http_response
                 requested_url = context.request.url
                 final_url = context.request.loaded_url or requested_url
-                # Defense in depth. Each hop was already checked by the HTTPX request hook.
                 await self.url_guard.validate_redirect(requested_url, final_url)
                 content_length = self._content_length(response.headers.get("content-length"))
                 if content_length is not None and content_length > self.settings.max_response_bytes:
@@ -128,6 +125,7 @@ class FastCrawlerRuntime:
                         links=links,
                         blocked=blocked,
                         runtime="fast",
+                        body=body,
                     ),
                 )
 
