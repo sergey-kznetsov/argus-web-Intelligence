@@ -56,6 +56,7 @@
         "{api_port}"
       ],
       "environment": {
+        "ARGUS_EXECUTION_ROLE": "api",
         "ARGUS_STORAGE_BACKEND": "postgresql",
         "ARGUS_LOG_LEVEL": "INFO",
         "PYTHONUNBUFFERED": "1"
@@ -64,12 +65,41 @@
         "path": "/v1/health",
         "authenticated": true
       }
+    },
+    {
+      "id": "worker",
+      "role": "worker",
+      "command": [
+        "{python}",
+        "-m",
+        "argus.worker",
+        "--probe-host",
+        "127.0.0.1",
+        "--probe-port",
+        "{worker_probe_port}"
+      ],
+      "environment": {
+        "ARGUS_EXECUTION_ROLE": "worker",
+        "ARGUS_STORAGE_BACKEND": "postgresql",
+        "ARGUS_LOG_LEVEL": "INFO",
+        "PYTHONUNBUFFERED": "1"
+      },
+      "health": {
+        "path": "/readyz",
+        "port": "worker_probe_port",
+        "authenticated": false
+      }
     }
   ],
   "ports": {
     "api": {
       "placeholder": "api_port",
       "preferred": 9180,
+      "host": "127.0.0.1"
+    },
+    "worker_probe": {
+      "placeholder": "worker_probe_port",
+      "preferred": 9181,
       "host": "127.0.0.1"
     }
   },
