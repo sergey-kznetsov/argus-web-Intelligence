@@ -122,6 +122,23 @@ MIGRATIONS: tuple[PostgresMigration, ...] = (
             f"ON {_SCHEMA}.worker_instances(heartbeat_at DESC)",
         ),
     ),
+    PostgresMigration(
+        version=3,
+        name="collection_idempotency",
+        statements=(
+            f"""
+            CREATE TABLE IF NOT EXISTS {_SCHEMA}.collection_idempotency (
+              idempotency_key TEXT PRIMARY KEY,
+              collection_id TEXT NOT NULL UNIQUE
+                REFERENCES {_SCHEMA}.collections(collection_id) ON DELETE CASCADE,
+              request_hash TEXT NOT NULL,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            f"CREATE INDEX IF NOT EXISTS ix_argus_collection_idempotency_created "
+            f"ON {_SCHEMA}.collection_idempotency(created_at DESC)",
+        ),
+    ),
 )
 
 
