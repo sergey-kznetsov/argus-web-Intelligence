@@ -1,6 +1,6 @@
 # ARGUS Web Intelligence
 
-ARGUS `0.2.0` is a server-side evidence-first web intelligence backend for Kraken, Janus and future analytical consumers in the Geo Analyzer ecosystem.
+ARGUS `0.3.0` is a server-side evidence-first web intelligence backend for Kraken, Janus and future analytical consumers in the Geo Analyzer ecosystem.
 
 Core rule: **ARGUS = find + obtain + prove + store. Consumers = interpret + calculate + conclude.**
 
@@ -18,14 +18,15 @@ ARGUS currently provides:
 - lease recovery after worker/process failure;
 - idempotent server collection submission with a bounded 24-hour default retry window;
 - atomic queue admission/backpressure across concurrent API processes;
-- authenticated operational queue metrics;
+- authenticated operational queue metrics and keyset-paginated collection listing;
 - bounded automatic PostgreSQL retention under a shared maintenance lock;
+- bounded result delivery with summary + opaque keyset pages for large collections;
 - terminal PostgreSQL cancellation that stale workers cannot overwrite;
 - persistent research/discovery checkpoints for restart recovery;
 - product PostgreSQL storage in dedicated schema `argus`;
 - local/dev SQLite backend through the same Repository contract;
 - versioned/checksummed PostgreSQL migrations protected by an advisory lock;
-- Psycopg 3 native async pool with startup schema verification and lifecycle shutdown;
+- Psycopg 3 native async pools with explicit startup/shutdown lifecycle;
 - persistent Crawlee FAST and Playwright BROWSER runtimes;
 - optional local AGENT escalation through Browser Use/Ollama;
 - deterministic SiteRecipe replay before recipe persistence;
@@ -37,7 +38,7 @@ ARGUS currently provides:
 - Observation + Evidence + provenance + SHA-256 temporal snapshots/diffs;
 - deterministic task/Observation/Evidence identities;
 - per-source operational health;
-- redirect-aware SSRF defenses, Bearer authentication, resource/rate limits and secret-safe logging;
+- redirect-aware SSRF defenses, Bearer authentication, inbound-body/resource/rate limits and secret-safe logging;
 - GitHub CI configured with a PostgreSQL service.
 
 Discovery results and navigation hints are not facts. Search snippets, Sitemap entries and archive navigation metadata only seed factual retrieval. A destination page must be fetched before it can become page Evidence. Embedded JSON-LD is evidence only because it is contained in the already fetched page.
@@ -103,7 +104,7 @@ Workers register in `argus.worker_instances`. A collection is claimed through `a
 
 Claim ordering is FIFO by collection creation time regardless of whether a record is freshly `queued` or recovered `running`. This prevents interrupted older work from being permanently displaced by a continuous stream of new requests.
 
-The configurable defaults are:
+Defaults:
 
 ```bash
 ARGUS_WORKER_CONCURRENCY=2
@@ -145,25 +146,23 @@ A consumer may supply an explicit `idempotency_key`:
 Rules:
 
 - retrying the same request with the same explicit key inside the configured window returns the original `collection_id`;
-- an explicit key is scoped by `consumer`, so independent consumers may reuse the same literal key;
-- reusing one consumer's explicit key for a different request inside the window returns HTTP `409`;
-- blank/whitespace-only keys are rejected by request validation;
-- when the key is omitted, ARGUS builds a SHA-256 fingerprint from the canonical request and uses it as the retry identity;
-- the transport `idempotency_key` itself is excluded from the request fingerprint;
-- the default idempotency window is 86,400 seconds (24 hours);
-- after an idempotency mapping expires, the same request/key may intentionally create a fresh collection.
+- an explicit key is scoped by `consumer`;
+- reusing one consumer's key for a different request inside the window returns HTTP `409`;
+- blank keys are rejected;
+- without a key ARGUS uses a SHA-256 fingerprint of the canonical request;
+- the transport `idempotency_key` is excluded from that fingerprint;
+- default window is 86,400 seconds (24 hours);
+- after expiry the same request/key may intentionally create a fresh collection.
 
 ```bash
 ARGUS_IDEMPOTENCY_WINDOW_SECONDS=86400
 ```
 
-Because `analysis_id` is part of the request fingerprint, a genuinely new consumer analysis should use a new analysis ID. Network retries of the same analysis resolve to the same collection rather than creating duplicate web work.
+Because `analysis_id` is part of the request fingerprint, a genuinely new consumer analysis should use a new analysis ID.
 
 ## Queue admission and operations
 
-New server collections are admitted under a PostgreSQL transaction-level advisory lock. This makes the count-and-insert decision atomic even when several API processes submit concurrently.
-
-Defaults:
+New server collections are admitted under a PostgreSQL transaction-level advisory lock, making count-and-insert atomic across API processes.
 
 ```bash
 ARGUS_QUEUE_MAX_ACTIVE_COLLECTIONS=500
@@ -171,63 +170,89 @@ ARGUS_QUEUE_MAX_ACTIVE_PER_CONSUMER=100
 ARGUS_QUEUE_RETRY_AFTER_SECONDS=15
 ```
 
-Semantics:
+An already-admitted idempotent retry bypasses capacity rejection. New requests above the per-consumer limit return `429`; global saturation returns `503`; both include `Retry-After`.
 
-- an already-admitted idempotent retry bypasses capacity rejection and returns the existing collection;
-- a new request above the per-consumer limit returns HTTP `429` with `Retry-After`;
-- a new request above the global active limit returns HTTP `503` with `Retry-After`.
+Authenticated operational endpoints:
 
-Authenticated `GET /v1/operations/queue` exposes PostgreSQL-derived operational state:
+- `GET /v1/operations/queue` — queued/running counts, leases, workers and oldest job ages;
+- `GET /v1/operations/collections` — summary-only collection history with `status`/`consumer` filters and opaque keyset cursor, maximum 100 rows per page.
 
-- queued and running counts;
-- active and expired collection leases;
-- active and stale worker registrations;
-- age in seconds of the oldest queued/running collection;
-- configured active-queue limits and idempotency window.
-
-The endpoint is intentionally JSON and does not create a second metrics datastore. It can be consumed directly by Geo Analyzer admin tooling and later exported into Prometheus/OpenTelemetry without changing the queue source of truth.
+These endpoints read PostgreSQL directly and do not create a second operational datastore.
 
 ## Retention
 
-Server workers run bounded retention passes automatically. A PostgreSQL advisory lock ensures only one worker performs a retention pass at a time even if ARGUS is horizontally scaled.
-
-Defaults:
+Server workers run bounded retention passes automatically. A PostgreSQL advisory lock elects one maintainer at a time.
 
 ```bash
 ARGUS_RETENTION_MAINTENANCE_INTERVAL_SECONDS=3600
 ARGUS_RETENTION_COLLECTION_DAYS=180
 ARGUS_RETENTION_SNAPSHOT_DAYS=365
+ARGUS_RETENTION_WORKER_REGISTRATION_DAYS=7
 ARGUS_RETENTION_BATCH_SIZE=500
 ```
 
-Retention rules:
+Rules:
 
-- `queued` and `running` collections are never deleted by retention;
-- only terminal `completed`, `partial`, `blocked`, `failed` and `cancelled` collections older than the configured collection retention are removed;
-- Observation/Evidence/idempotency/lease rows tied to a removed collection follow PostgreSQL foreign-key cleanup;
-- expired idempotency mappings are removed independently once their retry window has elapsed;
-- old snapshots are deleted in bounded batches, but the newest snapshot for every `source_url` is always retained as the future diff baseline;
+- active `queued`/`running` collections are never purged;
+- only terminal collections older than collection retention are removed;
+- child Observation/Evidence/idempotency/lease rows follow foreign-key cleanup;
+- expired idempotency mappings are independently removed;
+- stale worker registrations are removed after their retention period;
+- old snapshots are removed in bounded batches, but the newest snapshot for each `source_url` is preserved;
 - SiteRecipe records are not automatically purged;
-- snapshot retention cannot be configured shorter than collection retention.
+- snapshot retention cannot be shorter than collection retention.
+
+Manual operator commands are also available:
+
+```bash
+python -m argus.storage.cli operations
+python -m argus.storage.cli retention
+```
+
+## Bounded result delivery
+
+The legacy `GET /v1/collections/{collection_id}/result` remains compatible for small collections, but ARGUS checks storage size before loading rows into API memory.
+
+Defaults:
+
+```bash
+ARGUS_API_FULL_RESULT_MAX_ITEMS=100
+ARGUS_API_FULL_RESULT_MAX_BYTES=4194304
+ARGUS_API_RESULT_PAGE_DEFAULT_SIZE=50
+ARGUS_API_RESULT_PAGE_MAX_SIZE=100
+ARGUS_API_RESULT_PAGE_MAX_BYTES=2097152
+```
+
+When either full-result limit is exceeded, `/result` returns HTTP `409` with `detail.code=RESULT_REQUIRES_PAGINATION`. ARGUS never silently truncates a successful `CollectionResult`.
+
+Consumers then use:
+
+- `GET /v1/collections/{collection_id}/result/summary`;
+- `GET /v1/collections/{collection_id}/result/observations`;
+- `GET /v1/collections/{collection_id}/result/evidence`.
+
+Observation/Evidence pages use opaque cursors bound to both the collection and result kind. A cursor cannot be reused for another collection or swapped between observation/evidence streams. Pages are bounded by both item count and stored JSON bytes and report `page_stored_bytes`.
+
+Paged traversal is available only after a terminal collection state. A `queued` or `running` collection returns `409 RESULT_NOT_FINAL`. PostgreSQL result reads use a separate small async pool and `REPEATABLE READ READ ONLY` transactions so a retention pass cannot produce a mixed response midway through one read.
+
+Detailed contract: `docs/RESULT_DELIVERY.md`.
 
 ## Storage
 
 ### Server/product
 
-Server deployment uses PostgreSQL. ARGUS owns schema `argus` and currently stores collections, collection idempotency mappings, worker/lease state, observations, evidence, temporal snapshots and SiteRecipe state there.
-
-Migrations:
+Server deployment uses PostgreSQL. ARGUS owns schema `argus` and stores collections, idempotency mappings, worker/lease state, observations, evidence, temporal snapshots and SiteRecipe state there.
 
 ```bash
 python -m argus.storage.cli migrate
 python -m argus.storage.cli check
 ```
 
-Migrations are versioned and checksummed. Application startup refuses to become ready when the PostgreSQL schema is absent or at the wrong version.
+Migrations are versioned and checksummed. Application startup refuses readiness if the schema is missing or at the wrong version.
 
 ### Local development
 
-SQLite remains available for isolated local development and tests:
+SQLite implements the same core collection storage contract for local/embedded development.
 
 ```bash
 ARGUS_EXECUTION_ROLE=embedded
@@ -242,7 +267,7 @@ ARGUS_STORAGE_BACKEND=postgresql
 ARGUS_DATABASE_DSN=postgresql://user:password@127.0.0.1:5432/argus
 ```
 
-ARGUS also accepts `ARGUS_DATABASE_DSN_FILE`. When the Geo Analyzer aliases are present, the secret-file form is preferred over the environment-string form.
+ARGUS also accepts `ARGUS_DATABASE_DSN_FILE`; the secret-file form is preferred when available.
 
 ## Local install
 
@@ -253,49 +278,41 @@ python -m venv .venv
 . .venv/bin/activate              # Windows: .venv\\Scripts\\activate
 pip install -e '.[dev]'
 playwright install chromium
-```
-
-Create a local token once:
-
-```bash
 argus init-token
-```
-
-Run:
-
-```bash
 argus serve
 ```
 
-The default local bind is `127.0.0.1:8787`. Local CLI/API use `embedded` execution unless configured otherwise.
+The default local bind is `127.0.0.1:8787` and local CLI/API use embedded execution unless configured otherwise.
 
 ## API
 
-Module-management endpoints:
+Module management:
 
-- `GET /v1/manifest` — authenticated runtime identity/capabilities;
-- `GET /v1/health` — service/database/worker readiness;
-- `HEAD /v1/health` — readiness status code.
+- `GET /v1/manifest`;
+- `GET /v1/health`;
+- `HEAD /v1/health`.
 
-Collection API:
+Collections/results:
 
 - `POST /v1/collections`;
 - `GET /v1/collections/{collection_id}`;
 - `GET /v1/collections/{collection_id}/result`;
+- `GET /v1/collections/{collection_id}/result/summary`;
+- `GET /v1/collections/{collection_id}/result/observations`;
+- `GET /v1/collections/{collection_id}/result/evidence`;
 - `POST /v1/collections/{collection_id}/cancel`.
 
 Capabilities/operations/sources:
 
 - `GET /v1/capabilities`;
 - `GET /v1/operations/queue`;
+- `GET /v1/operations/collections`;
 - `GET /v1/sources`;
 - `GET /v1/sources/{source_id}/health`.
 
-All endpoints except `GET/HEAD /v1/health` require `Authorization: Bearer <token>`.
+All endpoints except `GET/HEAD /v1/health` require `Authorization: Bearer <token>`. Inbound request bodies are limited by `ARGUS_API_MAX_REQUEST_BYTES` (1 MiB by default), including streamed/chunked bodies.
 
-`GET /v1/capabilities` exposes the active storage/execution mode. Server API reports `queue_backend=postgresql_leases`, `idempotent_submission=true`, the idempotency/retention configuration and `worker_required_for_readiness=true`. Local embedded mode reports `queue_backend=embedded`.
-
-`consumer` records who requested the data; it does not select a Kraken/Janus branch. `intents` define factual research goals.
+`consumer` records who requested data; it never selects a Kraken/Janus branch. `intents` define factual research goals.
 
 ## CLI
 
@@ -318,7 +335,7 @@ ARGUS_DISCOVERY_MAX_QUERIES=8
 ARGUS_SEARXNG_MAX_RESULTS_PER_QUERY=10
 ```
 
-ARGUS accesses it as a separate HTTP service and does not vendor or import SearXNG code.
+ARGUS accesses it as a separate HTTP service and does not vendor/import SearXNG code.
 
 ### DuckDuckGo browser fallback
 
@@ -330,13 +347,13 @@ ARGUS_BROWSER_SERP_MAX_RESULTS_PER_QUERY=5
 ARGUS_BROWSER_SERP_WAIT_MS=750
 ```
 
-CAPTCHA/access challenges are reported as blocked; ARGUS does not attempt bypasses.
+CAPTCHA/access challenges are reported as blocked; ARGUS does not bypass them.
 
 ### Intent-specific planning
 
-Discovery is run independently for uncovered intents while sharing one collection-level query budget. A seed URL does not automatically mark every intent covered. If the same URL is discovered for several intents, ARGUS fetches it once and merges the research goals into provenance.
+Discovery is run independently for uncovered intents while sharing one collection-level query budget. A seed URL does not automatically mark every intent covered. If one URL serves several intents, ARGUS fetches it once and merges research goals into provenance.
 
-Discovery progress is checkpointed after each intent. A process/worker restart therefore resumes only unfinished discovery branches.
+Discovery progress is checkpointed after each intent, so restart resumes only unfinished discovery branches.
 
 ## Same-host robots.txt and Sitemap
 
@@ -348,17 +365,17 @@ ARGUS_SITEMAP_MAX_URLS=20
 ARGUS_SITEMAP_MAX_INDEXES=5
 ```
 
-Only same-host HTTP(S) candidates are accepted; domain constraints still apply. Sitemap tasks consume the normal page budget. Sitemap discovery is navigation-only and fail-open when missing, malformed or unavailable.
+Only same-host HTTP(S) candidates are accepted; domain constraints remain active. Sitemap tasks consume normal page budget and are navigation-only/fail-open.
 
 RSS/Atom and Sitemap XML use `defusedxml` to reject unsafe DTD/entity payloads.
 
 ## JSON-LD
 
-ARGUS extracts bounded `application/ld+json` entities embedded in HTML. It does not dereference remote contexts or perform hidden network requests. Accepted entities receive separate `source_kind=json_ld` Observation/Evidence records backed by the same page snapshot.
+ARGUS extracts bounded `application/ld+json` entities embedded in HTML. It does not dereference remote contexts or perform hidden network requests. Accepted entities receive separate `source_kind=json_ld` Observation/Evidence backed by the fetched page snapshot.
 
 ## Historical research and Wayback
 
-`historical_context` can trigger bounded recursive discovery from already collected factual labels. Follow-up labels remain navigation hypotheses until a new source is fetched.
+`historical_context` can trigger bounded recursive discovery from already collected factual labels. Follow-up labels remain hypotheses until a new source is fetched.
 
 Optional Wayback CDX support performs exact-URL capture lookup only:
 
@@ -368,11 +385,11 @@ ARGUS_WAYBACK_CAPTURE_BASE_URL=https://web.archive.org/web
 ARGUS_WAYBACK_MAX_CAPTURES=5
 ```
 
-A CDX row proves a capture exists. Archived page content is fetched separately through the normal Generic Web pipeline before becoming page Evidence.
+A CDX row proves a capture exists. Archived content is fetched separately through the normal Generic Web pipeline before becoming page Evidence.
 
 ## Optional OpenStreetMap providers
 
-No public Overpass or Nominatim service is enabled silently.
+No public Overpass or Nominatim endpoint is enabled silently.
 
 ```bash
 ARGUS_OVERPASS_URL=https://overpass.example/api/interpreter
@@ -383,32 +400,32 @@ OpenStreetMap facts preserve `© OpenStreetMap contributors` / ODbL provenance a
 
 ## Retry and rate behavior
 
-Crawlee owns normal crawler concurrency/session/retry behavior. Direct providers use their own minimum-interval gates and bounded 429/503 retries.
+Crawlee owns ordinary crawler queue/session/retry/concurrency behavior. Direct providers use separate minimum-interval gates and bounded 429/503 retries.
 
-A valid `Retry-After` is authoritative. ARGUS never shortens a server-requested wait to make an earlier retry. If the delay exceeds the configured maximum acceptable wait, the current operation ends without an early second request.
+A valid server `Retry-After` is authoritative. ARGUS never shortens it to make an earlier retry.
 
 ## Security boundary
 
 ARGUS includes application-level defenses for:
 
 - HTTP(S)-only arbitrary targets;
-- userinfo rejection;
-- resolved private/loopback/link-local/reserved/multicast/cloud-metadata target blocking unless explicitly allowlisted;
-- redirect-hop validation in FAST;
+- URL userinfo rejection;
+- private/loopback/link-local/reserved/multicast/cloud-metadata target blocking unless explicitly allowlisted;
+- FAST redirect-hop validation;
 - unsafe browser request blocking;
-- response/browser time and size limits;
+- inbound API body limits plus response/browser time and size limits;
 - hardened XML/JSON-LD parsing;
 - Bearer token files outside Git;
 - PostgreSQL secret-file preference and `SecretStr` handling;
-- stale-worker protection for terminal cancellation;
-- bounded queue admission and retry semantics;
+- stale-worker cancellation protection;
+- bounded queue admission and result delivery;
 - structured log/error redaction;
 - CAPTCHA/access-control non-bypass.
 
-Application SSRF checks are defense in depth. Server deployment must also enforce network-level egress policy.
+Application SSRF validation is defense in depth. Production deployment must also enforce network-level egress policy.
 
 ## Development rule
 
-ARGUS remains factual infrastructure. Competition scoring, demand interpretation, risk models and other analytical conclusions belong to Kraken, Janus or other consumers. New providers must preserve the common SourceAdapter/Repository/provenance contracts and must not introduce branches keyed by consumer identity.
+ARGUS remains factual infrastructure. Competition scoring, demand interpretation, risk models and other analytical conclusions belong to Kraken, Janus or other consumers. New providers must preserve common SourceAdapter/Repository/provenance contracts and must not introduce branches keyed by consumer identity.
 
-See `docs/ARCHITECTURE.md` for the detailed design and `geo-analyzer-module.json` for the server deployment contract.
+See `docs/ARCHITECTURE.md`, `docs/RESULT_DELIVERY.md` and `geo-analyzer-module.json`.
