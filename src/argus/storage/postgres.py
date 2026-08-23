@@ -9,10 +9,16 @@ from psycopg_pool import AsyncConnectionPool
 
 from argus.contracts.models import CollectionRecord, Evidence, Observation, Snapshot
 from argus.recipes.models import SiteRecipe
-from argus.storage.base import IdempotencyConflictError, QueueCapacityError
+from argus.storage.base import (
+    IdempotencyConflictError,
+    QueueCapacityError,
+    QueueMetrics,
+    RetentionResult,
+)
 from argus.storage.postgres_migrations import EXPECTED_SCHEMA_VERSION
 
 _ADMISSION_LOCK_KEY = 0x415247555341444D  # Stable signed-safe bigint: "ARGUSADM".
+_MAINTENANCE_LOCK_KEY = 0x41524755534D4149  # Stable signed-safe bigint: "ARGUSMAI".
 
 
 class PostgresRepository:
@@ -132,6 +138,7 @@ class PostgresRepository:
         *,
         idempotency_key: str,
         request_hash: str,
+        idempotency_window_seconds: int | None = None,
         max_active_collections: int | None = None,
         max_active_per_consumer: int | None = None,
     ) -> tuple[CollectionRecord, bool]:
@@ -139,12 +146,20 @@ class PostgresRepository:
 
         async with self._pool.connection() as conn:
             async with conn.transaction():
-                # Serialize the short admission critical section across API processes. This
-                # keeps count+insert capacity decisions atomic without a process-local lock.
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(%s)",
                     (_ADMISSION_LOCK_KEY,),
                 )
+
+                if idempotency_window_seconds is not None:
+                    await conn.execute(
+                        """
+                        DELETE FROM argus.collection_idempotency
+                        WHERE idempotency_key=%s
+                          AND created_at <= NOW() - (%s * INTERVAL '1 second')
+                        """,
+                        (idempotency_key, max(1, int(idempotency_window_seconds))),
+                    )
 
                 existing = await self._idempotent_collection(
                     conn,
@@ -358,6 +373,156 @@ class PostgresRepository:
             )
             row = await cursor.fetchone()
         return int(row["count"]) if row else 0
+
+    async def queue_metrics(self, *, worker_max_age_seconds: float) -> QueueMetrics:
+        worker_age = max(1.0, float(worker_max_age_seconds))
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT
+                  COUNT(*) FILTER (WHERE status='queued') AS queued,
+                  COUNT(*) FILTER (WHERE status='running') AS running,
+                  EXTRACT(EPOCH FROM (NOW() - MIN(created_at) FILTER (WHERE status='queued')))
+                    AS oldest_queued_age_seconds,
+                  EXTRACT(EPOCH FROM (NOW() - MIN(created_at) FILTER (WHERE status='running')))
+                    AS oldest_running_age_seconds
+                FROM argus.collections
+                WHERE status IN ('queued', 'running')
+                """
+            )
+            collections = await cursor.fetchone()
+            cursor = await conn.execute(
+                """
+                SELECT
+                  COUNT(*) FILTER (WHERE lease_until > NOW()) AS active_leases,
+                  COUNT(*) FILTER (WHERE lease_until <= NOW()) AS expired_leases
+                FROM argus.collection_leases
+                """
+            )
+            leases = await cursor.fetchone()
+            cursor = await conn.execute(
+                """
+                SELECT
+                  COUNT(*) FILTER (
+                    WHERE heartbeat_at >= NOW() - (%s * INTERVAL '1 second')
+                  ) AS active_workers,
+                  COUNT(*) FILTER (
+                    WHERE heartbeat_at < NOW() - (%s * INTERVAL '1 second')
+                  ) AS stale_workers
+                FROM argus.worker_instances
+                """,
+                (worker_age, worker_age),
+            )
+            workers = await cursor.fetchone()
+
+        def _age(value: object) -> float | None:
+            return None if value is None else max(0.0, float(value))
+
+        return QueueMetrics(
+            queued=int(collections["queued"] or 0),
+            running=int(collections["running"] or 0),
+            active_leases=int(leases["active_leases"] or 0),
+            expired_leases=int(leases["expired_leases"] or 0),
+            active_workers=int(workers["active_workers"] or 0),
+            stale_workers=int(workers["stale_workers"] or 0),
+            oldest_queued_age_seconds=_age(collections["oldest_queued_age_seconds"]),
+            oldest_running_age_seconds=_age(collections["oldest_running_age_seconds"]),
+        )
+
+    async def run_retention(
+        self,
+        *,
+        idempotency_window_seconds: int,
+        collection_retention_days: int,
+        snapshot_retention_days: int,
+        batch_size: int,
+    ) -> RetentionResult:
+        """Run one bounded retention pass; a PostgreSQL lock elects one maintainer."""
+
+        idempotency_window = max(1, int(idempotency_window_seconds))
+        collection_days = max(1, int(collection_retention_days))
+        snapshot_days = max(collection_days, int(snapshot_retention_days))
+        limit = max(1, int(batch_size))
+
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                cursor = await conn.execute(
+                    "SELECT pg_try_advisory_xact_lock(%s) AS acquired",
+                    (_MAINTENANCE_LOCK_KEY,),
+                )
+                lock = await cursor.fetchone()
+                if not lock or not bool(lock["acquired"]):
+                    return RetentionResult()
+
+                cursor = await conn.execute(
+                    """
+                    WITH targets AS (
+                      SELECT idempotency_key
+                      FROM argus.collection_idempotency
+                      WHERE created_at <= NOW() - (%s * INTERVAL '1 second')
+                      ORDER BY created_at ASC
+                      LIMIT %s
+                    )
+                    DELETE FROM argus.collection_idempotency AS i
+                    USING targets AS t
+                    WHERE i.idempotency_key=t.idempotency_key
+                    """,
+                    (idempotency_window, limit),
+                )
+                idempotency_deleted = max(0, int(cursor.rowcount or 0))
+
+                cursor = await conn.execute(
+                    """
+                    WITH targets AS (
+                      SELECT collection_id
+                      FROM argus.collections
+                      WHERE status IN ('completed', 'partial', 'blocked', 'failed', 'cancelled')
+                        AND updated_at <= NOW() - (%s * INTERVAL '1 day')
+                      ORDER BY updated_at ASC, collection_id ASC
+                      LIMIT %s
+                    )
+                    DELETE FROM argus.collections AS c
+                    USING targets AS t
+                    WHERE c.collection_id=t.collection_id
+                    """,
+                    (collection_days, limit),
+                )
+                collections_deleted = max(0, int(cursor.rowcount or 0))
+
+                cursor = await conn.execute(
+                    """
+                    WITH ranked AS (
+                      SELECT
+                        snapshot_id,
+                        source_url,
+                        collected_at,
+                        ROW_NUMBER() OVER (
+                          PARTITION BY source_url
+                          ORDER BY collected_at DESC, snapshot_id DESC
+                        ) AS position
+                      FROM argus.snapshots
+                    ),
+                    targets AS (
+                      SELECT snapshot_id
+                      FROM ranked
+                      WHERE position > 1
+                        AND collected_at <= NOW() - (%s * INTERVAL '1 day')
+                      ORDER BY collected_at ASC, snapshot_id ASC
+                      LIMIT %s
+                    )
+                    DELETE FROM argus.snapshots AS s
+                    USING targets AS t
+                    WHERE s.snapshot_id=t.snapshot_id
+                    """,
+                    (snapshot_days, limit),
+                )
+                snapshots_deleted = max(0, int(cursor.rowcount or 0))
+
+        return RetentionResult(
+            idempotency_deleted=idempotency_deleted,
+            collections_deleted=collections_deleted,
+            snapshots_deleted=snapshots_deleted,
+        )
 
     async def claim_next_collection(
         self,
