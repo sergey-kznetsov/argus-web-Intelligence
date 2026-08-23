@@ -17,6 +17,7 @@ dependencies = [
   "uvicorn[standard]>=0.34,<1",
   "beautifulsoup4>=4.12,<5",
   "defusedxml>=0.7,<1",
+  "pypdf>=6.16.1,<7",
   "psycopg[binary,pool]>=3.2,<4",
   "crawlee[httpx,playwright]>=1.9.1,<2",
 ]
