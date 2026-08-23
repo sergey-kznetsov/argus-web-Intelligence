@@ -57,6 +57,7 @@ class CollectionRequest(BaseModel):
     protocol_version: Literal["1.0.0"] = PROTOCOL_VERSION
     consumer: str = Field(min_length=1, max_length=128)
     analysis_id: str = Field(min_length=1, max_length=128)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
     territory: TerritoryContext
     intents: list[str] = Field(min_length=1, max_length=50)
     constraints: CollectionConstraints = Field(default_factory=CollectionConstraints)
