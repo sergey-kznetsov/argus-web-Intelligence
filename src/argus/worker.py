@@ -44,15 +44,13 @@ class CollectionWorker:
         self._started = False
         self._active: dict[str, asyncio.Task[None]] = {}
         self._heartbeat_task: asyncio.Task[None] | None = None
+        self._maintenance_task: asyncio.Task[None] | None = None
         self._probe_server: asyncio.AbstractServer | None = None
 
     async def start(self) -> None:
         await self.services.start()
         registered = False
         try:
-            # Bind the local readiness socket before publishing this worker in PostgreSQL.
-            # Otherwise API readiness could briefly observe a worker that is about to fail
-            # startup because its probe port cannot be bound.
             if self.probe_port:
                 self._probe_server = await asyncio.start_server(
                     self._handle_probe,
@@ -73,12 +71,25 @@ class CollectionWorker:
                 self._worker_heartbeat_loop(),
                 name=f"argus-worker-heartbeat:{self.worker_id}",
             )
+            self._maintenance_task = asyncio.create_task(
+                self._maintenance_loop(),
+                name=f"argus-worker-maintenance:{self.worker_id}",
+            )
             self._started = True
         except BaseException:
-            if self._heartbeat_task is not None:
-                self._heartbeat_task.cancel()
-                await asyncio.gather(self._heartbeat_task, return_exceptions=True)
-                self._heartbeat_task = None
+            for task in (self._heartbeat_task, self._maintenance_task):
+                if task is not None:
+                    task.cancel()
+            await asyncio.gather(
+                *(
+                    task
+                    for task in (self._heartbeat_task, self._maintenance_task)
+                    if task is not None
+                ),
+                return_exceptions=True,
+            )
+            self._heartbeat_task = None
+            self._maintenance_task = None
             if registered:
                 with suppress(Exception):
                     await self.repository.unregister_worker(self.worker_id)
@@ -144,11 +155,13 @@ class CollectionWorker:
             await asyncio.gather(*active, return_exceptions=True)
         self._active.clear()
 
-        if self._heartbeat_task is not None:
-            self._heartbeat_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._heartbeat_task
-            self._heartbeat_task = None
+        for attr in ("_heartbeat_task", "_maintenance_task"):
+            task = getattr(self, attr)
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+                setattr(self, attr, None)
 
         if self._probe_server is not None:
             self._probe_server.close()
@@ -260,6 +273,43 @@ class CollectionWorker:
                         "worker_id": self.worker_id,
                     },
                 )
+
+    async def _maintenance_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                result = await self.repository.run_retention(
+                    idempotency_window_seconds=self.settings.idempotency_window_seconds,
+                    collection_retention_days=self.settings.retention_collection_days,
+                    snapshot_retention_days=self.settings.retention_snapshot_days,
+                    batch_size=self.settings.retention_batch_size,
+                )
+                if any(result.as_dict().values()):
+                    logger.info(
+                        "retention pass completed",
+                        extra={
+                            "event": "retention_completed",
+                            "worker_id": self.worker_id,
+                            **result.as_dict(),
+                        },
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "retention pass failed",
+                    extra={
+                        "event": "retention_failed",
+                        "worker_id": self.worker_id,
+                    },
+                )
+
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(),
+                    timeout=self.settings.retention_maintenance_interval_seconds,
+                )
+            except TimeoutError:
+                pass
 
     async def _handle_probe(
         self,
