@@ -4,6 +4,7 @@ import pytest
 
 from argus.config import Settings
 from argus.storage.factory import build_repository
+from argus.storage.fenced_postgres import FencedPostgresRepository
 from argus.storage.postgres import PostgresRepository
 from argus.storage.sqlite import SQLiteRepository
 
@@ -38,13 +39,14 @@ def test_storage_factory_uses_sqlite_for_local_backend(tmp_path: Path):
     assert isinstance(build_repository(settings), SQLiteRepository)
 
 
-def test_storage_factory_builds_postgres_without_opening_network(monkeypatch):
+def test_storage_factory_builds_fenced_postgres_without_opening_network(monkeypatch):
     monkeypatch.setenv(
         "GEOANALYZER_DATABASE_DSN",
         "postgresql://argus:secret@127.0.0.1:5432/argus",
     )
     settings = Settings(storage_backend="postgresql")
     repository = build_repository(settings)
+    assert isinstance(repository, FencedPostgresRepository)
     assert isinstance(repository, PostgresRepository)
 
 
