@@ -46,6 +46,14 @@ def test_health_and_auth(tmp_path: Path):
         assert payload["queue_backend"] == "embedded"
         assert payload["idempotent_submission"] is False
         assert payload["worker_required_for_readiness"] is False
+        assert payload["result_delivery"] == {
+            "full_result_max_items": 100,
+            "full_result_max_bytes": 4 * 1024 * 1024,
+            "page_default_size": 50,
+            "page_max_size": 100,
+            "pagination": "opaque_keyset",
+            "paged_results_require_terminal_status": True,
+        }
         assert payload["map_providers"] == []
         assert payload["geocoding_providers"] == []
         assert payload["archive_providers"] == []
