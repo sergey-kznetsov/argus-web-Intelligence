@@ -74,6 +74,11 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
     max_response_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
+    pdf_max_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=50 * 1024 * 1024)
+    pdf_max_pages: int = Field(default=60, ge=1, le=500)
+    pdf_max_text_chars: int = Field(default=250_000, ge=1_000, le=2_000_000)
+    pdf_extract_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
+    pdf_extract_memory_mb: int = Field(default=512, ge=128, le=4096)
     http_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     http_max_redirects: int = Field(default=10, ge=0, le=30)
     browser_timeout_seconds: float = Field(default=45.0, gt=0, le=600)
@@ -171,6 +176,8 @@ class Settings(BaseSettings):
             raise ValueError(
                 "direct_provider_retry_max_seconds must be >= direct_provider_retry_base_seconds"
             )
+        if self.pdf_max_bytes > self.max_response_bytes:
+            raise ValueError("pdf_max_bytes must be <= max_response_bytes")
         if self.browser_max_concurrency > self.max_concurrency:
             self.browser_max_concurrency = self.max_concurrency
         if self.postgres_pool_min_size > self.postgres_pool_max_size:
