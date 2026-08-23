@@ -44,9 +44,28 @@ or, when no header is detected:
 
 Cells remain strings. ARGUS does not guess numeric, date, currency or category types.
 
+### Text encodings
+
+Delimited public data is decoded deterministically rather than through statistical charset detection.
+
+Order:
+
+```text
+Unicode BOM
+explicit HTTP charset
+UTF-8 / UTF-8 BOM
+Windows-1251 fallback
+```
+
+BOM takes precedence because it is part of the source bytes. An invalid or unknown declared charset does not terminate extraction if a later supported deterministic encoding succeeds.
+
+The Windows-1251 fallback exists for legacy Cyrillic CSV/TSV public datasets. ARGUS does not add unrestricted single-byte fallbacks such as Latin-1 because they decode arbitrary binary data and can silently produce false text.
+
 ## JSON
 
-JSON is parsed with the Python standard library. Non-standard numeric constants such as `NaN` and `Infinity` are rejected. Parsed JSON is preserved as source data only when the complete structure fits configured depth, node, string and container limits.
+JSON is parsed with the Python standard library. Network JSON follows RFC 8259 and is decoded as UTF-8; an HTTP `charset` parameter is not used to reinterpret the body as a legacy encoding. UTF-8 BOM is tolerated for interoperability.
+
+Non-standard numeric constants such as `NaN` and `Infinity` are rejected. Parsed JSON is preserved as source data only when the complete structure fits configured depth, node, string and container limits.
 
 ARGUS does not silently truncate JSON structures because replacing omitted branches with invented sentinel values could be mistaken for source facts. A JSON document that exceeds structural limits becomes a partial structured-file result with an explicit `STRUCTURED_DATA_LIMIT_EXCEEDED` error.
 
