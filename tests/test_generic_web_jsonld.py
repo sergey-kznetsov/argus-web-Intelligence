@@ -9,8 +9,8 @@ from argus.sources.generic_web import GenericWebAdapter
 
 
 class FakeSnapshots:
-    async def capture(self, source_id, url, text, content_type):
-        del source_id, url, text, content_type
+    async def capture(self, source_id, url, text, content_type, *, collection_id=None):
+        del source_id, url, text, content_type, collection_id
         return SimpleNamespace(snapshot_id="snapshot-jsonld")
 
 
