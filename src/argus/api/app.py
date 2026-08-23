@@ -38,6 +38,7 @@ from argus.sources.generic_web import GenericWebAdapter
 from argus.sources.overpass_map import OverpassSourceAdapter
 from argus.sources.registry import SourceRegistry
 from argus.sources.rss import RSSAdapter
+from argus.sources.sitemap import SitemapDiscoveryAdapter
 from argus.sources.wayback import WaybackSourceAdapter
 from argus.storage.sqlite import SQLiteRepository
 
@@ -124,9 +125,12 @@ def build_services(settings: Settings) -> ServiceContainer:
             snapshots=snapshots,
             recipes=recipes,
             agent=agent,
+            sitemap_discovery_enabled=settings.sitemap_discovery_enabled,
         )
     )
     registry.register(RSSAdapter(fast, snapshots))
+    if settings.sitemap_discovery_enabled:
+        registry.register(SitemapDiscoveryAdapter(settings, fast))
     if settings.overpass_url:
         overpass_provider = map_registry.get("openstreetmap_overpass")
         registry.register(OverpassSourceAdapter(overpass_provider, snapshots, geocoder))
@@ -192,6 +196,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "storage": "sqlite",
             "history": True,
             "site_recipes": True,
+            "sitemap_discovery": settings.sitemap_discovery_enabled,
             "discovery_providers": configured_discovery_provider_names(settings),
             "geocoding_providers": configured_geocoding_provider_names(settings),
             "archive_providers": configured_archive_provider_names(settings),
