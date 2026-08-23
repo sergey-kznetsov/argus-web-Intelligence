@@ -110,9 +110,11 @@ async def test_postgres_bounded_result_and_keyset_pages():
             collection_id,
             after_id=None,
             limit=1,
+            max_bytes=1_000_000,
         )
         assert first is not None
         assert first.total_count == 3
+        assert first.stored_bytes > 0
         assert len(first.items) == 1
         assert first.has_more is True
 
@@ -120,6 +122,7 @@ async def test_postgres_bounded_result_and_keyset_pages():
             collection_id,
             after_id=first.items[-1].observation_id,
             limit=1,
+            max_bytes=1_000_000,
         )
         assert second is not None
         assert len(second.items) == 1
@@ -129,9 +132,11 @@ async def test_postgres_bounded_result_and_keyset_pages():
             collection_id,
             after_id=None,
             limit=2,
+            max_bytes=1_000_000,
         )
         assert evidence is not None
         assert evidence.total_count == 3
+        assert evidence.stored_bytes > 0
         assert len(evidence.items) == 2
         assert evidence.has_more is True
     finally:
