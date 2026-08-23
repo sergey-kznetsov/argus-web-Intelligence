@@ -87,7 +87,7 @@ async def test_queue_metrics_report_delta_for_collection_worker_and_lease():
 
 
 @pytest.mark.asyncio
-async def test_retention_keeps_active_collection_and_latest_snapshot_per_url():
+async def test_retention_keeps_active_collection_latest_snapshot_and_recent_result_reader():
     dsn = postgres_dsn()
     await run_postgres_migrations(dsn)
     repository = PostgresRepository(dsn, min_size=1, max_size=2, timeout_seconds=10)
@@ -95,6 +95,7 @@ async def test_retention_keeps_active_collection_and_latest_snapshot_per_url():
 
     active_id = f"retention-active-{uuid4()}"
     terminal_id = f"retention-terminal-{uuid4()}"
+    protected_terminal_id = f"retention-protected-{uuid4()}"
     idempotency_key = f"retention-key-{uuid4()}"
     stale_worker_id = f"retention-worker-{uuid4()}"
     source_url = f"https://example.com/{uuid4()}"
@@ -112,7 +113,13 @@ async def test_retention_keeps_active_collection_and_latest_snapshot_per_url():
             status=CollectionStatus.COMPLETED,
             age_days=400,
         )
+        protected_terminal = make_collection(
+            protected_terminal_id,
+            status=CollectionStatus.COMPLETED,
+            age_days=400,
+        )
         await repository.create_collection(terminal)
+        await repository.create_collection(protected_terminal)
         async with repository._pool.connection() as conn:
             await conn.execute(
                 """
@@ -121,6 +128,13 @@ async def test_retention_keeps_active_collection_and_latest_snapshot_per_url():
                 ) VALUES(%s, %s, %s, NOW() - INTERVAL '2 days')
                 """,
                 (idempotency_key, terminal_id, "f" * 64),
+            )
+            await conn.execute(
+                """
+                INSERT INTO argus.collection_result_access(collection_id, last_accessed_at)
+                VALUES(%s, NOW())
+                """,
+                (protected_terminal_id,),
             )
             await conn.execute(
                 """
@@ -156,6 +170,7 @@ async def test_retention_keeps_active_collection_and_latest_snapshot_per_url():
             collection_retention_days=180,
             snapshot_retention_days=365,
             worker_registration_retention_days=7,
+            result_access_grace_seconds=3600,
             batch_size=1000,
         )
 
@@ -165,6 +180,7 @@ async def test_retention_keeps_active_collection_and_latest_snapshot_per_url():
         assert result.workers_deleted >= 1
         assert await repository.get_collection(active_id) is not None
         assert await repository.get_collection(terminal_id) is None
+        assert await repository.get_collection(protected_terminal_id) is not None
 
         async with repository._pool.connection() as conn:
             rows = await (
@@ -192,8 +208,8 @@ async def test_retention_keeps_active_collection_and_latest_snapshot_per_url():
                 (idempotency_key,),
             )
             await conn.execute(
-                "DELETE FROM argus.collections WHERE collection_id IN (%s, %s)",
-                (active_id, terminal_id),
+                "DELETE FROM argus.collections WHERE collection_id IN (%s, %s, %s)",
+                (active_id, terminal_id, protected_terminal_id),
             )
             await conn.execute(
                 "DELETE FROM argus.snapshots WHERE source_url=%s",
