@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import PurePosixPath
@@ -12,17 +13,17 @@ from argus.contracts.models import (
     Observation,
     StructuredError,
 )
+from argus.extraction.ooxml import BoundedOoxmlExtractor
 from argus.normalization.identity import stable_evidence_id, stable_observation_id
 from argus.sources.base import SourceResult, SourceTask
 from argus.sources.document_web import DocumentAwareGenericWebAdapter
 
 
 class OfficeAwareGenericWebAdapter(DocumentAwareGenericWebAdapter):
-    """Classify public Office files without pretending binary formats are CSV/text.
+    """Handle public Office files without confusing binary formats with text data.
 
-    Legacy and OOXML Office formats stay in the deterministic FAST path. Until a
-    bounded format-specific parser is available, ARGUS records file-level evidence
-    backed by the original response hash and marks the result partial explicitly.
+    DOCX/XLSX use a bounded in-memory OOXML extractor. Legacy DOC/XLS stay file-only
+    until a separate bounded OLE/BIFF parser is implemented.
     """
 
     _OFFICE_SUFFIXES = {
@@ -38,6 +39,15 @@ class OfficeAwareGenericWebAdapter(DocumentAwareGenericWebAdapter):
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
     }
+
+    def __init__(
+        self,
+        *args,
+        ooxml_extractor: BoundedOoxmlExtractor | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.ooxml_extractor = ooxml_extractor
 
     def _is_document_response(self, fetched) -> bool:
         return self._office_type(fetched) is not None or super()._is_document_response(fetched)
@@ -67,7 +77,52 @@ class OfficeAwareGenericWebAdapter(DocumentAwareGenericWebAdapter):
                     )
                 ],
             )
+        if office_type in {"docx", "xlsx"} and self.ooxml_extractor is not None:
+            extraction = await asyncio.to_thread(
+                self.ooxml_extractor.extract,
+                body,
+                document_type=office_type,
+            )
+            result = await self._structured_result(task, fetched, request, body, extraction)
+            return self._retag_ooxml_result(result, office_type, fetched.final_url)
         return await self._office_file_result(task, fetched, request, body, office_type)
+
+    def _retag_ooxml_result(
+        self,
+        result: SourceResult,
+        office_type: str,
+        source_url: str,
+    ) -> SourceResult:
+        entity_type = "document" if office_type == "docx" else "dataset"
+        source_kind = "office_document" if office_type == "docx" else "office_spreadsheet"
+        for observation in result.observations:
+            old_id = observation.observation_id
+            observation.entity_type = entity_type
+            observation.source_kind = source_kind
+            observation.observation_id = stable_observation_id(
+                collection_id=observation.collection_id,
+                source_id=self.source_id,
+                entity_type=entity_type,
+                source_url=source_url,
+                content_hash=observation.content_hash,
+            )
+            observation.data["ooxml"] = True
+            observation.provenance.setdefault("document", {})["ooxml"] = True
+            for evidence in result.evidence:
+                if evidence.observation_id != old_id:
+                    continue
+                evidence.observation_id = observation.observation_id
+                evidence.evidence_id = stable_evidence_id(
+                    observation_id=observation.observation_id,
+                    evidence_type=evidence.type,
+                    source_url=source_url,
+                    text=evidence.text,
+                )
+        for error in result.errors:
+            if error.code == "STRUCTURED_DATA_TRUNCATED":
+                error.code = "OOXML_EXTRACTION_TRUNCATED"
+                error.message = "OOXML normalization reached a configured document limit"
+        return result
 
     async def _office_file_result(
         self,
@@ -193,7 +248,10 @@ class OfficeAwareGenericWebAdapter(DocumentAwareGenericWebAdapter):
     async def health(self) -> dict[str, object]:
         payload = dict(await super().health())
         payload["office_document_detection"] = ["doc", "docx", "xls", "xlsx"]
-        payload["office_document_extraction"] = False
+        payload["office_document_extraction"] = (
+            ["docx", "xlsx"] if self.ooxml_extractor is not None else []
+        )
+        payload["office_file_only_formats"] = ["doc", "xls"]
         return payload
 
     @classmethod
