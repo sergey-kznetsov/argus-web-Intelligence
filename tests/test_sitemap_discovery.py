@@ -1,3 +1,5 @@
+import gzip
+
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest
 from argus.crawler.models import FetchResult
@@ -63,6 +65,19 @@ def fetched(url: str, text: str, content_type="application/xml") -> FetchResult:
         status_code=200,
         content_type=content_type,
         text=text,
+        body=text.encode("utf-8"),
+    )
+
+
+def gzip_fetched(url: str, text: str) -> FetchResult:
+    body = gzip.compress(text.encode("utf-8"))
+    return FetchResult(
+        url=url,
+        final_url=url,
+        status_code=200,
+        content_type="application/gzip",
+        text=body.decode("utf-8", errors="replace"),
+        body=body,
     )
 
 
@@ -86,6 +101,7 @@ def test_robots_uses_declared_same_host_sitemaps_and_default():
 
     assert [task.url for task in result] == [
         "https://example.com/news.xml",
+        "https://example.com/archive.xml.gz",
         "https://example.com/sitemap.xml",
     ]
     assert all(task.source_id == "site_discovery" for task in result)
@@ -113,7 +129,7 @@ def test_sitemap_index_is_same_host_bounded_and_one_level():
     )
     assert [task.url for task in result] == [
         "https://example.com/a.xml",
-        "https://example.com/d.xml",
+        "https://example.com/c.xml.gz",
     ]
 
     nested = source._sitemap_tasks(
@@ -144,6 +160,45 @@ def test_urlset_emits_only_same_host_generic_web_tasks_with_limit():
     assert all(task.source_id == "generic_web" for task in result)
     assert all(task.metadata["discovery_provider"] == "sitemap" for task in result)
     assert all(task.metadata["disable_site_discovery"] is True for task in result)
+
+
+def test_gzip_urlset_is_decompressed_with_same_navigation_rules():
+    xml = """<?xml version="1.0"?>
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <url><loc>https://example.com/local_news</loc></url>
+      <url><loc>https://other.example/escape</loc></url>
+    </urlset>"""
+
+    result = adapter()._sitemap_tasks(
+        sitemap_task("https://example.com/sitemap.xml.gz"),
+        gzip_fetched("https://example.com/sitemap.xml.gz", xml),
+        request(),
+    )
+
+    assert [task.url for task in result] == ["https://example.com/local_news"]
+    assert result[0].source_id == "generic_web"
+    assert result[0].metadata["discovery_provider"] == "sitemap"
+
+
+def test_gzip_sitemap_expansion_over_response_limit_is_ignored():
+    source = adapter(max_response_bytes=1024)
+    xml = (
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        + "<!--"
+        + ("x" * 2000)
+        + "-->"
+        + "<url><loc>https://example.com/local_news</loc></url></urlset>"
+    )
+    compressed = gzip_fetched("https://example.com/sitemap.xml.gz", xml)
+    assert len(compressed.body or b"") < source.settings.max_response_bytes
+
+    result = source._sitemap_tasks(
+        sitemap_task("https://example.com/sitemap.xml.gz"),
+        compressed,
+        request(),
+    )
+
+    assert result == []
 
 
 def test_malicious_sitemap_xml_is_ignored_without_entity_expansion():
