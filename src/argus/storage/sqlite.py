@@ -62,6 +62,20 @@ class SQLiteRepository:
         async with self._lock:
             await asyncio.to_thread(self._initialize_sync)
 
+    async def close(self) -> None:
+        return None
+
+    async def health(self) -> dict[str, object]:
+        try:
+            await self._run(self._health_sync)
+        except Exception:
+            return {"status": "error", "backend": "sqlite"}
+        return {"status": "ok", "backend": "sqlite"}
+
+    def _health_sync(self) -> None:
+        with self._connect() as conn:
+            conn.execute("SELECT 1").fetchone()
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
