@@ -14,8 +14,12 @@ ARGUS currently provides:
 - separate server API and collection-worker processes;
 - PostgreSQL-backed queue with worker heartbeat and per-collection leases;
 - atomic queue claim through `FOR UPDATE ... SKIP LOCKED`;
+- FIFO recovery so interrupted older work is not starved by new submissions;
 - lease recovery after worker/process failure;
-- idempotent server collection submission with optional explicit keys and automatic request fingerprints;
+- idempotent server collection submission with a bounded 24-hour default retry window;
+- atomic queue admission/backpressure across concurrent API processes;
+- authenticated operational queue metrics;
+- bounded automatic PostgreSQL retention under a shared maintenance lock;
 - terminal PostgreSQL cancellation that stale workers cannot overwrite;
 - persistent research/discovery checkpoints for restart recovery;
 - product PostgreSQL storage in dedicated schema `argus`;
@@ -97,6 +101,8 @@ Observation / Evidence / snapshots
 
 Workers register in `argus.worker_instances`. A collection is claimed through `argus.collection_leases`; concurrent workers skip already locked/leased work. The worker periodically renews both its own heartbeat and each active collection lease. An expired lease allows another worker to resume the persisted collection checkpoint after a crash.
 
+Claim ordering is FIFO by collection creation time regardless of whether a record is freshly `queued` or recovered `running`. This prevents interrupted older work from being permanently displaced by a continuous stream of new requests.
+
 The configurable defaults are:
 
 ```bash
@@ -138,14 +144,71 @@ A consumer may supply an explicit `idempotency_key`:
 
 Rules:
 
-- retrying the same request with the same explicit key returns the original `collection_id`;
+- retrying the same request with the same explicit key inside the configured window returns the original `collection_id`;
 - an explicit key is scoped by `consumer`, so independent consumers may reuse the same literal key;
-- reusing one consumer's explicit key for a different request returns HTTP `409`;
+- reusing one consumer's explicit key for a different request inside the window returns HTTP `409`;
 - blank/whitespace-only keys are rejected by request validation;
 - when the key is omitted, ARGUS builds a SHA-256 fingerprint from the canonical request and uses it as the retry identity;
-- the transport `idempotency_key` itself is excluded from the request fingerprint.
+- the transport `idempotency_key` itself is excluded from the request fingerprint;
+- the default idempotency window is 86,400 seconds (24 hours);
+- after an idempotency mapping expires, the same request/key may intentionally create a fresh collection.
+
+```bash
+ARGUS_IDEMPOTENCY_WINDOW_SECONDS=86400
+```
 
 Because `analysis_id` is part of the request fingerprint, a genuinely new consumer analysis should use a new analysis ID. Network retries of the same analysis resolve to the same collection rather than creating duplicate web work.
+
+## Queue admission and operations
+
+New server collections are admitted under a PostgreSQL transaction-level advisory lock. This makes the count-and-insert decision atomic even when several API processes submit concurrently.
+
+Defaults:
+
+```bash
+ARGUS_QUEUE_MAX_ACTIVE_COLLECTIONS=500
+ARGUS_QUEUE_MAX_ACTIVE_PER_CONSUMER=100
+ARGUS_QUEUE_RETRY_AFTER_SECONDS=15
+```
+
+Semantics:
+
+- an already-admitted idempotent retry bypasses capacity rejection and returns the existing collection;
+- a new request above the per-consumer limit returns HTTP `429` with `Retry-After`;
+- a new request above the global active limit returns HTTP `503` with `Retry-After`.
+
+Authenticated `GET /v1/operations/queue` exposes PostgreSQL-derived operational state:
+
+- queued and running counts;
+- active and expired collection leases;
+- active and stale worker registrations;
+- age in seconds of the oldest queued/running collection;
+- configured active-queue limits and idempotency window.
+
+The endpoint is intentionally JSON and does not create a second metrics datastore. It can be consumed directly by Geo Analyzer admin tooling and later exported into Prometheus/OpenTelemetry without changing the queue source of truth.
+
+## Retention
+
+Server workers run bounded retention passes automatically. A PostgreSQL advisory lock ensures only one worker performs a retention pass at a time even if ARGUS is horizontally scaled.
+
+Defaults:
+
+```bash
+ARGUS_RETENTION_MAINTENANCE_INTERVAL_SECONDS=3600
+ARGUS_RETENTION_COLLECTION_DAYS=180
+ARGUS_RETENTION_SNAPSHOT_DAYS=365
+ARGUS_RETENTION_BATCH_SIZE=500
+```
+
+Retention rules:
+
+- `queued` and `running` collections are never deleted by retention;
+- only terminal `completed`, `partial`, `blocked`, `failed` and `cancelled` collections older than the configured collection retention are removed;
+- Observation/Evidence/idempotency/lease rows tied to a removed collection follow PostgreSQL foreign-key cleanup;
+- expired idempotency mappings are removed independently once their retry window has elapsed;
+- old snapshots are deleted in bounded batches, but the newest snapshot for every `source_url` is always retained as the future diff baseline;
+- SiteRecipe records are not automatically purged;
+- snapshot retention cannot be configured shorter than collection retention.
 
 ## Storage
 
@@ -221,15 +284,16 @@ Collection API:
 - `GET /v1/collections/{collection_id}/result`;
 - `POST /v1/collections/{collection_id}/cancel`.
 
-Capabilities/sources:
+Capabilities/operations/sources:
 
 - `GET /v1/capabilities`;
+- `GET /v1/operations/queue`;
 - `GET /v1/sources`;
 - `GET /v1/sources/{source_id}/health`.
 
 All endpoints except `GET/HEAD /v1/health` require `Authorization: Bearer <token>`.
 
-`GET /v1/capabilities` exposes the active storage/execution mode. Server API reports `queue_backend=postgresql_leases`, `idempotent_submission=true` and `worker_required_for_readiness=true`. Local embedded mode reports `queue_backend=embedded`.
+`GET /v1/capabilities` exposes the active storage/execution mode. Server API reports `queue_backend=postgresql_leases`, `idempotent_submission=true`, the idempotency/retention configuration and `worker_required_for_readiness=true`. Local embedded mode reports `queue_backend=embedded`.
 
 `consumer` records who requested the data; it does not select a Kraken/Janus branch. `intents` define factual research goals.
 
@@ -337,6 +401,7 @@ ARGUS includes application-level defenses for:
 - Bearer token files outside Git;
 - PostgreSQL secret-file preference and `SecretStr` handling;
 - stale-worker protection for terminal cancellation;
+- bounded queue admission and retry semantics;
 - structured log/error redaction;
 - CAPTCHA/access-control non-bypass.
 
