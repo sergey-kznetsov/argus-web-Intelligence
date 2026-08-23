@@ -29,6 +29,7 @@ class GenericWebAdapter:
         recipes: RecipeManager | None = None,
         agent: AgentBackend | None = None,
         recipe_compiler: AgentRecipeCompiler | None = None,
+        sitemap_discovery_enabled: bool = False,
     ) -> None:
         self.fast = fast
         self.browser = browser
@@ -36,6 +37,7 @@ class GenericWebAdapter:
         self.recipes = recipes
         self.agent = agent
         self.recipe_compiler = recipe_compiler or AgentRecipeCompiler()
+        self.sitemap_discovery_enabled = sitemap_discovery_enabled
 
     async def discover(self, request: CollectionRequest) -> list[SourceTask]:
         return [
@@ -252,6 +254,7 @@ class GenericWebAdapter:
             "status": "ok",
             "agent_enabled": self.agent is not None,
             "recipes_enabled": self.recipes is not None,
+            "sitemap_discovery_enabled": self.sitemap_discovery_enabled,
         }
 
     def _discovered_tasks(
@@ -266,7 +269,8 @@ class GenericWebAdapter:
         max_depth = request.constraints.max_depth
         allowed = {d.lower().strip(".") for d in request.constraints.allowed_domains}
         denied = {d.lower().strip(".") for d in request.constraints.denied_domains}
-        seed_host = (urlparse(fetched.final_url).hostname or "").lower().strip(".")
+        parsed_final = urlparse(fetched.final_url)
+        seed_host = (parsed_final.hostname or "").lower().strip(".")
 
         for feed_url in self._feed_links(fetched.text, fetched.final_url, fetched.content_type):
             if self._domain_allowed(feed_url, seed_host, allowed, denied):
@@ -286,30 +290,74 @@ class GenericWebAdapter:
                         )
                     )
 
-        if task.depth >= max_depth:
-            return discovered
-
-        for link in fetched.links[: request.constraints.max_pages]:
-            link = urldefrag(link)[0]
-            if not link or not self._domain_allowed(link, seed_host, allowed, denied):
-                continue
-            key = f"{self.source_id}:{link}"
-            if key in seen:
-                continue
-            seen.add(key)
-            discovered.append(
-                SourceTask(
-                    source_id=self.source_id,
-                    goal=task.goal,
-                    url=link,
-                    depth=task.depth + 1,
-                    metadata={
-                        "collection_id": collection_id,
-                        "allowed_domains": list(request.constraints.allowed_domains),
-                    },
+        if task.depth < max_depth:
+            for link in fetched.links[: request.constraints.max_pages]:
+                link = urldefrag(link)[0]
+                if not link or not self._domain_allowed(link, seed_host, allowed, denied):
+                    continue
+                key = f"{self.source_id}:{link}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                discovered.append(
+                    SourceTask(
+                        source_id=self.source_id,
+                        goal=task.goal,
+                        url=link,
+                        depth=task.depth + 1,
+                        metadata={
+                            "collection_id": collection_id,
+                            "allowed_domains": list(request.constraints.allowed_domains),
+                        },
+                    )
                 )
+
+            site_task = self._site_discovery_task(
+                task,
+                fetched.final_url,
+                fetched.content_type,
+                collection_id,
+                request,
             )
+            if site_task is not None and site_task.dedupe_key not in seen:
+                discovered.append(site_task)
         return discovered
+
+    def _site_discovery_task(
+        self,
+        task: SourceTask,
+        final_url: str,
+        content_type: str | None,
+        collection_id: str,
+        request: CollectionRequest,
+    ) -> SourceTask | None:
+        if not self.sitemap_discovery_enabled:
+            return None
+        if task.metadata.get("disable_site_discovery") or task.metadata.get("archive_original_url"):
+            return None
+        if content_type and "html" not in content_type.casefold():
+            return None
+        parsed = urlparse(final_url)
+        host = (parsed.hostname or "").lower().strip(".")
+        if parsed.scheme not in {"http", "https"} or not host or not parsed.netloc:
+            return None
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        robots_url = origin + "/robots.txt"
+        return SourceTask(
+            source_id="site_discovery",
+            goal=task.goal,
+            url=robots_url,
+            depth=task.depth,
+            task_key=f"site_discovery:robots:{origin}",
+            metadata={
+                "collection_id": collection_id,
+                "site_discovery_kind": "robots",
+                "root_host": host,
+                "root_origin": origin,
+                "discovered_from": final_url,
+                "allowed_domains": list(request.constraints.allowed_domains),
+            },
+        )
 
     @staticmethod
     def _domain_allowed(url: str, seed_host: str, allowed: set[str], denied: set[str]) -> bool:
