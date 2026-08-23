@@ -54,6 +54,16 @@ def test_pdf_extraction_defaults_are_bounded():
     assert settings.pdf_extract_memory_mb == 512
 
 
+def test_structured_data_extraction_defaults_are_bounded():
+    settings = Settings()
+    assert settings.structured_data_max_bytes == 5 * 1024 * 1024
+    assert settings.structured_data_max_records == 1000
+    assert settings.structured_data_max_columns == 100
+    assert settings.structured_data_max_cell_chars == 10_000
+    assert settings.structured_data_max_json_depth == 32
+    assert settings.structured_data_max_json_nodes == 20_000
+
+
 def test_transport_limit_can_be_stricter_than_pdf_parser_limit():
     settings = Settings(
         max_response_bytes=1024 * 1024,
@@ -61,6 +71,15 @@ def test_transport_limit_can_be_stricter_than_pdf_parser_limit():
     )
     assert settings.max_response_bytes == 1024 * 1024
     assert settings.pdf_max_bytes == 2 * 1024 * 1024
+
+
+def test_transport_limit_can_be_stricter_than_structured_parser_limit():
+    settings = Settings(
+        max_response_bytes=1024 * 1024,
+        structured_data_max_bytes=2 * 1024 * 1024,
+    )
+    assert settings.max_response_bytes == 1024 * 1024
+    assert settings.structured_data_max_bytes == 2 * 1024 * 1024
 
 
 def test_idempotency_defaults_to_24_hours():
