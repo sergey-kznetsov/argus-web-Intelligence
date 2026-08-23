@@ -7,6 +7,7 @@ from typing import Any
 
 from argus.contracts.models import CollectionRecord, Evidence, Observation, Snapshot
 from argus.recipes.models import SiteRecipe
+from argus.storage.base import IdempotencyConflictError
 
 _SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -19,6 +20,13 @@ CREATE TABLE IF NOT EXISTS collections (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_collections_status ON collections(status);
+CREATE TABLE IF NOT EXISTS collection_idempotency (
+  idempotency_key TEXT PRIMARY KEY,
+  collection_id TEXT NOT NULL UNIQUE,
+  request_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(collection_id) REFERENCES collections(collection_id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS observations (
   observation_id TEXT PRIMARY KEY,
   collection_id TEXT NOT NULL,
@@ -92,6 +100,76 @@ class SQLiteRepository:
 
     async def create_collection(self, record: CollectionRecord) -> None:
         await self._run(self._upsert_collection_sync, record, True)
+
+    async def create_collection_idempotent(
+        self,
+        record: CollectionRecord,
+        *,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> tuple[CollectionRecord, bool]:
+        return await self._run(
+            self._create_collection_idempotent_sync,
+            record,
+            idempotency_key,
+            request_hash,
+        )
+
+    def _create_collection_idempotent_sync(
+        self,
+        record: CollectionRecord,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> tuple[CollectionRecord, bool]:
+        with self._connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT collection_id, request_hash
+                FROM collection_idempotency
+                WHERE idempotency_key=?
+                """,
+                (idempotency_key,),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["request_hash"]) != request_hash:
+                    raise IdempotencyConflictError(
+                        "idempotency key is already bound to another collection request"
+                    )
+                row = conn.execute(
+                    "SELECT body FROM collections WHERE collection_id=?",
+                    (str(existing["collection_id"]),),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("idempotency mapping references a missing collection")
+                return CollectionRecord.model_validate_json(row["body"]), False
+
+            conn.execute(
+                """
+                INSERT INTO collections(collection_id,status,body,created_at,updated_at)
+                VALUES(?,?,?,?,?)
+                """,
+                (
+                    record.collection_id,
+                    record.status.value,
+                    record.model_dump_json(),
+                    record.created_at.isoformat(),
+                    record.updated_at.isoformat(),
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO collection_idempotency(
+                  idempotency_key, collection_id, request_hash, created_at
+                ) VALUES(?,?,?,?)
+                """,
+                (
+                    idempotency_key,
+                    record.collection_id,
+                    request_hash,
+                    record.created_at.isoformat(),
+                ),
+            )
+            return record, True
 
     async def update_collection(self, record: CollectionRecord) -> None:
         await self._run(self._upsert_collection_sync, record, False)
