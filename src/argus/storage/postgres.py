@@ -29,16 +29,21 @@ class PostgresRepository:
         min_size: int = 1,
         max_size: int = 8,
         timeout_seconds: float = 30.0,
+        max_waiting: int = 32,
     ) -> None:
         if not dsn.strip():
             raise ValueError("PostgreSQL DSN must not be empty")
         if min_size < 0 or max_size < 1 or min_size > max_size:
             raise ValueError("invalid PostgreSQL pool size")
+        if max_waiting < 1:
+            raise ValueError("PostgreSQL pool max_waiting must be positive")
+        self._max_waiting = int(max_waiting)
         self._pool = AsyncConnectionPool(
             conninfo=dsn,
             min_size=min_size,
             max_size=max_size,
             timeout=timeout_seconds,
+            max_waiting=self._max_waiting,
             open=False,
             kwargs={"row_factory": dict_row},
             name="argus",
@@ -59,7 +64,26 @@ class PostgresRepository:
                 await self._pool.close()
                 self._opened = False
 
+    def pool_stats(self) -> dict[str, int]:
+        raw = self._pool.get_stats()
+        keys = (
+            "pool_min",
+            "pool_max",
+            "pool_size",
+            "pool_available",
+            "requests_waiting",
+            "requests_num",
+            "requests_queued",
+            "requests_errors",
+            "requests_wait_ms",
+            "usage_ms",
+        )
+        payload = {key: int(raw.get(key, 0)) for key in keys}
+        payload["max_waiting"] = self._max_waiting
+        return payload
+
     async def health(self) -> dict[str, object]:
+        pool = self.pool_stats()
         try:
             async with self._pool.connection() as conn:
                 cursor = await conn.execute(
@@ -73,6 +97,7 @@ class PostgresRepository:
                 "backend": "postgresql",
                 "schema_version": version,
                 "expected_schema_version": EXPECTED_SCHEMA_VERSION,
+                "pool": pool,
             }
         except Exception:
             return {
@@ -80,6 +105,7 @@ class PostgresRepository:
                 "backend": "postgresql",
                 "schema_version": None,
                 "expected_schema_version": EXPECTED_SCHEMA_VERSION,
+                "pool": pool,
             }
 
     async def _verify_schema(self) -> None:
