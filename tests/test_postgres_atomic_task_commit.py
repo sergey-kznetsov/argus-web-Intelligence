@@ -1,6 +1,7 @@
 import os
 from uuid import uuid4
 
+import psycopg
 import pytest
 
 from argus.contracts.models import (
@@ -44,6 +45,7 @@ def make_record(collection_id: str) -> CollectionRecord:
 
 
 def factual_rows(record: CollectionRecord):
+    source_url = f"https://example.com/atomic/{record.collection_id}"
     observation = Observation(
         observation_id=f"obs-{uuid4()}",
         collection_id=record.collection_id,
@@ -51,7 +53,7 @@ def factual_rows(record: CollectionRecord):
         consumer=record.request.consumer,
         source="test",
         source_kind="document",
-        url="https://example.com/atomic",
+        url=source_url,
         entity_type="document",
         text="atomic fact",
         content_hash="a" * 64,
@@ -151,6 +153,88 @@ async def test_atomic_task_commit_is_fenced_by_current_lease_owner():
     finally:
         await repository.unregister_worker(worker_a)
         await repository.unregister_worker(worker_b)
+        async with repository._pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM argus.collections WHERE collection_id=%s",
+                (collection_id,),
+            )
+            await conn.execute(
+                "DELETE FROM argus.snapshots WHERE snapshot_id=%s",
+                (snapshot.snapshot_id,),
+            )
+        await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_failure_after_factual_inserts_rolls_back_rows_and_checkpoint():
+    dsn = postgres_dsn()
+    await run_postgres_migrations(dsn)
+    repository = FencedPostgresRepository(dsn, min_size=1, max_size=3, timeout_seconds=10)
+    await repository.initialize()
+
+    collection_id = f"atomic-rollback-{uuid4()}"
+    worker_id = f"worker-{uuid4()}"
+    record = make_record(collection_id)
+    observation, evidence, snapshot = factual_rows(record)
+    committed = record.model_copy(deep=True)
+    committed.checkpoint = {"visited": [f"test:{observation.url}"]}
+    committed.updated_at = utcnow()
+    suffix = uuid4().hex
+    function_name = f"atomic_commit_failure_{suffix}"
+    trigger_name = f"atomic_commit_failure_{suffix}"
+
+    try:
+        await repository.register_worker(worker_id, metadata={"test": True})
+        await repository.create_collection(record)
+        assert await repository.claim_next_collection(worker_id, lease_seconds=30) == collection_id
+
+        async with repository._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    f"""
+                    CREATE FUNCTION argus.{function_name}() RETURNS trigger AS $$
+                    BEGIN
+                      IF NEW.collection_id = '{collection_id}' THEN
+                        RAISE EXCEPTION 'intentional atomic commit failure';
+                      END IF;
+                      RETURN NEW;
+                    END;
+                    $$ LANGUAGE plpgsql
+                    """
+                )
+                await conn.execute(
+                    f"""
+                    CREATE TRIGGER {trigger_name}
+                    BEFORE UPDATE ON argus.collections
+                    FOR EACH ROW EXECUTE FUNCTION argus.{function_name}()
+                    """
+                )
+
+        with lease_fence(collection_id, worker_id):
+            with pytest.raises(psycopg.Error, match="intentional atomic commit failure"):
+                await repository.commit_task_success(
+                    committed,
+                    observations=[observation],
+                    evidence=[evidence],
+                    snapshots=[snapshot],
+                )
+
+        stored = await repository.get_collection(collection_id)
+        assert stored is not None
+        assert stored.checkpoint == record.checkpoint
+        assert await repository.list_observations(collection_id) == []
+        assert await repository.list_evidence(collection_id) == []
+        assert await repository.latest_snapshot(snapshot.source_url) is None
+    finally:
+        async with repository._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    f"DROP TRIGGER IF EXISTS {trigger_name} ON argus.collections"
+                )
+                await conn.execute(
+                    f"DROP FUNCTION IF EXISTS argus.{function_name}()"
+                )
+        await repository.unregister_worker(worker_id)
         async with repository._pool.connection() as conn:
             await conn.execute(
                 "DELETE FROM argus.collections WHERE collection_id=%s",
