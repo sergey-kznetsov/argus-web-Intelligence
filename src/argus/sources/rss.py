@@ -1,10 +1,19 @@
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
 from datetime import datetime
 from urllib.parse import urljoin
+from xml.etree.ElementTree import Element, ParseError
 
-from argus.contracts.models import CollectionRequest, Evidence, EvidenceSource, Observation
+from defusedxml import ElementTree as DefusedET
+from defusedxml.common import DefusedXmlException
+
+from argus.contracts.models import (
+    CollectionRequest,
+    Evidence,
+    EvidenceSource,
+    Observation,
+    StructuredError,
+)
 from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.history.snapshots import SnapshotService, sha256_text
 from argus.normalization.identity import stable_evidence_id, stable_observation_id
@@ -44,7 +53,21 @@ class RSSAdapter:
             fetched.text,
             fetched.content_type,
         )
-        root = ET.fromstring(fetched.text)
+        try:
+            root = DefusedET.fromstring(fetched.text)
+        except (DefusedXmlException, ParseError):
+            return SourceResult(
+                observations=[],
+                errors=[
+                    StructuredError(
+                        code="FEED_XML_INVALID",
+                        message="RSS/Atom XML could not be parsed safely",
+                        retryable=False,
+                        source_id=self.source_id,
+                    )
+                ],
+            )
+
         items = root.findall(".//item")
         if not items:
             items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
@@ -120,14 +143,14 @@ class RSSAdapter:
         return {"source_id": self.source_id, "status": "ok"}
 
     @staticmethod
-    def _text(item: ET.Element, local_name: str) -> str | None:
+    def _text(item: Element, local_name: str) -> str | None:
         for child in item.iter():
             if child.tag.split("}")[-1] == local_name and child.text:
                 return child.text.strip()
         return None
 
     @staticmethod
-    def _link(item: ET.Element) -> str | None:
+    def _link(item: Element) -> str | None:
         for child in item.iter():
             if child.tag.split("}")[-1] == "link":
                 if child.text and child.text.strip():
@@ -138,7 +161,7 @@ class RSSAdapter:
         return None
 
     @classmethod
-    def _date(cls, item: ET.Element) -> datetime | None:
+    def _date(cls, item: Element) -> datetime | None:
         value = (
             cls._text(item, "pubDate")
             or cls._text(item, "published")
