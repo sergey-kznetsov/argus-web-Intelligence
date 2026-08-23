@@ -130,6 +130,13 @@ class BoundedStructuredDataExtractor:
             )
         try:
             payload = json.loads(text, parse_constant=self._reject_json_constant)
+        except RecursionError:
+            return StructuredDataExtraction(
+                document_type="json",
+                encoding=encoding,
+                error_code="STRUCTURED_DATA_LIMIT_EXCEEDED",
+                error_message="JSON nesting exceeds the parser recursion limit",
+            )
         except (json.JSONDecodeError, ValueError) as exc:
             return StructuredDataExtraction(
                 document_type="json",
