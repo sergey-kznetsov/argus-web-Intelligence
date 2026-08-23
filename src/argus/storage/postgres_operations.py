@@ -13,15 +13,27 @@ from argus.result_delivery import EvidenceSlice, ObservationSlice, ResultBundle,
 class PostgresOperationsStore:
     """Pooled read-side store for administrative and bounded result API reads."""
 
-    def __init__(self, dsn: str, *, min_size: int = 0, max_size: int = 4, timeout_seconds: float = 30.0) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        min_size: int = 0,
+        max_size: int = 4,
+        timeout_seconds: float = 30.0,
+        max_waiting: int = 32,
+    ) -> None:
         value = dsn.strip()
         if not value:
             raise ValueError("PostgreSQL DSN must not be empty")
+        if max_waiting < 1:
+            raise ValueError("PostgreSQL pool max_waiting must be positive")
+        self._max_waiting = int(max_waiting)
         self._pool = AsyncConnectionPool(
             conninfo=value,
             min_size=min_size,
             max_size=max_size,
             timeout=timeout_seconds,
+            max_waiting=self._max_waiting,
             open=False,
             kwargs={"row_factory": dict_row},
             name="argus-api-read",
@@ -37,6 +49,24 @@ class PostgresOperationsStore:
         if self._opened:
             await self._pool.close()
             self._opened = False
+
+    def pool_stats(self) -> dict[str, int]:
+        raw = self._pool.get_stats()
+        keys = (
+            "pool_min",
+            "pool_max",
+            "pool_size",
+            "pool_available",
+            "requests_waiting",
+            "requests_num",
+            "requests_queued",
+            "requests_errors",
+            "requests_wait_ms",
+            "usage_ms",
+        )
+        payload = {key: int(raw.get(key, 0)) for key in keys}
+        payload["max_waiting"] = self._max_waiting
+        return payload
 
     async def list_collections(
         self,
