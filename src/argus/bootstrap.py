@@ -6,6 +6,7 @@ from argus.crawler.agent.browser_use import BrowserUseAgent
 from argus.crawler.agent.stagehand import StagehandAgent
 from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
+from argus.extraction.ooxml import BoundedOoxmlExtractor
 from argus.extraction.pdf import BoundedPdfExtractor
 from argus.extraction.structured_data import BoundedStructuredDataExtractor
 from argus.geocoding.contracts import GeocodeProvider
@@ -115,6 +116,22 @@ def build_structured_data_extractor(settings: Settings) -> BoundedStructuredData
     )
 
 
+def build_ooxml_extractor(settings: Settings) -> BoundedOoxmlExtractor:
+    max_bytes = settings.structured_data_max_bytes
+    return BoundedOoxmlExtractor(
+        max_bytes=max_bytes,
+        max_members=1000,
+        max_uncompressed_bytes=min(max_bytes * 4, 20 * 1024 * 1024),
+        max_member_bytes=min(max_bytes * 2, 10 * 1024 * 1024),
+        max_xml_nodes=settings.structured_data_max_json_nodes,
+        max_xml_depth=settings.structured_data_max_json_depth,
+        max_records=settings.structured_data_max_records,
+        max_columns=settings.structured_data_max_columns,
+        max_cell_chars=settings.structured_data_max_cell_chars,
+        max_sheets=min(settings.structured_data_max_columns, 50),
+    )
+
+
 def build_services(settings: Settings) -> ServiceContainer:
     settings.ensure_dirs()
     repository = build_repository(settings)
@@ -138,6 +155,7 @@ def build_services(settings: Settings) -> ServiceContainer:
             sitemap_discovery_enabled=settings.sitemap_discovery_enabled,
             pdf_extractor=build_pdf_extractor(settings),
             structured_data_extractor=build_structured_data_extractor(settings),
+            ooxml_extractor=build_ooxml_extractor(settings),
         )
     )
     registry.register(RSSAdapter(fast, snapshots))
