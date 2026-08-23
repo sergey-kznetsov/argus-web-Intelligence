@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, HttpUrl, model_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 PROTOCOL_VERSION = "1.0.0"
 
@@ -62,6 +62,16 @@ class CollectionRequest(BaseModel):
     intents: list[str] = Field(min_length=1, max_length=50)
     constraints: CollectionConstraints = Field(default_factory=CollectionConstraints)
     allow_partial: bool = True
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def normalize_idempotency_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("idempotency_key must not be blank")
+        return normalized
 
 
 class EvidenceSource(BaseModel):
