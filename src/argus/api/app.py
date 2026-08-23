@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException, Response, status
 from argus import __version__
 from argus.config import Settings, get_settings
 from argus.contracts.models import (
+    PROTOCOL_VERSION,
     CollectionAccepted,
     CollectionRecord,
     CollectionRequest,
@@ -23,6 +24,7 @@ from argus.history.snapshots import SnapshotService
 from argus.history.wayback import WaybackCDXProvider
 from argus.maps.overpass import OverpassMapProvider
 from argus.maps.registry import MapProviderRegistry
+from argus.module_protocol import MODULE_ID, runtime_manifest
 from argus.observability import configure_logging
 from argus.orchestrator.service import CollectionOrchestrator
 from argus.recipes.service import RecipeManager
@@ -40,7 +42,7 @@ from argus.sources.registry import SourceRegistry
 from argus.sources.rss import RSSAdapter
 from argus.sources.sitemap import SitemapDiscoveryAdapter
 from argus.sources.wayback import WaybackSourceAdapter
-from argus.storage.sqlite import SQLiteRepository
+from argus.storage.factory import build_repository
 
 
 def build_agent(settings: Settings, guard: UrlGuard) -> AgentBackend | None:
@@ -107,7 +109,7 @@ def build_map_registry(settings: Settings) -> MapProviderRegistry:
 
 def build_services(settings: Settings) -> ServiceContainer:
     settings.ensure_dirs()
-    repository = SQLiteRepository(settings.db_path)
+    repository = build_repository(settings)
     guard = UrlGuard.from_strings(settings.allow_internal_targets)
     fast = FastCrawlerRuntime(settings, guard)
     browser = BrowserCrawlerRuntime(settings, guard)
@@ -180,20 +182,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="ARGUS Web Intelligence", version=__version__, lifespan=lifespan)
 
+    @app.get("/v1/manifest", dependencies=[Depends(require_bearer)])
+    async def manifest():
+        return runtime_manifest()
+
     @app.get("/v1/health")
     async def health():
+        database = await repository.health()
+        database_status = str(database.get("status") or "error")
         return {
-            "status": "ok",
+            "protocol_version": PROTOCOL_VERSION,
+            "module_id": MODULE_ID,
+            "status": "ok" if database_status == "ok" else "degraded",
             "service": "argus-web-intelligence",
             "version": __version__,
+            "checks": {"database": database},
         }
 
     @app.get("/v1/capabilities", dependencies=[Depends(require_bearer)])
     async def capabilities():
         return {
-            "protocol_version": "1.0.0",
+            "protocol_version": PROTOCOL_VERSION,
             "runtimes": ["fast", "browser", "agent"],
-            "storage": "sqlite",
+            "storage": settings.storage_backend,
             "history": True,
             "site_recipes": True,
             "sitemap_discovery": settings.sitemap_discovery_enabled,
@@ -265,7 +276,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.head("/v1/health")
     async def health_head():
-        return Response(status_code=200)
+        database = await repository.health()
+        return Response(status_code=200 if database.get("status") == "ok" else 503)
 
     return app
 
