@@ -96,6 +96,7 @@ async def test_retention_keeps_active_collection_and_latest_snapshot_per_url():
     active_id = f"retention-active-{uuid4()}"
     terminal_id = f"retention-terminal-{uuid4()}"
     idempotency_key = f"retention-key-{uuid4()}"
+    stale_worker_id = f"retention-worker-{uuid4()}"
     source_url = f"https://example.com/{uuid4()}"
     snapshot_ids = [f"retention-snapshot-{uuid4()}" for _ in range(3)]
     try:
@@ -121,6 +122,19 @@ async def test_retention_keeps_active_collection_and_latest_snapshot_per_url():
                 """,
                 (idempotency_key, terminal_id, "f" * 64),
             )
+            await conn.execute(
+                """
+                INSERT INTO argus.worker_instances(
+                  worker_id, started_at, heartbeat_at, metadata
+                ) VALUES(
+                  %s,
+                  NOW() - INTERVAL '10 days',
+                  NOW() - INTERVAL '10 days',
+                  '{}'::jsonb
+                )
+                """,
+                (stale_worker_id,),
+            )
 
         for snapshot_id, age_days in zip(snapshot_ids, (500, 450, 400), strict=True):
             collected_at = utcnow() - timedelta(days=age_days)
@@ -141,12 +155,14 @@ async def test_retention_keeps_active_collection_and_latest_snapshot_per_url():
             idempotency_window_seconds=86_400,
             collection_retention_days=180,
             snapshot_retention_days=365,
+            worker_registration_retention_days=7,
             batch_size=1000,
         )
 
         assert result.idempotency_deleted >= 1
         assert result.collections_deleted >= 1
         assert result.snapshots_deleted >= 2
+        assert result.workers_deleted >= 1
         assert await repository.get_collection(active_id) is not None
         assert await repository.get_collection(terminal_id) is None
 
@@ -161,7 +177,14 @@ async def test_retention_keeps_active_collection_and_latest_snapshot_per_url():
                     (source_url,),
                 )
             ).fetchall()
+            stale_worker = await (
+                await conn.execute(
+                    "SELECT worker_id FROM argus.worker_instances WHERE worker_id=%s",
+                    (stale_worker_id,),
+                )
+            ).fetchone()
         assert [str(row["snapshot_id"]) for row in rows] == [snapshot_ids[2]]
+        assert stale_worker is None
     finally:
         async with repository._pool.connection() as conn:
             await conn.execute(
@@ -175,5 +198,9 @@ async def test_retention_keeps_active_collection_and_latest_snapshot_per_url():
             await conn.execute(
                 "DELETE FROM argus.snapshots WHERE source_url=%s",
                 (source_url,),
+            )
+            await conn.execute(
+                "DELETE FROM argus.worker_instances WHERE worker_id=%s",
+                (stale_worker_id,),
             )
         await repository.close()
