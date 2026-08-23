@@ -92,7 +92,12 @@ async def test_database_error_during_lease_heartbeat_cancels_active_execution(tm
             del args, kwargs
             raise psycopg.OperationalError("simulated PostgreSQL heartbeat outage")
 
+        async def failed_release(*args, **kwargs):
+            del args, kwargs
+            raise psycopg.OperationalError("simulated PostgreSQL release outage")
+
         worker_a.repository.renew_collection_lease = failed_renew  # type: ignore[method-assign]
+        worker_a.repository.release_collection_lease = failed_release  # type: ignore[method-assign]
         execution = asyncio.create_task(worker_a._execute_claim(collection_id))
         await asyncio.wait_for(blocking.started.wait(), timeout=5)
         result = await asyncio.wait_for(
@@ -106,8 +111,8 @@ async def test_database_error_during_lease_heartbeat_cancels_active_execution(tm
         assert await worker_a.repository.list_observations(collection_id) == []
         assert await worker_a.repository.list_evidence(collection_id) == []
 
-        # A transient database error must not allow a concurrent worker to steal an
-        # otherwise still-valid lease. Recovery becomes legal only after lease expiry.
+        # During a real outage the release attempt can fail too. The old lease remains
+        # authoritative until expiry, so another worker cannot publish concurrently.
         assert await worker_b.repository.claim_next_collection(
             worker_b.worker_id,
             lease_seconds=15,
