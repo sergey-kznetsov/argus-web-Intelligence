@@ -121,6 +121,7 @@ class DiscoveryService:
                     "discovery_engines": hit.engines,
                     "discovery_rank": hit.rank,
                     "allowed_domains": list(request.constraints.allowed_domains),
+                    "research_goals": list(request.intents),
                 }
                 outcome.tasks.append(
                     SourceTask(
