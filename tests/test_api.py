@@ -51,6 +51,7 @@ def test_health_and_auth(tmp_path: Path):
             "full_result_max_bytes": 4 * 1024 * 1024,
             "page_default_size": 50,
             "page_max_size": 100,
+            "page_max_bytes": 2 * 1024 * 1024,
             "pagination": "opaque_keyset",
             "paged_results_require_terminal_status": True,
         }
