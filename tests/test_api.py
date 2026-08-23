@@ -23,7 +23,12 @@ def test_health_and_auth(tmp_path: Path):
         assert payload["map_providers"] == []
         assert payload["geocoding_providers"] == []
         assert payload["archive_providers"] == []
+        assert payload["sitemap_discovery"] is True
         assert "duckduckgo_browser" in payload["discovery_providers"]
+
+        sources = client.get("/v1/sources", headers=auth_headers(settings)).json()
+        source_ids = {item["source_id"] for item in sources}
+        assert "site_discovery" in source_ids
 
         source_health = client.get(
             "/v1/sources/generic_web/health",
@@ -44,6 +49,7 @@ def test_capabilities_only_lists_configured_optional_providers(tmp_path: Path):
         nominatim_url="https://nominatim.example",
         wayback_cdx_url="https://web.archive.org/cdx/search/cdx",
         browser_serp_enabled=False,
+        sitemap_discovery_enabled=False,
     )
     with TestClient(create_app(settings)) as client:
         response = client.get("/v1/capabilities", headers=auth_headers(settings))
@@ -53,7 +59,9 @@ def test_capabilities_only_lists_configured_optional_providers(tmp_path: Path):
         assert payload["geocoding_providers"] == ["nominatim"]
         assert payload["archive_providers"] == ["wayback_cdx"]
         assert payload["discovery_providers"] == []
+        assert payload["sitemap_discovery"] is False
 
         sources = client.get("/v1/sources", headers=auth_headers(settings)).json()
         source_ids = {item["source_id"] for item in sources}
         assert "wayback_cdx" in source_ids
+        assert "site_discovery" not in source_ids
