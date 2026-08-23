@@ -42,6 +42,8 @@ COMMIT
 
 A process stop before `COMMIT` leaves the previous durable checkpoint and factual state unchanged. A process stop after `COMMIT` leaves both facts and `visited` durable, so the replacement worker skips that completed task.
 
+The collection terminal state (`completed`, `partial`, `blocked` or `failed`) may be written after the final task transaction. If a worker dies in that narrow post-commit/pre-finalization window, recovery loads the durable checkpoint, sees the task in `visited`, performs no second fetch and only finalizes the collection state.
+
 This removes the former crash window where Observation/Evidence could be durable while the corresponding task was still absent from `visited`.
 
 SQLite embedded mode uses the same logical boundary in one SQLite transaction. PostgreSQL server mode additionally fences the transaction by the current worker lease.
@@ -62,9 +64,26 @@ If a lease expires and another worker claims the collection, the old worker cann
 
 The heartbeat loop remains a second line of defense: a failed lease renewal also cancels the local execution task.
 
+## Graceful shutdown and worker handoff
+
+A server worker owns only the tasks recorded in its `_active` set. During shutdown ARGUS:
+
+1. stops admitting new claims;
+2. cancels active collection execution tasks;
+3. waits for those tasks to unwind cancellation;
+4. allows `_execute_claim()` to release the collection lease;
+5. unregisters the worker instance;
+6. closes service resources.
+
+This means a replacement worker can claim a collection immediately after graceful release instead of waiting for the old lease timeout. A replacement polling concurrently with shutdown still cannot claim the collection before ownership has actually been released.
+
+Cancellation is propagated through FAST and BROWSER runtimes. Cancelling an in-flight FAST request does not trigger Browser fallback, and cancelling an in-flight Browser request does not trigger Agent fallback. Cancellation is an execution-control signal, not a source failure.
+
 ## Storage interruption during worker execution
 
 A PostgreSQL transport/storage error inside a lease-owned storage call is not a source error. `FencedPostgresRepository` converts the retryable worker-storage failure path into `WorkerStorageError` and logs the failed operation. This cancellation-style signal bypasses source-error handling, prevents the current task from becoming durably `visited`, and releases or eventually expires the lease when the worker attempt exits.
+
+A lease-heartbeat database failure also cancels the active execution. The old lease remains authoritative until it is released or expires; another worker must not steal it simply because one heartbeat attempt failed. Once the lease expires and PostgreSQL is usable again, the last durable checkpoint is claimable and replayable.
 
 A later claim can therefore replay the last durable checkpoint after PostgreSQL is usable again.
 
@@ -79,6 +98,22 @@ A normal source/fetch/extraction exception is recorded as `SOURCE_ERROR`; the fa
 An atomic task commit failure is outside the source-error handler. It is never relabelled as `SOURCE_ERROR`. In server mode a lost lease or retryable PostgreSQL interruption aborts the worker attempt so the task remains replayable from the previous durable checkpoint.
 
 Historical branch expansion is also isolated from factual extraction. If factual extraction succeeded but optional historical expansion raises an ordinary exception, ARGUS records `HISTORICAL_BRANCH_ERROR` and can still atomically publish the already proven factual result rather than discarding it.
+
+## Historical branch recovery
+
+Historical expansion is included in the same durable task checkpoint as its parent factual task.
+
+If branch discovery returns candidate tasks and the parent task transaction commits, the following become durable together:
+
+- the parent Observation/Evidence;
+- the parent task `visited` marker;
+- `historical_branch_queries` already consumed from the bounded query budget;
+- discovered branch tasks in `pending_tasks`;
+- branch depth/provenance metadata.
+
+If the worker dies after that commit, recovery does not repeat historical discovery for the parent. It executes the already persisted branch task. If the worker dies before the commit, none of the branch checkpoint is durable and the parent task is safely replayed, including its incomplete historical discovery.
+
+This preserves at-least-once external discovery while keeping persisted branch tasks and factual rows deterministic and duplicate-safe.
 
 ## Content changes between failure and replay
 
@@ -95,6 +130,24 @@ Collection-scoped Snapshot IDs remain deterministic from collection, source, URL
 SiteRecipe state is shared operational state rather than collection output. Recipe success/failure/candidate state may be updated during deterministic or agent-assisted navigation before factual task commit. It is intentionally not part of the collection factual transaction.
 
 A recipe can therefore survive an interrupted collection attempt, but it cannot itself become Observation or Evidence. Factual output still requires a successful source task transaction.
+
+## Verified fault-injection scenarios
+
+The automated PostgreSQL/worker suite now exercises these recovery boundaries:
+
+- independent workers claim different collections concurrently;
+- lease transfer while the previous worker is blocked inside fetch;
+- graceful worker shutdown while another worker is already polling for the same collection;
+- PostgreSQL error during lease heartbeat;
+- failed atomic task commit leaves task, Snapshot, Observation and Evidence unpublished;
+- stale worker cannot commit after lease ownership moved;
+- process-style cancellation immediately after successful atomic commit but before collection finalization;
+- historical branch discovery committed before crash resumes from persisted branch task without rediscovery;
+- FAST cancellation does not escalate to BROWSER;
+- BROWSER cancellation does not escalate to AGENT;
+- PostgreSQL pool recovers after a backend connection is terminated.
+
+The remaining deployment-level recovery validation is performed in TEST: terminate/restart the PostgreSQL service and ARGUS processes themselves, then verify lease expiry, readiness recovery and end-to-end collection completion through the installed module runtime.
 
 ## Scope and guarantees
 
