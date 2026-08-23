@@ -18,7 +18,10 @@ def postgres_dsn() -> str:
 
 
 @pytest.mark.asyncio
-async def test_worker_startup_rolls_back_registration_when_probe_port_is_busy(tmp_path: Path):
+async def test_worker_startup_rolls_back_registration_when_probe_port_is_busy(
+    tmp_path: Path,
+    monkeypatch,
+):
     dsn = postgres_dsn()
     await run_postgres_migrations(dsn)
 
@@ -37,12 +40,22 @@ async def test_worker_startup_rolls_back_registration_when_probe_port_is_busy(tm
         worker_heartbeat_seconds=1,
     )
     worker = CollectionWorker(settings, probe_port=port)
+    original_register = worker.repository.register_worker
+    register_calls = 0
+
+    async def tracked_register(worker_id: str, *, metadata=None):
+        nonlocal register_calls
+        register_calls += 1
+        await original_register(worker_id, metadata=metadata)
+
+    monkeypatch.setattr(worker.repository, "register_worker", tracked_register)
     try:
         with pytest.raises(OSError):
             await worker.start()
     finally:
         blocker.close()
 
+    assert register_calls == 0
     assert worker._started is False
     assert worker._heartbeat_task is None
     assert worker._probe_server is None
