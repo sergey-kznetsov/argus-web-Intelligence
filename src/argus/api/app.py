@@ -37,11 +37,7 @@ from argus.pagination import (
     encode_collection_cursor,
     encode_result_cursor,
 )
-from argus.result_delivery import (
-    ResultReadStore,
-    ResultTooLargeError,
-    SQLiteResultReadStore,
-)
+from argus.result_delivery import ResultReadStore, ResultTooLargeError, SQLiteResultReadStore
 from argus.security.auth import bearer_dependency, ensure_token
 from argus.security.request_limits import RequestSizeLimitMiddleware
 from argus.storage.base import IdempotencyConflictError, QueueCapacityError
@@ -118,9 +114,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if callable(worker_counter):
                 try:
                     active_workers = int(
-                        await worker_counter(
-                            max_age_seconds=settings.worker_health_max_age_seconds
-                        )
+                        await worker_counter(max_age_seconds=settings.worker_health_max_age_seconds)
                     )
                     worker_status = "ok" if active_workers > 0 else "degraded"
                 except Exception:
@@ -138,6 +132,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             full_result_max_items=settings.api_full_result_max_items,
             full_result_max_bytes=settings.api_full_result_max_bytes,
             page_max_size=settings.api_result_page_max_size,
+            page_max_bytes=settings.api_result_page_max_bytes,
         )
 
     @app.get("/v1/manifest", dependencies=[Depends(require_bearer)])
@@ -171,15 +166,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "full_result_max_bytes": settings.api_full_result_max_bytes,
                 "page_default_size": settings.api_result_page_default_size,
                 "page_max_size": settings.api_result_page_max_size,
+                "page_max_bytes": settings.api_result_page_max_bytes,
                 "pagination": "opaque_keyset",
                 "paged_results_require_terminal_status": True,
             },
             "queue_backend": "postgresql_leases" if server_queue else "embedded",
             "idempotent_submission": settings.execution_role == "api",
             "idempotency_window_seconds": (
-                settings.idempotency_window_seconds
-                if settings.execution_role == "api"
-                else None
+                settings.idempotency_window_seconds if settings.execution_role == "api" else None
             ),
             "worker_required_for_readiness": settings.execution_role == "api",
             "queue_limits": (
@@ -195,12 +189,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 {
                     "collection_days": settings.retention_collection_days,
                     "snapshot_days": settings.retention_snapshot_days,
-                    "worker_registration_days": (
-                        settings.retention_worker_registration_days
-                    ),
-                    "maintenance_interval_seconds": (
-                        settings.retention_maintenance_interval_seconds
-                    ),
+                    "worker_registration_days": settings.retention_worker_registration_days,
+                    "maintenance_interval_seconds": settings.retention_maintenance_interval_seconds,
                     "batch_size": settings.retention_batch_size,
                     "preserve_latest_snapshot_per_url": True,
                 }
@@ -238,9 +228,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="queue operations are available only in server API mode",
             )
-        metrics = await metrics_reader(
-            worker_max_age_seconds=settings.worker_health_max_age_seconds
-        )
+        metrics = await metrics_reader(worker_max_age_seconds=settings.worker_health_max_age_seconds)
         payload = metrics.as_dict()
         payload.update(
             {
@@ -282,7 +270,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="invalid collection pagination cursor",
                 ) from exc
-
         items, has_more = await operations_store.list_collections(
             limit=limit,
             status=status_filter,
@@ -304,7 +291,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def create_collection(request: CollectionRequest):
         if settings.execution_role != "api":
             return await orchestrator.submit(request)
-
         fingerprint = request_fingerprint(request)
         idempotency_key = storage_idempotency_key(request, fingerprint)
         timestamp = utcnow()
@@ -346,10 +332,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 },
                 headers={"Retry-After": str(settings.queue_retry_after_seconds)},
             ) from exc
-        return CollectionAccepted(
-            collection_id=stored.collection_id,
-            status=stored.status,
-        )
+        return CollectionAccepted(collection_id=stored.collection_id, status=stored.status)
 
     @app.get(
         "/v1/collections/{collection_id}",
@@ -462,16 +445,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             collection_id,
             after_id=after_id,
             limit=limit,
+            max_bytes=settings.api_result_page_max_bytes,
         )
         if page is None:
             raise HTTPException(status_code=404, detail="collection not found")
         if page.record.status not in _TERMINAL_RESULT_STATUSES:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "RESULT_NOT_FINAL",
-                    "status": page.record.status.value,
-                },
+                detail={"code": "RESULT_NOT_FINAL", "status": page.record.status.value},
             )
         next_cursor = None
         if page.has_more and page.items:
@@ -484,6 +465,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             collection_id=collection_id,
             status=page.record.status,
             total_count=page.total_count,
+            page_stored_bytes=page.stored_bytes,
             items=page.items,
             next_cursor=next_cursor,
         )
@@ -519,16 +501,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             collection_id,
             after_id=after_id,
             limit=limit,
+            max_bytes=settings.api_result_page_max_bytes,
         )
         if page is None:
             raise HTTPException(status_code=404, detail="collection not found")
         if page.record.status not in _TERMINAL_RESULT_STATUSES:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "RESULT_NOT_FINAL",
-                    "status": page.record.status.value,
-                },
+                detail={"code": "RESULT_NOT_FINAL", "status": page.record.status.value},
             )
         next_cursor = None
         if page.has_more and page.items:
@@ -541,6 +521,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             collection_id=collection_id,
             status=page.record.status,
             total_count=page.total_count,
+            page_stored_bytes=page.stored_bytes,
             items=page.items,
             next_cursor=next_cursor,
         )
