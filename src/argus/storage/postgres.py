@@ -115,7 +115,8 @@ class PostgresRepository:
                 "to_regclass('argus.collections') AS collections, "
                 "to_regclass('argus.collection_leases') AS collection_leases, "
                 "to_regclass('argus.worker_instances') AS worker_instances, "
-                "to_regclass('argus.collection_idempotency') AS collection_idempotency"
+                "to_regclass('argus.collection_idempotency') AS collection_idempotency, "
+                "to_regclass('argus.collection_result_access') AS collection_result_access"
             )
             row = await cursor.fetchone()
             if (
@@ -125,6 +126,7 @@ class PostgresRepository:
                 or row["collection_leases"] is None
                 or row["worker_instances"] is None
                 or row["collection_idempotency"] is None
+                or row["collection_result_access"] is None
             ):
                 raise RuntimeError(
                     "ARGUS PostgreSQL schema is not migrated; "
@@ -462,14 +464,16 @@ class PostgresRepository:
         collection_retention_days: int,
         snapshot_retention_days: int,
         worker_registration_retention_days: int,
+        result_access_grace_seconds: int = 3600,
         batch_size: int,
     ) -> RetentionResult:
-        """Run one bounded retention pass; a PostgreSQL lock elects one maintainer."""
+        """Run one bounded retention pass; recent result readers are protected."""
 
         idempotency_window = max(1, int(idempotency_window_seconds))
         collection_days = max(1, int(collection_retention_days))
         snapshot_days = max(collection_days, int(snapshot_retention_days))
         worker_days = max(1, int(worker_registration_retention_days))
+        access_grace = max(60, int(result_access_grace_seconds))
         limit = max(1, int(batch_size))
 
         async with self._pool.connection() as conn:
@@ -502,18 +506,24 @@ class PostgresRepository:
                 cursor = await conn.execute(
                     """
                     WITH targets AS (
-                      SELECT collection_id
-                      FROM argus.collections
-                      WHERE status IN ('completed', 'partial', 'blocked', 'failed', 'cancelled')
-                        AND updated_at <= NOW() - (%s * INTERVAL '1 day')
-                      ORDER BY updated_at ASC, collection_id ASC
+                      SELECT c.collection_id
+                      FROM argus.collections AS c
+                      WHERE c.status IN ('completed', 'partial', 'blocked', 'failed', 'cancelled')
+                        AND c.updated_at <= NOW() - (%s * INTERVAL '1 day')
+                        AND NOT EXISTS (
+                          SELECT 1
+                          FROM argus.collection_result_access AS a
+                          WHERE a.collection_id=c.collection_id
+                            AND a.last_accessed_at >= NOW() - (%s * INTERVAL '1 second')
+                        )
+                      ORDER BY c.updated_at ASC, c.collection_id ASC
                       LIMIT %s
                     )
                     DELETE FROM argus.collections AS c
                     USING targets AS t
                     WHERE c.collection_id=t.collection_id
                     """,
-                    (collection_days, limit),
+                    (collection_days, access_grace, limit),
                 )
                 collections_deleted = max(0, int(cursor.rowcount or 0))
 
