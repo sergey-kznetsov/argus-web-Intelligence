@@ -48,7 +48,7 @@ def fetched(text: str) -> FetchResult:
 
 
 @pytest.mark.asyncio
-async def test_rss_still_extracts_normal_feed_entries():
+async def test_rss_still_extracts_normal_feed_entries_with_feed_evidence_provenance():
     xml = """<?xml version="1.0"?>
     <rss version="2.0"><channel><item>
       <title>Новость</title>
@@ -61,9 +61,14 @@ async def test_rss_still_extracts_normal_feed_entries():
 
     assert result.errors == []
     assert len(result.observations) == 1
-    assert result.observations[0].title == "Новость"
-    assert result.observations[0].url == "https://example.com/news/1"
+    observation = result.observations[0]
+    assert observation.title == "Новость"
+    assert observation.url == "https://example.com/news/1"
+    assert observation.provenance["feed_url"] == "https://example.com/feed.xml"
     assert len(result.evidence) == 1
+    evidence = result.evidence[0]
+    assert evidence.source.url == "https://example.com/feed.xml"
+    assert evidence.metadata["entry_url"] == "https://example.com/news/1"
 
 
 @pytest.mark.asyncio
@@ -79,3 +84,18 @@ async def test_rss_rejects_dtd_entity_payload_without_expansion():
     assert result.observations == []
     assert result.evidence == []
     assert [error.code for error in result.errors] == ["FEED_XML_INVALID"]
+
+
+@pytest.mark.asyncio
+async def test_rss_non_http_entry_link_falls_back_to_fetched_feed_url():
+    xml = """<?xml version="1.0"?>
+    <rss version="2.0"><channel><item>
+      <title>Новость</title>
+      <description>Описание</description>
+      <link>file:///etc/passwd</link>
+    </item></channel></rss>"""
+    adapter = RSSAdapter(FakeFast(), FakeSnapshots())
+    result = await adapter.extract(task(), fetched(xml), request())
+
+    assert result.observations[0].url == "https://example.com/feed.xml"
+    assert result.evidence[0].source.url == "https://example.com/feed.xml"
