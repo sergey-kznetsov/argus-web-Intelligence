@@ -48,25 +48,43 @@ class CollectionWorker:
 
     async def start(self) -> None:
         await self.services.start()
-        await self.repository.register_worker(
-            self.worker_id,
-            metadata={
-                "pid": os.getpid(),
-                "host": socket.gethostname(),
-                "version": __version__,
-            },
-        )
-        self._heartbeat_task = asyncio.create_task(
-            self._worker_heartbeat_loop(),
-            name=f"argus-worker-heartbeat:{self.worker_id}",
-        )
-        if self.probe_port:
-            self._probe_server = await asyncio.start_server(
-                self._handle_probe,
-                self.probe_host,
-                self.probe_port,
+        registered = False
+        try:
+            await self.repository.register_worker(
+                self.worker_id,
+                metadata={
+                    "pid": os.getpid(),
+                    "host": socket.gethostname(),
+                    "version": __version__,
+                },
             )
-        self._started = True
+            registered = True
+            self._heartbeat_task = asyncio.create_task(
+                self._worker_heartbeat_loop(),
+                name=f"argus-worker-heartbeat:{self.worker_id}",
+            )
+            if self.probe_port:
+                self._probe_server = await asyncio.start_server(
+                    self._handle_probe,
+                    self.probe_host,
+                    self.probe_port,
+                )
+            self._started = True
+        except BaseException:
+            if self._heartbeat_task is not None:
+                self._heartbeat_task.cancel()
+                await asyncio.gather(self._heartbeat_task, return_exceptions=True)
+                self._heartbeat_task = None
+            if self._probe_server is not None:
+                self._probe_server.close()
+                await self._probe_server.wait_closed()
+                self._probe_server = None
+            if registered:
+                with suppress(Exception):
+                    await self.repository.unregister_worker(self.worker_id)
+            await self.services.shutdown()
+            raise
+
         logger.info(
             "worker started",
             extra={
