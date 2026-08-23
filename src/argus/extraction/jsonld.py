@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -67,8 +68,8 @@ class EmbeddedJsonLdExtractor:
                 blocks_oversized += 1
                 continue
             try:
-                payload = json.loads(text)
-            except (json.JSONDecodeError, TypeError, ValueError):
+                payload = json.loads(text, parse_constant=self._reject_constant)
+            except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
                 blocks_invalid += 1
                 continue
 
@@ -93,6 +94,10 @@ class EmbeddedJsonLdExtractor:
             blocks_invalid=blocks_invalid,
             blocks_oversized=blocks_oversized,
         )
+
+    @staticmethod
+    def _reject_constant(value: str) -> None:
+        raise ValueError(f"non-standard JSON constant: {value}")
 
     @staticmethod
     def _is_json_ld_type(value: object) -> bool:
@@ -124,8 +129,10 @@ class EmbeddedJsonLdExtractor:
     def _sanitize(self, value: Any, *, depth: int) -> Any:
         if depth >= self.max_depth:
             return None
-        if value is None or isinstance(value, (bool, int, float)):
+        if value is None or isinstance(value, (bool, int)):
             return value
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
         if isinstance(value, str):
             return value[: self.max_string_chars]
         if isinstance(value, list):
