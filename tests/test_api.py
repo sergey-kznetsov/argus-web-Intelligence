@@ -42,6 +42,10 @@ def test_health_and_auth(tmp_path: Path):
         assert response.status_code == 200
         payload = response.json()
         assert payload["storage"] == "sqlite"
+        assert payload["execution_role"] == "embedded"
+        assert payload["queue_backend"] == "embedded"
+        assert payload["idempotent_submission"] is False
+        assert payload["worker_required_for_readiness"] is False
         assert payload["map_providers"] == []
         assert payload["geocoding_providers"] == []
         assert payload["archive_providers"] == []
