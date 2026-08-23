@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 import psycopg
 from psycopg.rows import dict_row
 
