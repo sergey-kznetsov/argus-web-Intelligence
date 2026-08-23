@@ -48,6 +48,7 @@ class BoundedStructuredDataExtractor:
         "text/tsv",
         "application/tsv",
     }
+    _DELIMITED_FALLBACK_ENCODINGS = ("utf-8-sig", "cp1251")
 
     def __init__(
         self,
@@ -104,7 +105,7 @@ class BoundedStructuredDataExtractor:
                 error_message="Structured document exceeds configured parser byte limit",
             )
         if document_type == "json":
-            return self._extract_json(body, content_type)
+            return self._extract_json(body)
         if document_type in {"csv", "tsv"}:
             return self._extract_delimited(body, content_type, document_type)
         return StructuredDataExtraction(
@@ -113,34 +114,29 @@ class BoundedStructuredDataExtractor:
             error_message="Document is not a supported structured data format",
         )
 
-    def _extract_json(
-        self,
-        body: bytes,
-        content_type: str | None,
-    ) -> StructuredDataExtraction:
-        encoding = self._encoding(content_type, default="utf-8-sig")
+    def _extract_json(self, body: bytes) -> StructuredDataExtraction:
         try:
-            text = body.decode(encoding, errors="strict")
-        except (LookupError, UnicodeDecodeError) as exc:
+            text = body.decode("utf-8-sig", errors="strict")
+        except UnicodeDecodeError as exc:
             return StructuredDataExtraction(
                 document_type="json",
-                encoding=encoding,
+                encoding="utf-8",
                 error_code="STRUCTURED_DATA_DECODE_ERROR",
-                error_message=f"JSON text could not be decoded: {type(exc).__name__}",
+                error_message=f"JSON text is not valid UTF-8: {type(exc).__name__}",
             )
         try:
             payload = json.loads(text, parse_constant=self._reject_json_constant)
         except RecursionError:
             return StructuredDataExtraction(
                 document_type="json",
-                encoding=encoding,
+                encoding="utf-8",
                 error_code="STRUCTURED_DATA_LIMIT_EXCEEDED",
                 error_message="JSON nesting exceeds the parser recursion limit",
             )
         except (json.JSONDecodeError, ValueError) as exc:
             return StructuredDataExtraction(
                 document_type="json",
-                encoding=encoding,
+                encoding="utf-8",
                 error_code="STRUCTURED_DATA_PARSE_ERROR",
                 error_message=f"JSON document is invalid: {type(exc).__name__}",
             )
@@ -149,7 +145,7 @@ class BoundedStructuredDataExtractor:
         if not within_limits:
             return StructuredDataExtraction(
                 document_type="json",
-                encoding=encoding,
+                encoding="utf-8",
                 error_code="STRUCTURED_DATA_LIMIT_EXCEEDED",
                 error_message=(
                     "JSON structure exceeds configured depth, node, string, or container limits"
@@ -167,7 +163,7 @@ class BoundedStructuredDataExtractor:
         return StructuredDataExtraction(
             document_type="json",
             payload=payload,
-            encoding=encoding,
+            encoding="utf-8",
             row_count=row_count,
             rows_extracted=row_count,
             column_count=column_count,
@@ -180,16 +176,14 @@ class BoundedStructuredDataExtractor:
         content_type: str | None,
         document_type: str,
     ) -> StructuredDataExtraction:
-        encoding = self._encoding(content_type, default="utf-8-sig")
-        try:
-            text = body.decode(encoding, errors="strict")
-        except (LookupError, UnicodeDecodeError) as exc:
+        decoded = self._decode_delimited(body, content_type)
+        if decoded is None:
             return StructuredDataExtraction(
                 document_type=document_type,
-                encoding=encoding,
                 error_code="STRUCTURED_DATA_DECODE_ERROR",
-                error_message=f"Delimited text could not be decoded: {type(exc).__name__}",
+                error_message="Delimited text could not be decoded with supported encodings",
             )
+        text, encoding = decoded
 
         delimiter = "\t" if document_type == "tsv" else self._csv_delimiter(text)
         try:
@@ -259,6 +253,40 @@ class BoundedStructuredDataExtractor:
                 error_message=f"Delimited document is invalid: {type(exc).__name__}",
             )
 
+    @classmethod
+    def _decode_delimited(
+        cls,
+        body: bytes,
+        content_type: str | None,
+    ) -> tuple[str, str] | None:
+        candidates: list[str] = []
+        bom_encoding = cls._bom_encoding(body)
+        if bom_encoding:
+            candidates.append(bom_encoding)
+        declared = cls._declared_charset(content_type)
+        if declared and declared not in candidates:
+            candidates.append(declared)
+        for encoding in cls._DELIMITED_FALLBACK_ENCODINGS:
+            if encoding not in candidates:
+                candidates.append(encoding)
+
+        for encoding in candidates:
+            try:
+                return body.decode(encoding, errors="strict"), encoding
+            except (LookupError, UnicodeDecodeError):
+                continue
+        return None
+
+    @staticmethod
+    def _bom_encoding(body: bytes) -> str | None:
+        if body.startswith(b"\x00\x00\xfe\xff") or body.startswith(b"\xff\xfe\x00\x00"):
+            return "utf-32"
+        if body.startswith(b"\xfe\xff") or body.startswith(b"\xff\xfe"):
+            return "utf-16"
+        if body.startswith(b"\xef\xbb\xbf"):
+            return "utf-8-sig"
+        return None
+
     def _bounded_rows(self, rows: list[list[str]]) -> tuple[list[list[str]], bool, int]:
         bounded: list[list[str]] = []
         truncated = False
@@ -318,13 +346,13 @@ class BoundedStructuredDataExtractor:
         return str(content_type or "").split(";", 1)[0].strip().casefold()
 
     @staticmethod
-    def _encoding(content_type: str | None, *, default: str) -> str:
+    def _declared_charset(content_type: str | None) -> str | None:
         if content_type:
             for part in content_type.split(";")[1:]:
                 key, separator, value = part.strip().partition("=")
                 if separator and key.casefold() == "charset" and value.strip():
-                    return value.strip().strip('"\'')
-        return default
+                    return value.strip().strip('"\'').casefold()
+        return None
 
     @staticmethod
     def _csv_delimiter(text: str) -> str:
