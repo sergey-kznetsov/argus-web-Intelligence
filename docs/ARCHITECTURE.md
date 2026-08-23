@@ -21,8 +21,10 @@ Consumer -> Internal API -> Collection Orchestrator -> Research Planner
                                       |             Wayback CDX
                                       |                 |
                          FAST -> BROWSER -> AGENT      capture URLs
-                                      |                 |
-                                      +<----------------+
+                           |          |                 |
+                           |          +<----------------+
+                           |
+                           +-> robots.txt / Sitemap navigation
                                       |
                          Observation + Evidence
                                       |
@@ -37,7 +39,7 @@ Map intents -> OverpassSourceAdapter -> optional Nominatim geocode
                                       -> Observation + Evidence + Snapshot
 ```
 
-Discovery results are navigation candidates, not facts. Search snippets never become Evidence. ARGUS fetches the destination page through a factual source adapter before creating Observation/Evidence.
+Discovery results, Sitemap entries and other navigation hints are candidates, not facts. Search snippets and Sitemap metadata never become Evidence. ARGUS fetches the destination page through a factual source adapter before creating Observation/Evidence.
 
 ## Runtime escalation
 
@@ -47,13 +49,15 @@ The service keeps Crawlee request/session/retry/concurrency machinery instead of
 
 BROWSER tracks the latest main-document response during SiteRecipe navigation. If a recipe starts on HTTP 200 and navigates to a 403/429/etc. page, the final status and content type are returned rather than the original navigation metadata.
 
-Direct HTTP providers such as Overpass, Nominatim and Wayback CDX use a separate bounded rate gate plus 429/503 retry policy. `Retry-After` is respected when valid; otherwise ARGUS uses bounded exponential delay. This is separate from Crawlee because these provider clients do not run through the crawler request manager.
+FAST treats externally declared response charsets as untrusted input. Unknown codec names fall back to UTF-8 with replacement instead of terminating the crawl with `LookupError`.
+
+Direct HTTP providers such as Overpass, Nominatim and Wayback CDX use a separate process-local rate gate plus a bounded 429/503 retry budget. Missing or invalid `Retry-After` uses bounded exponential delay. A valid `Retry-After` is authoritative: if the requested delay exceeds ARGUS' local maximum wait, that operation is not retried early. This is separate from Crawlee because these provider clients do not run through the crawler request manager.
 
 ## Discovery
 
 `ResearchPlanner` produces queries. `DiscoveryService` runs ordered providers as fallbacks and stops after the first provider that produces valid destination URLs.
 
-Current providers:
+Current external discovery providers:
 
 1. optional self-hosted SearXNG JSON API;
 2. low-volume DuckDuckGo HTML Playwright fallback when enabled.
@@ -67,6 +71,27 @@ If all available discovery routes are blocked before any valid URL is found, ARG
 Discovery is only run for intents not already covered by self-discovering source adapters or explicit seed tasks. The checkpoint stores `planning_complete` so restart recovery does not rerun discovery after planning has already completed.
 
 When `historical_context` is active and `wayback_cdx` is configured, each valid discovery hit produces two independent source tasks: a normal `generic_web` task for the current page and an exact-URL `wayback_cdx` companion task. The archive task is not created for non-historical intents.
+
+## Same-host robots.txt and Sitemap discovery
+
+`site_discovery` is an internal navigation-only SourceAdapter. It has no request intents and is never considered factual coverage by itself. `generic_web` may enqueue it after a top-level HTML page has already been fetched and only when `ARGUS_SITEMAP_DISCOVERY_ENABLED` is enabled.
+
+The first task checks `<origin>/robots.txt` for case-insensitive `Sitemap:` records and also considers the conventional `<origin>/sitemap.xml`. Each network operation remains an explicit SourceTask, so sitemap traversal consumes the same `max_pages` budget as other collection work.
+
+Sitemap processing is deliberately narrow:
+
+- only HTTP(S) candidates on the original hostname are accepted;
+- `.gz` sitemap files are skipped for the current milestone;
+- one sitemap-index level is followed;
+- index fan-out is bounded by `ARGUS_SITEMAP_MAX_INDEXES`;
+- final page candidates are bounded by `ARGUS_SITEMAP_MAX_URLS`;
+- request allowed/denied-domain constraints still apply;
+- selected page URLs are marked `discovery_provider=sitemap` and must pass through `generic_web` before becoming facts;
+- sitemap-discovered pages do not recursively start another sitemap pass.
+
+Robots/Sitemap failures are fail-open because this path is optional navigation support. A missing `robots.txt`, absent sitemap, invalid XML or blocked optional sitemap does not by itself degrade already valid factual evidence.
+
+Sitemap and RSS/Atom XML are parsed with `defusedxml`. DTD/entity/external-reference payloads are rejected rather than expanded. For RSS/Atom, the feed URL is the Evidence source because that is the document ARGUS actually fetched; an entry URL is retained separately as entity/navigation provenance.
 
 ## Research Planner and recursive historical research
 
@@ -96,7 +121,7 @@ Manual historical seed URLs are looked up directly. Historical search-discovery 
 
 Ordinary GET crawling uses backward-compatible `source_id + URL` task identity. Providers that execute distinct POST/search operations against one endpoint can set an explicit `SourceTask.task_key`. The orchestrator uses this key consistently for queue de-duplication, visited checkpoints and restart recovery.
 
-This is required for providers such as Overpass: `school` and `pharmacy` searches may use the same interpreter URL but must remain separate tasks with independent limits, errors and coverage. Wayback tasks likewise identify the original target URL independently of the configured CDX endpoint.
+This is required for providers such as Overpass: `school` and `pharmacy` searches may use the same interpreter URL but must remain separate tasks with independent limits, errors and coverage. Wayback tasks likewise identify the original target URL independently of the configured CDX endpoint. Site discovery uses explicit identities such as `site_discovery:robots:<origin>` and `site_discovery:sitemap:<url>`.
 
 ## Source operational health
 
@@ -104,7 +129,7 @@ This is required for providers such as Overpass: `school` and `pharmacy` searche
 
 Before the first factual attempt, a registered source reports `ready`. During work it reports `running`. A completed factual pipeline reports `ok`; a partial/error result reports `degraded`; an access/rate block reports `blocked`.
 
-`GET /v1/sources/{id}/health` retains the adapter's own static/configuration state as `adapter_status` and adds operational timestamps: `last_attempt_at`, `last_success_at`, `last_failure_at`, and `last_error_code`. Future source adapters receive this behavior automatically through the registry wrapper.
+Cancellation restores the previous stable operational status instead of erasing a known `ok`, `degraded` or `blocked` state. `GET /v1/sources/{id}/health` retains the adapter's own static/configuration state as `adapter_status` and adds operational timestamps: `last_attempt_at`, `last_success_at`, `last_failure_at`, and `last_error_code`.
 
 ## SiteRecipe
 
@@ -144,6 +169,8 @@ The orchestrator depends on `Repository`, not `SQLiteRepository`. PostgreSQL can
 - DNS-resolved loopback/private/link-local/reserved/multicast/metadata targets rejected unless explicitly allowlisted;
 - FAST validates every redirect hop before HTTPX sends it;
 - BROWSER intercepts and validates page network requests and unsafe redirects;
+- untrusted RSS/Atom/Sitemap XML uses `defusedxml` rather than raw entity-expanding parsers;
+- unknown declared response charsets fall back safely instead of crashing FAST;
 - response/browser size, time and concurrency/rate limits;
 - CAPTCHA/access blocks surfaced as blocked/partial, never bypassed;
 - structured errors and JSON logs redact common credential forms and URL query strings.
