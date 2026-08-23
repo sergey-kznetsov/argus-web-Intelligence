@@ -24,6 +24,7 @@ def test_health_and_auth(tmp_path: Path):
         assert payload["geocoding_providers"] == []
         assert payload["archive_providers"] == []
         assert payload["sitemap_discovery"] is True
+        assert payload["structured_extractors"] == ["json_ld"]
         assert "duckduckgo_browser" in payload["discovery_providers"]
 
         sources = client.get("/v1/sources", headers=auth_headers(settings)).json()
@@ -60,6 +61,7 @@ def test_capabilities_only_lists_configured_optional_providers(tmp_path: Path):
         assert payload["archive_providers"] == ["wayback_cdx"]
         assert payload["discovery_providers"] == []
         assert payload["sitemap_discovery"] is False
+        assert payload["structured_extractors"] == ["json_ld"]
 
         sources = client.get("/v1/sources", headers=auth_headers(settings)).json()
         source_ids = {item["source_id"] for item in sources}
