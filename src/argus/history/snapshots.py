@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from typing import Iterator
 
 from argus import __version__
 from argus.contracts.models import Snapshot
@@ -26,6 +30,50 @@ def stable_snapshot_id(
     return "snapshot-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+@dataclass(slots=True)
+class SnapshotBatch:
+    """Task-local snapshot buffer committed together with factual rows/checkpoint."""
+
+    snapshots: list[Snapshot] = field(default_factory=list)
+    _latest_by_url: dict[str, Snapshot] = field(default_factory=dict)
+
+    def latest(self, source_url: str) -> Snapshot | None:
+        return self._latest_by_url.get(source_url)
+
+    def add(self, snapshot: Snapshot) -> None:
+        current = self._latest_by_url.get(snapshot.source_url)
+        if current is not None and current.snapshot_id == snapshot.snapshot_id:
+            return
+        self.snapshots.append(snapshot)
+        self._latest_by_url[snapshot.source_url] = snapshot
+
+
+_CURRENT_SNAPSHOT_BATCH: ContextVar[SnapshotBatch | None] = ContextVar(
+    "argus_current_snapshot_batch",
+    default=None,
+)
+
+
+def current_snapshot_batch() -> SnapshotBatch | None:
+    return _CURRENT_SNAPSHOT_BATCH.get()
+
+
+@contextmanager
+def stage_snapshots() -> Iterator[SnapshotBatch]:
+    """Buffer snapshots until the orchestrator atomically commits one source task."""
+
+    existing = _CURRENT_SNAPSHOT_BATCH.get()
+    if existing is not None:
+        yield existing
+        return
+    batch = SnapshotBatch()
+    token = _CURRENT_SNAPSHOT_BATCH.set(batch)
+    try:
+        yield batch
+    finally:
+        _CURRENT_SNAPSHOT_BATCH.reset(token)
+
+
 class SnapshotService:
     def __init__(self, repository: Repository, extractor_version: str | None = None) -> None:
         self.repository = repository
@@ -40,7 +88,11 @@ class SnapshotService:
         *,
         collection_id: str | None = None,
     ) -> Snapshot:
-        previous = await self.repository.latest_snapshot(source_url)
+        batch = current_snapshot_batch()
+        previous = batch.latest(source_url) if batch is not None else None
+        if previous is None:
+            previous = await self.repository.latest_snapshot(source_url)
+
         content_hash = sha256_text(content)
         snapshot_id = None
         normalized_collection_id = (collection_id or "").strip()
@@ -79,7 +131,10 @@ class SnapshotService:
         if snapshot_id is not None:
             payload["snapshot_id"] = snapshot_id
         snapshot = Snapshot.model_validate(payload)
-        if normalized_collection_id:
+
+        if batch is not None:
+            batch.add(snapshot)
+        elif normalized_collection_id:
             await self.repository.add_snapshot(
                 snapshot,
                 collection_id=normalized_collection_id,
