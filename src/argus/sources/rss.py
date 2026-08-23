@@ -47,11 +47,13 @@ class RSSAdapter:
     async def extract(self, task: SourceTask, fetched, request: CollectionRequest) -> SourceResult:
         if fetched.blocked:
             return SourceResult(observations=[], blocked=True)
+        collection_id = str(task.metadata.get("collection_id", ""))
         snapshot = await self.snapshots.capture(
             self.source_id,
             fetched.final_url,
             fetched.text,
             fetched.content_type,
+            collection_id=collection_id,
         )
         try:
             root = DefusedET.fromstring(fetched.text)
@@ -73,7 +75,6 @@ class RSSAdapter:
             items = root.findall(".//{http://www.w3.org/2005/Atom}entry")
         observations: list[Observation] = []
         evidence_items: list[Evidence] = []
-        collection_id = str(task.metadata.get("collection_id", ""))
         for item in items[:100]:
             title = self._text(item, "title")
             description = (
