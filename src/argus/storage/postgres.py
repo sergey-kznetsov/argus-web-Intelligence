@@ -9,6 +9,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from argus.contracts.models import CollectionRecord, Evidence, Observation, Snapshot
 from argus.recipes.models import SiteRecipe
+from argus.storage.base import IdempotencyConflictError
 from argus.storage.postgres_migrations import EXPECTED_SCHEMA_VERSION
 
 
@@ -79,7 +80,8 @@ class PostgresRepository:
                 "SELECT to_regclass('argus.schema_migrations') AS migrations, "
                 "to_regclass('argus.collections') AS collections, "
                 "to_regclass('argus.collection_leases') AS collection_leases, "
-                "to_regclass('argus.worker_instances') AS worker_instances"
+                "to_regclass('argus.worker_instances') AS worker_instances, "
+                "to_regclass('argus.collection_idempotency') AS collection_idempotency"
             )
             row = await cursor.fetchone()
             if (
@@ -88,6 +90,7 @@ class PostgresRepository:
                 or row["collections"] is None
                 or row["collection_leases"] is None
                 or row["worker_instances"] is None
+                or row["collection_idempotency"] is None
             ):
                 raise RuntimeError(
                     "ARGUS PostgreSQL schema is not migrated; "
@@ -120,6 +123,76 @@ class PostgresRepository:
                     record.updated_at,
                 ),
             )
+
+    async def create_collection_idempotent(
+        self,
+        record: CollectionRecord,
+        *,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> tuple[CollectionRecord, bool]:
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO argus.collections(
+                      collection_id, status, body, created_at, updated_at
+                    ) VALUES(%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        record.collection_id,
+                        record.status.value,
+                        Jsonb(record.model_dump(mode="json")),
+                        record.created_at,
+                        record.updated_at,
+                    ),
+                )
+                cursor = await conn.execute(
+                    """
+                    INSERT INTO argus.collection_idempotency(
+                      idempotency_key, collection_id, request_hash, created_at
+                    ) VALUES(%s, %s, %s, %s)
+                    ON CONFLICT (idempotency_key) DO NOTHING
+                    RETURNING collection_id
+                    """,
+                    (
+                        idempotency_key,
+                        record.collection_id,
+                        request_hash,
+                        record.created_at,
+                    ),
+                )
+                inserted = await cursor.fetchone()
+                if inserted is not None:
+                    return record, True
+
+                await conn.execute(
+                    "DELETE FROM argus.collections WHERE collection_id=%s",
+                    (record.collection_id,),
+                )
+                cursor = await conn.execute(
+                    """
+                    SELECT collection_id, request_hash
+                    FROM argus.collection_idempotency
+                    WHERE idempotency_key=%s
+                    """,
+                    (idempotency_key,),
+                )
+                mapping = await cursor.fetchone()
+                if mapping is None:
+                    raise RuntimeError("idempotency mapping disappeared during collection create")
+                if str(mapping["request_hash"]) != request_hash:
+                    raise IdempotencyConflictError(
+                        "idempotency key is already bound to another collection request"
+                    )
+                cursor = await conn.execute(
+                    "SELECT body FROM argus.collections WHERE collection_id=%s",
+                    (str(mapping["collection_id"]),),
+                )
+                row = await cursor.fetchone()
+                if row is None:
+                    raise RuntimeError("idempotency mapping references a missing collection")
+                return CollectionRecord.model_validate(row["body"]), False
 
     async def update_collection(self, record: CollectionRecord) -> None:
         """Persist collection state without allowing stale workers to resurrect cancellation."""
