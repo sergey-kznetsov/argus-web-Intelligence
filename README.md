@@ -15,7 +15,8 @@ ARGUS currently provides:
 - PostgreSQL-backed queue with worker heartbeat and per-collection leases;
 - atomic queue claim through `FOR UPDATE ... SKIP LOCKED`;
 - FIFO recovery so interrupted older work is not starved by new submissions;
-- lease recovery after worker/process failure;
+- SQL lease fencing so expired/transferred workers cannot mutate collection output;
+- replay-safe worker recovery after process or PostgreSQL interruption;
 - idempotent server collection submission with a bounded 24-hour default retry window;
 - atomic queue admission/backpressure across concurrent API processes;
 - authenticated operational queue metrics and keyset-paginated collection listing;
@@ -36,7 +37,7 @@ ARGUS currently provides:
 - bounded recursive historical research;
 - embedded bounded JSON-LD extraction without remote `@context` dereferencing;
 - Observation + Evidence + provenance + SHA-256 temporal snapshots/diffs;
-- deterministic task/Observation/Evidence identities;
+- deterministic task/Observation/Evidence and collection-scoped Snapshot identities;
 - per-source operational health;
 - redirect-aware SSRF defenses, Bearer authentication, inbound-body/resource/rate limits and secret-safe logging;
 - GitHub CI configured with a PostgreSQL service.
@@ -102,6 +103,10 @@ Observation / Evidence / snapshots
 
 Workers register in `argus.worker_instances`. A collection is claimed through `argus.collection_leases`; concurrent workers skip already locked/leased work. The worker periodically renews both its own heartbeat and each active collection lease. An expired lease allows another worker to resume the persisted collection checkpoint after a crash.
 
+Worker execution is additionally fenced at the PostgreSQL mutation boundary. Collection state, Observation, Evidence and collection-scoped Snapshot writes are accepted only while the current worker still owns a non-expired lease. If another worker already claimed an expired lease, the old worker cannot commit a late checkpoint or factual row even before its next heartbeat detects the transfer.
+
+Lease-owned PostgreSQL failures abort the current attempt with replay semantics rather than being recorded as `SOURCE_ERROR`. An unfinished task therefore remains absent from the durable `visited` set and can be retried from the last checkpoint. Observation/Evidence IDs and unchanged collection-scoped Snapshot IDs are deterministic, so replay converges on the already persisted rows after a crash between factual persistence and checkpoint persistence.
+
 Claim ordering is FIFO by collection creation time regardless of whether a record is freshly `queued` or recovered `running`. This prevents interrupted older work from being permanently displaced by a continuous stream of new requests.
 
 Defaults:
@@ -117,6 +122,8 @@ ARGUS_WORKER_HEALTH_MAX_AGE_SECONDS=60
 `ARGUS_WORKER_HEARTBEAT_SECONDS` must be shorter than the lease duration.
 
 Cancellation is terminal in PostgreSQL. If API records `cancelled`, a stale worker cannot change the collection back to `running`; Observation/Evidence writes that start after the cancellation is visible are rejected by the storage layer. A network operation already in flight may finish before the worker observes cancellation, but it cannot resurrect the collection state.
+
+Detailed failure/replay contract: `docs/RECOVERY.md`.
 
 ## Idempotent collection submission
 
@@ -241,7 +248,7 @@ Detailed contract: `docs/RESULT_DELIVERY.md`.
 
 ### Server/product
 
-Server deployment uses PostgreSQL. ARGUS owns schema `argus` and stores collections, idempotency mappings, worker/lease state, observations, evidence, temporal snapshots and SiteRecipe state there.
+Server deployment uses PostgreSQL. ARGUS owns schema `argus` and stores collections, idempotency mappings, worker/lease state, observations, evidence, temporal snapshots and SiteRecipe state there. Product runtime uses `FencedPostgresRepository`, which keeps normal API/admin behavior while enforcing lease ownership for worker execution.
 
 ```bash
 python -m argus.storage.cli migrate
@@ -252,7 +259,7 @@ Migrations are versioned and checksummed. Application startup refuses readiness 
 
 ### Local development
 
-SQLite implements the same core collection storage contract for local/embedded development.
+SQLite implements the same core collection storage contract for local/embedded development. Snapshot inserts are idempotent by `snapshot_id` so local crash-replay fixtures preserve the same identity behavior as server recovery.
 
 ```bash
 ARGUS_EXECUTION_ROLE=embedded
@@ -417,7 +424,8 @@ ARGUS includes application-level defenses for:
 - hardened XML/JSON-LD parsing;
 - Bearer token files outside Git;
 - PostgreSQL secret-file preference and `SecretStr` handling;
-- stale-worker cancellation protection;
+- terminal cancellation plus SQL lease fencing against stale workers;
+- replay-safe handling of lease-owned PostgreSQL failures;
 - bounded queue admission and result delivery;
 - structured log/error redaction;
 - CAPTCHA/access-control non-bypass.
@@ -428,4 +436,4 @@ Application SSRF validation is defense in depth. Production deployment must also
 
 ARGUS remains factual infrastructure. Competition scoring, demand interpretation, risk models and other analytical conclusions belong to Kraken, Janus or other consumers. New providers must preserve common SourceAdapter/Repository/provenance contracts and must not introduce branches keyed by consumer identity.
 
-See `docs/ARCHITECTURE.md`, `docs/RESULT_DELIVERY.md` and `geo-analyzer-module.json`.
+See `docs/ARCHITECTURE.md`, `docs/RECOVERY.md`, `docs/RESULT_DELIVERY.md` and `geo-analyzer-module.json`.
