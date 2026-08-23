@@ -289,6 +289,9 @@ class CollectionWorker:
                     worker_registration_retention_days=(
                         self.settings.retention_worker_registration_days
                     ),
+                    result_access_grace_seconds=(
+                        self.settings.retention_result_access_grace_seconds
+                    ),
                     batch_size=self.settings.retention_batch_size,
                 )
                 if any(result.as_dict().values()):
