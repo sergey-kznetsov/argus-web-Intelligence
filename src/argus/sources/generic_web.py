@@ -421,6 +421,29 @@ class GenericWebAdapter:
                         )
                     )
 
+        for feed_url in self._json_feed_links(
+            fetched.text,
+            fetched.final_url,
+            fetched.content_type,
+        ):
+            if self._domain_allowed(feed_url, seed_host, allowed, denied):
+                key = f"json_feed:{feed_url}"
+                if key not in seen:
+                    seen.add(key)
+                    discovered.append(
+                        SourceTask(
+                            source_id="json_feed",
+                            goal=task.goal,
+                            url=feed_url,
+                            depth=task.depth,
+                            metadata={
+                                "collection_id": collection_id,
+                                "discovered_from": fetched.final_url,
+                                "research_goals": research_goals,
+                            },
+                        )
+                    )
+
         if task.depth < max_depth:
             for link in fetched.links[: request.constraints.max_pages]:
                 link = urldefrag(link)[0]
@@ -558,6 +581,24 @@ class GenericWebAdapter:
                 "application/rss+xml",
                 "application/atom+xml",
             }:
+                continue
+            url = urldefrag(urljoin(base_url, tag["href"]))[0]
+            if url.startswith(("http://", "https://")) and url not in seen:
+                seen.add(url)
+                links.append(url)
+        return links
+
+    @staticmethod
+    def _json_feed_links(html: str, base_url: str, content_type: str | None) -> list[str]:
+        if content_type and "html" not in content_type.lower():
+            return []
+        soup = BeautifulSoup(html, "html.parser")
+        links: list[str] = []
+        seen: set[str] = set()
+        for tag in soup.find_all("link", href=True):
+            rel = {str(item).lower() for item in tag.get("rel", [])}
+            mime = str(tag.get("type", "")).split(";", 1)[0].strip().lower()
+            if "alternate" not in rel or mime != "application/feed+json":
                 continue
             url = urldefrag(urljoin(base_url, tag["href"]))[0]
             if url.startswith(("http://", "https://")) and url not in seen:
