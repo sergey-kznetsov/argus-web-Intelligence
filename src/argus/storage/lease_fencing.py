@@ -17,14 +17,22 @@ class LeaseLostError(asyncio.CancelledError):
     """The worker no longer owns the collection lease and must stop mutating it."""
 
 
+class WorkerStorageError(asyncio.CancelledError):
+    """A lease-owned storage operation failed; abort this attempt for safe replay."""
+
+
 _CURRENT_LEASE_FENCE: ContextVar[LeaseFence | None] = ContextVar(
     "argus_current_lease_fence",
     default=None,
 )
 
 
+def active_lease_fence() -> LeaseFence | None:
+    return _CURRENT_LEASE_FENCE.get()
+
+
 def current_lease_fence(collection_id: str) -> LeaseFence | None:
-    fence = _CURRENT_LEASE_FENCE.get()
+    fence = active_lease_fence()
     if fence is None or fence.collection_id != collection_id:
         return None
     return fence
