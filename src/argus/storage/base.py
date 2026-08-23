@@ -125,6 +125,7 @@ class WorkerQueueRepository(Repository, Protocol):
         collection_retention_days: int,
         snapshot_retention_days: int,
         worker_registration_retention_days: int,
+        result_access_grace_seconds: int = 3600,
         batch_size: int,
     ) -> RetentionResult: ...
 
