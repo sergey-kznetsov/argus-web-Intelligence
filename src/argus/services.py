@@ -23,7 +23,11 @@ class ServiceContainer:
     browser: BrowserCrawlerRuntime
 
     async def start(self) -> None:
-        await self.orchestrator.start()
+        try:
+            await self.orchestrator.start()
+        except BaseException:
+            await self.repository.close()
+            raise
 
     async def shutdown(self) -> None:
         # Stop collection jobs first so no caller can enqueue new crawler requests during shutdown.
