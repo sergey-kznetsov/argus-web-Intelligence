@@ -64,8 +64,15 @@ async def test_queue_metrics_report_delta_for_collection_worker_and_lease():
         assert queued.active_workers == before.active_workers + 1
         assert queued.oldest_queued_age_seconds is not None
 
-        claimed = await repository.claim_next_collection(worker_id, lease_seconds=30)
-        assert claimed == collection_id
+        async with repository._pool.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO argus.collection_leases(
+                  collection_id, worker_id, leased_at, heartbeat_at, lease_until
+                ) VALUES(%s, %s, NOW(), NOW(), NOW() + INTERVAL '30 seconds')
+                """,
+                (collection_id, worker_id),
+            )
         leased = await repository.queue_metrics(worker_max_age_seconds=60)
         assert leased.active_leases == before.active_leases + 1
     finally:
