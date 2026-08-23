@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     postgres_pool_min_size: int = Field(default=1, ge=0, le=32)
     postgres_pool_max_size: int = Field(default=8, ge=1, le=128)
     postgres_pool_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    postgres_pool_max_waiting: int = Field(default=32, ge=1, le=10_000)
 
     worker_concurrency: int = Field(default=2, ge=1, le=32)
     worker_poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
