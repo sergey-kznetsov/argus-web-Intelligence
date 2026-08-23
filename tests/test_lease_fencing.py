@@ -1,5 +1,8 @@
+from pathlib import Path
+
 import pytest
 
+from argus.config import Settings
 from argus.storage.fenced_postgres import FencedPostgresRepository
 from argus.storage.lease_fencing import (
     WorkerStorageError,
@@ -8,6 +11,7 @@ from argus.storage.lease_fencing import (
     lease_fence,
 )
 from argus.storage.postgres import PostgresRepository
+from argus.worker import CollectionWorker
 
 
 def test_lease_fence_is_scoped_and_resets():
@@ -55,3 +59,28 @@ async def test_non_worker_storage_failure_is_not_reclassified(monkeypatch):
 
     with pytest.raises(RuntimeError, match="database connection dropped"):
         await repository.get_collection("collection-1")
+
+
+@pytest.mark.asyncio
+async def test_worker_installs_lease_fence_around_collection_execute(tmp_path: Path):
+    settings = Settings(
+        execution_role="worker",
+        storage_backend="postgresql",
+        database_dsn="postgresql://argus:secret@127.0.0.1:5432/argus",
+        token_file=tmp_path / "token",
+        browser_serp_enabled=False,
+    )
+    worker = CollectionWorker(settings)
+    seen = []
+
+    async def fake_execute(collection_id: str):
+        seen.append(current_lease_fence(collection_id))
+
+    worker.orchestrator.execute = fake_execute
+    await worker._execute_owned_collection("collection-1")
+
+    assert len(seen) == 1
+    assert seen[0] is not None
+    assert seen[0].collection_id == "collection-1"
+    assert seen[0].worker_id == worker.worker_id
+    assert active_lease_fence() is None
