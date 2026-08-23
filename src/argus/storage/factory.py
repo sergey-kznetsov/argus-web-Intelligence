@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from argus.config import Settings
 from argus.storage.base import Repository
-from argus.storage.postgres import PostgresRepository
+from argus.storage.fenced_postgres import FencedPostgresRepository
 from argus.storage.sqlite import SQLiteRepository
 
 
@@ -16,7 +16,7 @@ def build_repository(settings: Settings) -> Repository:
                 "ARGUS PostgreSQL storage requires a DSN from the deployment manager "
                 "or ARGUS_DATABASE_DSN[_FILE]"
             )
-        return PostgresRepository(
+        return FencedPostgresRepository(
             dsn,
             min_size=settings.postgres_pool_min_size,
             max_size=settings.postgres_pool_max_size,
