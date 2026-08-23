@@ -34,7 +34,7 @@ The repository root contains `geo-analyzer-module.json`. The deployment manager:
 8. authenticates to `GET /v1/manifest` and `GET /v1/health`;
 9. registers/enables the service only after readiness succeeds.
 
-The production/server roles are explicit:
+The server roles are explicit:
 
 ```text
 API process     ARGUS_EXECUTION_ROLE=api
@@ -44,11 +44,11 @@ Local/dev       ARGUS_EXECUTION_ROLE=embedded
 
 PostgreSQL is mandatory for `api` and `worker`. SQLite is reserved for embedded/local development and isolated fixtures.
 
-The TEST Geo Analyzer manager owns its isolated module port range and remaps preferred manifest ports into that range. ARGUS therefore does not contain TEST/PRODUCTION-specific port branches.
+The TEST Geo Analyzer manager owns its isolated module port range and remaps preferred manifest ports into that range. ARGUS therefore contains no TEST/PRODUCTION-specific port branch.
 
 ## Server queue
 
-The API process never executes server collections itself. It persists a queued collection and returns immediately. A worker claims persisted work from PostgreSQL.
+The API process never executes server collections itself. It persists a queued collection and returns. A worker claims persisted work from PostgreSQL.
 
 ```text
 Kraken / Janus
@@ -79,18 +79,18 @@ Claim semantics:
 
 - only `queued`/`running` collections are candidates;
 - an unexpired lease excludes the collection from other workers;
-- row locks use `FOR UPDATE OF c SKIP LOCKED`, so one slow/locked queue row does not block other workers;
-- queued work is preferred over recovered running work;
+- row locks use `FOR UPDATE OF c SKIP LOCKED`, so one slow/locked row does not block other workers;
+- claim ordering is FIFO by `created_at` across both queued and recovered-running work;
 - an expired lease can be claimed by another worker;
 - each active worker renews collection leases periodically;
 - if lease renewal fails, the worker cancels its local execution instead of continuing without ownership;
-- collection checkpoints allow the replacement worker to resume rather than restart research blindly.
+- persisted checkpoints allow the replacement worker to resume rather than restart research blindly.
 
-Worker startup is transactional at the service level. If PostgreSQL opens and the worker registers but its probe socket cannot bind, startup rolls back the heartbeat task, worker registration and service resources so API readiness cannot see a phantom worker.
+Worker startup publishes itself in PostgreSQL only after its local probe socket binds successfully. Failure before that point leaves no visible worker heartbeat. Startup rollback also closes service resources and cancels heartbeat/maintenance tasks.
 
 ## Readiness
 
-`GET /v1/health` is a readiness endpoint, not a static liveness string.
+`GET /v1/health` is readiness, not a static liveness string.
 
 For server API role it requires:
 
@@ -98,9 +98,44 @@ For server API role it requires:
 2. schema version equal to the application-required migration version;
 3. at least one worker heartbeat newer than `ARGUS_WORKER_HEALTH_MAX_AGE_SECONDS`.
 
-If no fresh worker exists, API health is `degraded` and `HEAD /v1/health` returns `503`. The Geo Analyzer installer therefore cannot register a deployment where only the HTTP process started but no process can execute collections.
+If no fresh worker exists, API health is `degraded` and `HEAD /v1/health` returns `503`. The Geo Analyzer installer therefore cannot register a deployment where only HTTP started but no process can execute collections.
 
-The worker has a localhost `/readyz` probe reporting its own database readiness and active collection count. The current Geo Analyzer manager primarily gates installation through API `/v1/health`, while also failing installation if any configured process exits before readiness.
+The worker has a localhost `/readyz` probe reporting its database readiness and active collection count.
+
+## Queue admission and backpressure
+
+Server submission uses one short PostgreSQL transaction-level advisory lock for the count-and-insert critical section. This keeps admission atomic across concurrent API processes without a process-local mutex.
+
+Processing order inside the transaction:
+
+1. remove an expired mapping for the incoming idempotency key, if any;
+2. return the existing collection when the request is still inside the idempotency window;
+3. enforce the per-consumer active limit;
+4. enforce the global active limit;
+5. insert one new collection and its idempotency mapping.
+
+An existing retry therefore succeeds even when the queue is currently full. New requests above the per-consumer limit return `429`; new requests above the global limit return `503`. Both include `Retry-After`.
+
+Defaults:
+
+```text
+max active globally       500
+max active per consumer   100
+retry-after               15 seconds
+```
+
+## Operational queue state
+
+Authenticated `GET /v1/operations/queue` reads operational state directly from PostgreSQL. It returns:
+
+- queued/running collection counts;
+- active/expired lease counts;
+- active/stale worker counts;
+- oldest queued/running age in seconds;
+- configured queue limits;
+- configured idempotency window.
+
+ARGUS intentionally does not maintain a second metrics state store. Future Prometheus/OpenTelemetry integration should export this underlying state rather than introduce another queue authority.
 
 ## Main collection pipeline
 
@@ -158,20 +193,14 @@ Storage identity:
 
 - explicit key: namespaced by `consumer` and hashed before storage;
 - omitted key: derived from the canonical request fingerprint;
-- the request hash is stored next to the idempotency mapping.
+- request hash is stored next to the idempotency mapping.
 
-`argus.collection_idempotency` has a primary key on the storage idempotency key and a unique foreign key to the collection.
+Inside the configured idempotency window:
 
-Creation is atomic:
+- same storage key + same request hash returns the original collection;
+- same storage key + different request hash raises `IdempotencyConflictError`, exposed as HTTP `409`.
 
-1. transaction inserts a provisional collection;
-2. transaction attempts `collection_idempotency` insert with `ON CONFLICT DO NOTHING`;
-3. winner commits the new collection/mapping;
-4. loser removes its provisional collection and loads the winner;
-5. same request hash returns the existing collection;
-6. different request hash raises `IdempotencyConflictError`, exposed by API as HTTP `409`.
-
-This also covers two API processes receiving the same retry concurrently. PostgreSQL's unique constraint determines the single winner; no process-local mutex is required.
+The default window is 86,400 seconds. Before checking an incoming key, storage deletes that key's mapping if its `created_at` is outside the window. Reuse after expiry is therefore treated as an intentional new collection; the old collection remains governed independently by collection retention.
 
 Because `analysis_id` is part of the canonical request, a new analysis naturally has a new automatic identity while transport retries of the same analysis resolve to the same collection.
 
@@ -181,9 +210,9 @@ Cross-process cancellation is persisted in PostgreSQL. `cancelled` is terminal a
 
 - a stale worker `update_collection(RUNNING)` cannot overwrite a row already marked `cancelled`;
 - Observation/Evidence upserts only occur when the owning collection is not cancelled at statement time;
-- worker/orchestrator additionally checks the persisted state at planning/task boundaries.
+- worker/orchestrator also checks persisted state at planning/task boundaries.
 
-A fetch already in flight may complete before cancellation is observed. This is intentionally distinct from allowing stale state resurrection: once `cancelled` is committed, later worker state cannot turn the collection back into `running` or create new Observation/Evidence based on a later statement snapshot.
+A fetch already in flight may complete before cancellation is observed. Once `cancelled` is committed, later worker state cannot turn the collection back into `running` or create new Observation/Evidence from a later statement snapshot.
 
 ## Recovery and task identity
 
@@ -199,9 +228,28 @@ Collection execution is checkpointed persistently. Planning state includes:
 - `visited`;
 - `historical_branch_queries`.
 
-Discovery checkpoint is updated after each intent. If a worker stops between two intent branches, the replacement worker skips already completed discovery and continues unfinished intents.
+Discovery checkpoint is updated after each intent. If a worker stops between intent branches, the replacement worker skips completed discovery and continues unfinished intents.
 
 Source tasks have stable `dedupe_key` identity. Ordinary GET tasks default to `source_id + URL`; providers with distinct operations against one endpoint use explicit `task_key` values. Deterministic Observation/Evidence IDs protect the crash window between result persistence and checkpoint persistence.
+
+## Retention
+
+Retention runs from the worker lifecycle. Every worker may attempt the periodic pass, but `pg_try_advisory_xact_lock` elects only one maintainer for each pass.
+
+Each pass is bounded by `ARGUS_RETENTION_BATCH_SIZE` independently for idempotency mappings, collections and snapshots.
+
+Rules:
+
+- expired idempotency mappings are deleted after `ARGUS_IDEMPOTENCY_WINDOW_SECONDS`;
+- only terminal collections older than `ARGUS_RETENTION_COLLECTION_DAYS` are candidates;
+- `queued` and `running` collections are never retention targets;
+- collection deletion cascades related Observation/Evidence/idempotency/lease rows through database constraints;
+- snapshots older than `ARGUS_RETENTION_SNAPSHOT_DAYS` may be deleted only when another newer snapshot exists for the same `source_url`;
+- therefore the newest snapshot for each URL is preserved even if it is older than the configured age;
+- SiteRecipe state is not automatically purged;
+- snapshot retention must be at least as long as collection retention.
+
+Default retention is 180 days for terminal collections and 365 days for old non-latest snapshots, with a 500-row batch and hourly maintenance interval.
 
 ## Runtime escalation
 
@@ -295,7 +343,7 @@ The collection engine depends on the `Repository` protocol.
 
 ### Product/server PostgreSQL
 
-ARGUS owns schema `argus`. Migrations are versioned and checksummed and are applied under a stable PostgreSQL advisory lock. Startup requires the exact expected schema version.
+ARGUS owns schema `argus`. Migrations are versioned/checksummed and are applied under a stable PostgreSQL advisory lock. Startup requires the exact expected schema version.
 
 Current schema responsibilities:
 
@@ -322,7 +370,7 @@ ARGUS publishes two contracts for different phases:
 
 Package version, runtime manifest version and deployment manifest version are regression-tested to remain equal.
 
-`GET /v1/capabilities` exposes execution/storage behavior. Server API reports PostgreSQL lease queue, idempotent submission and worker-dependent readiness; embedded mode reports in-process execution.
+`GET /v1/capabilities` exposes execution/storage behavior. Server API reports PostgreSQL lease queue, bounded idempotent submission, queue limits, retention configuration and worker-dependent readiness; embedded mode reports in-process execution.
 
 ARGUS intentionally does not implement consumer analytics or expose itself as an analysis-launch option.
 
@@ -340,6 +388,7 @@ ARGUS intentionally does not implement consumer analytics or expose itself as an
 - response/browser time, size, concurrency and rate limits;
 - hardened XML and JSON-LD parsing;
 - stale-worker cancellation protection in PostgreSQL;
+- atomic bounded queue admission;
 - structured logs/errors redact common credential forms and URL query strings;
 - CAPTCHA/access restrictions are surfaced, never bypassed.
 
