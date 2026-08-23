@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 from xml.etree.ElementTree import Element, ParseError
 
 from defusedxml import ElementTree as DefusedET
@@ -82,7 +82,7 @@ class RSSAdapter:
                 or self._text(item, "content")
             )
             entity_id = self._text(item, "guid") or self._text(item, "id")
-            link = urljoin(fetched.final_url, self._link(item) or fetched.final_url)
+            link = self._safe_item_link(fetched.final_url, self._link(item))
             raw = "\n".join(x for x in (title, description) if x)
             content_hash = sha256_text(raw)
             observation_id = stable_observation_id(
@@ -110,6 +110,7 @@ class RSSAdapter:
                 content_hash=content_hash,
                 provenance={
                     "feed_url": fetched.final_url,
+                    "entry_url": link,
                     "snapshot_id": snapshot.snapshot_id,
                 },
                 quality={"evidence_backed": True},
@@ -120,7 +121,7 @@ class RSSAdapter:
                 evidence_id=stable_evidence_id(
                     observation_id=observation.observation_id,
                     evidence_type="feed_entry",
-                    source_url=link,
+                    source_url=fetched.final_url,
                     text=evidence_text,
                 ),
                 observation_id=observation.observation_id,
@@ -128,10 +129,11 @@ class RSSAdapter:
                 text=evidence_text,
                 source=EvidenceSource(
                     provider=self.source_id,
-                    url=link,
+                    url=fetched.final_url,
                     collected_at=observation.collected_at,
                     source_id=self.source_id,
                 ),
+                metadata={"entry_url": link},
             )
             evidence_items.append(evidence)
         return SourceResult(observations=observations, evidence=evidence_items)
@@ -159,6 +161,16 @@ class RSSAdapter:
                 if href:
                     return href
         return None
+
+    @staticmethod
+    def _safe_item_link(feed_url: str, raw_link: str | None) -> str:
+        candidate = urljoin(feed_url, raw_link or feed_url)
+        parsed = urlsplit(candidate)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return feed_url
+        if parsed.username or parsed.password:
+            return feed_url
+        return candidate
 
     @classmethod
     def _date(cls, item: Element) -> datetime | None:
