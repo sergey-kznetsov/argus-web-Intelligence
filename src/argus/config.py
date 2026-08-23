@@ -79,6 +79,16 @@ class Settings(BaseSettings):
     pdf_max_text_chars: int = Field(default=250_000, ge=1_000, le=2_000_000)
     pdf_extract_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
     pdf_extract_memory_mb: int = Field(default=512, ge=128, le=4096)
+    structured_data_max_bytes: int = Field(
+        default=5 * 1024 * 1024,
+        ge=1024,
+        le=50 * 1024 * 1024,
+    )
+    structured_data_max_records: int = Field(default=1000, ge=1, le=100_000)
+    structured_data_max_columns: int = Field(default=100, ge=1, le=10_000)
+    structured_data_max_cell_chars: int = Field(default=10_000, ge=1, le=1_000_000)
+    structured_data_max_json_depth: int = Field(default=32, ge=1, le=256)
+    structured_data_max_json_nodes: int = Field(default=20_000, ge=1, le=1_000_000)
     http_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     http_max_redirects: int = Field(default=10, ge=0, le=30)
     browser_timeout_seconds: float = Field(default=45.0, gt=0, le=600)
