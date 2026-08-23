@@ -113,7 +113,7 @@ class FastCrawlerRuntime:
                 if len(body) > self.settings.max_response_bytes:
                     raise ValueError("response body exceeds configured limit")
                 content_type = response.headers.get("content-type")
-                text = body.decode(self._charset(content_type), errors="replace")
+                text = self._decode_body(body, content_type)
                 blocked = response.status_code in {401, 403, 429} or self._looks_blocked(text)
                 title, links = self._html_metadata(text, final_url, content_type)
                 self._broker.resolve(
@@ -176,6 +176,14 @@ class FastCrawlerRuntime:
                 if separator and key.lower() == "charset" and value.strip():
                     return value.strip().strip('"\'')
         return "utf-8"
+
+    @classmethod
+    def _decode_body(cls, body: bytes, content_type: str | None) -> str:
+        charset = cls._charset(content_type)
+        try:
+            return body.decode(charset, errors="replace")
+        except LookupError:
+            return body.decode("utf-8", errors="replace")
 
     @staticmethod
     def _html_metadata(
