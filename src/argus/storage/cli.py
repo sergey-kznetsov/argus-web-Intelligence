@@ -3,9 +3,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from pathlib import Path
 
 from argus.config import Settings, get_settings
 from argus.storage.postgres import PostgresRepository
+from argus.storage.postgres_backup import (
+    backup_argus_schema,
+    restore_argus_schema,
+    verify_argus_backup,
+)
 from argus.storage.postgres_migrations import (
     EXPECTED_SCHEMA_VERSION,
     current_postgres_schema_version,
@@ -125,17 +131,137 @@ async def _retention() -> None:
         await repository.close()
 
 
-def main() -> None:
+async def _backup(output: Path, *, force: bool) -> None:
+    _, dsn = _settings_and_dsn()
+    version = await current_postgres_schema_version(dsn)
+    if version != EXPECTED_SCHEMA_VERSION:
+        raise SystemExit(
+            f"refusing backup of ARGUS schema version {version}; "
+            f"expected {EXPECTED_SCHEMA_VERSION}"
+        )
+    manifest = await asyncio.to_thread(
+        backup_argus_schema,
+        dsn,
+        output,
+        schema_version=version,
+        overwrite=force,
+    )
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "schema": manifest.schema,
+                "schema_version": manifest.schema_version,
+                "archive": str(output.expanduser().resolve()),
+                "archive_sha256": manifest.archive_sha256,
+                "archive_bytes": manifest.archive_bytes,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+async def _verify_backup(archive: Path) -> None:
+    manifest = await asyncio.to_thread(verify_argus_backup, archive)
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "schema": manifest.schema,
+                "schema_version": manifest.schema_version,
+                "archive": str(archive.expanduser().resolve()),
+                "archive_sha256": manifest.archive_sha256,
+                "archive_bytes": manifest.archive_bytes,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+async def _restore(archive: Path, *, replace_existing_argus: bool) -> None:
+    if not replace_existing_argus:
+        raise SystemExit(
+            "restore is destructive; pass --replace-existing-argus after verifying the target DB"
+        )
+    _, dsn = _settings_and_dsn()
+    manifest = await asyncio.to_thread(verify_argus_backup, archive)
+    if manifest.schema_version > EXPECTED_SCHEMA_VERSION:
+        raise SystemExit(
+            f"backup schema version {manifest.schema_version} is newer than this ARGUS "
+            f"runtime ({EXPECTED_SCHEMA_VERSION})"
+        )
+    await asyncio.to_thread(
+        restore_argus_schema,
+        dsn,
+        archive,
+        replace_existing_argus=True,
+    )
+    applied = await run_postgres_migrations(dsn)
+    version = await current_postgres_schema_version(dsn)
+    if version != EXPECTED_SCHEMA_VERSION:
+        raise SystemExit(
+            f"restored ARGUS PostgreSQL schema version {version}; expected "
+            f"{EXPECTED_SCHEMA_VERSION}"
+        )
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "schema": "argus",
+                "restored_from_schema_version": manifest.schema_version,
+                "schema_version": version,
+                "applied_migrations": applied,
+                "archive": str(archive.expanduser().resolve()),
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m argus.storage.cli")
-    parser.add_argument("command", choices=("migrate", "check", "operations", "retention"))
-    args = parser.parse_args()
-    commands = {
-        "migrate": _migrate,
-        "check": _check,
-        "operations": _operations,
-        "retention": _retention,
-    }
-    asyncio.run(commands[args.command]())
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("migrate")
+    commands.add_parser("check")
+    commands.add_parser("operations")
+    commands.add_parser("retention")
+
+    backup = commands.add_parser("backup")
+    backup.add_argument("--output", type=Path, required=True)
+    backup.add_argument("--force", action="store_true")
+
+    verify = commands.add_parser("verify-backup")
+    verify.add_argument("--input", type=Path, required=True)
+
+    restore = commands.add_parser("restore")
+    restore.add_argument("--input", type=Path, required=True)
+    restore.add_argument("--replace-existing-argus", action="store_true")
+    return parser
+
+
+def main() -> None:
+    args = _parser().parse_args()
+    if args.command == "migrate":
+        asyncio.run(_migrate())
+    elif args.command == "check":
+        asyncio.run(_check())
+    elif args.command == "operations":
+        asyncio.run(_operations())
+    elif args.command == "retention":
+        asyncio.run(_retention())
+    elif args.command == "backup":
+        asyncio.run(_backup(args.output, force=args.force))
+    elif args.command == "verify-backup":
+        asyncio.run(_verify_backup(args.input))
+    elif args.command == "restore":
+        asyncio.run(
+            _restore(
+                args.input,
+                replace_existing_argus=args.replace_existing_argus,
+            )
+        )
+    else:
+        raise SystemExit(f"unsupported command: {args.command}")
 
 
 if __name__ == "__main__":
