@@ -14,14 +14,22 @@ def retry_delay_seconds(
     base_delay_seconds: float,
     max_delay_seconds: float,
     now: datetime | None = None,
-) -> float:
-    """Return a bounded retry delay, preferring Retry-After when it is valid."""
+) -> float | None:
+    """Return a safe retry delay or ``None`` when ARGUS must not retry yet.
+
+    Invalid/missing ``Retry-After`` falls back to bounded exponential backoff. A valid
+    explicit ``Retry-After`` is authoritative: if it exceeds ARGUS' configured maximum
+    wait, the caller must stop retrying this operation rather than retry early.
+    """
 
     retry_after = headers.get("retry-after") or headers.get("Retry-After")
     if retry_after:
         parsed = _retry_after_seconds(retry_after, now=now)
         if parsed is not None:
-            return min(max_delay_seconds, max(0.0, parsed))
+            delay = max(0.0, parsed)
+            if delay > max_delay_seconds:
+                return None
+            return delay
     exponential = base_delay_seconds * (2 ** max(0, attempt))
     return min(max_delay_seconds, max(0.0, exponential))
 
