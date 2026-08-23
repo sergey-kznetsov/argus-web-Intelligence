@@ -2,183 +2,252 @@
 
 ## Boundary
 
-ARGUS is an infrastructure backend, not an analytical module. Consumers provide territory, intents and constraints. ARGUS selects discovery providers, source adapters and retrieval runtimes without branches keyed by consumer identity.
+ARGUS is a server-side infrastructure service for analytical consumers such as Kraken, Janus and future modules. It is installed and supervised by the same universal Geo Analyzer module manager, but it is not a user-selectable analysis module.
+
+The runtime manifest intentionally publishes:
+
+- `optional=false`;
+- `default_enabled=true`;
+- `analysis_launch_toggle=false`;
+- `capability_card=false`.
+
+Geo Analyzer can therefore install, start, health-check, update and remove ARGUS while keeping it out of the user analysis selection UI. Consumers call the ARGUS collection API directly. ARGUS never branches on `consumer` identity.
+
+Core boundary:
 
 ```text
-Consumer -> Internal API -> Collection Orchestrator -> Research Planner
-                                      |                 |
-                                      |                 v
-                                      |            search queries
-                                      |                 |
-                                      v                 v
-                                SourceRegistry    DiscoveryService
-                                      |           SearXNG -> browser fallback
-                                      |                 |
-                                      +<--- destination URLs
-                                      |                 |
-                                      |          historical companion
-                                      |                 v
-                                      |             Wayback CDX
-                                      |                 |
-                         FAST -> BROWSER -> AGENT      capture URLs
-                           |          |                 |
-                           |          +<----------------+
-                           |
-                           +-> robots.txt / Sitemap navigation
-                                      |
-                         Observation + Evidence
-                                      |
-                    SQLite Repository + Snapshots
-                                      |
-                         historical branch planner
-                                      |
-                              follow-up queries
-
-Map intents -> OverpassSourceAdapter -> optional Nominatim geocode
-                                      -> Overpass provider
-                                      -> Observation + Evidence + Snapshot
+ARGUS = find + obtain + prove + store
+Consumers = interpret + calculate + conclude
 ```
 
-Discovery results, Sitemap entries and other navigation hints are candidates, not facts. Search snippets and Sitemap metadata never become Evidence. ARGUS fetches the destination page through a factual source adapter before creating Observation/Evidence.
+## Product deployment
+
+The repository root contains `geo-analyzer-module.json`. The current Geo Analyzer deployment manager uses it to:
+
+1. download the pinned repository snapshot;
+2. create an isolated Python virtual environment;
+3. install ARGUS and Chromium;
+4. provide the shared PostgreSQL DSN and a separate bearer-token file;
+5. run `python -m argus.storage.cli migrate` and `check`;
+6. assign a localhost API port;
+7. start the ARGUS API process;
+8. authenticate to `GET /v1/manifest` and `GET /v1/health`;
+9. register and enable the healthy infrastructure service.
+
+The deployed API binds only to `127.0.0.1`. PostgreSQL is mandatory for this server deployment. SQLite remains available for isolated local development and unit/integration fixtures only.
+
+## Main collection pipeline
+
+```text
+Kraken / Janus / consumer
+          |
+          v
+   CollectionRequest
+ consumer / analysis_id
+ territory / intents
+ constraints / allow_partial
+          |
+          v
+ Collection Orchestrator
+          |
+          +--> Research Planner
+          |       |
+          |       v
+          |   search queries
+          |       |
+          |       v
+          |   DiscoveryService
+          |   SearXNG -> browser fallback
+          |       |
+          |       v
+          |  destination URLs
+          |
+          +--> SourceRegistry
+                  |
+       +----------+-----------+
+       |          |           |
+       v          v           v
+ Generic Web   RSS/Atom   map/archive adapters
+       |
+       v
+ FAST -> BROWSER -> AGENT
+       |
+       +--> same-host robots.txt / Sitemap navigation
+       +--> embedded JSON-LD extraction
+       |
+       v
+ Observation + Evidence
+       |
+       v
+ PostgreSQL Repository
+       |
+       +--> temporal Snapshots + diff
+       +--> SiteRecipe state
+       +--> recovery checkpoints
+```
+
+Discovery results, Sitemap entries, JSON-LD navigation URLs and search snippets are not automatically facts. A navigation candidate must pass through a factual source path before it can become Evidence. Embedded JSON-LD is treated as page-declared structured evidence because it is contained in the fetched page; ARGUS never dereferences a remote `@context`.
 
 ## Runtime escalation
 
-FAST uses a persistent Crawlee HTTP crawler for static HTML/XML/JSON/public endpoints. BROWSER uses a persistent Crawlee Playwright crawler for JavaScript interaction. AGENT is optional and only used when deterministic retrieval/recipes cannot solve a public site.
+FAST uses a persistent Crawlee HTTP runtime for static/public content. BROWSER uses a persistent Crawlee Playwright runtime for JavaScript pages. AGENT is optional and is used only when deterministic retrieval or a validated SiteRecipe cannot solve a public site.
 
-The service keeps Crawlee request/session/retry/concurrency machinery instead of reimplementing it. FAST can use Crawlee `ThrottlingRequestManager` for explicitly configured domains. Persistent FAST/BROWSER runtimes are shut down by the FastAPI service lifecycle.
+A successful agent path does not become permanent behavior directly. Supported actions are compiled into a candidate SiteRecipe and must pass deterministic Playwright replay before the recipe is stored.
 
-BROWSER tracks the latest main-document response during SiteRecipe navigation. If a recipe starts on HTTP 200 and navigates to a 403/429/etc. page, the final status and content type are returned rather than the original navigation metadata.
+BROWSER tracks the latest main-document response during recipe navigation, so a later 403/429 cannot be hidden by an initial HTTP 200. FAST treats externally declared charsets as untrusted input and falls back safely when the declared codec is invalid.
 
-FAST treats externally declared response charsets as untrusted input. Unknown codec names fall back to UTF-8 with replacement instead of terminating the crawl with `LookupError`.
+CAPTCHA and access-control challenges are never bypassed.
 
-Direct HTTP providers such as Overpass, Nominatim and Wayback CDX use a separate process-local rate gate plus a bounded 429/503 retry budget. Missing or invalid `Retry-After` uses bounded exponential delay. A valid `Retry-After` is authoritative: if the requested delay exceeds ARGUS' local maximum wait, that operation is not retried early. This is separate from Crawlee because these provider clients do not run through the crawler request manager.
+## Discovery and intent isolation
 
-## Discovery
+`ResearchPlanner` creates search queries; `DiscoveryService` turns search hits into factual source tasks. External discovery providers are ordered fallbacks:
 
-`ResearchPlanner` produces queries. `DiscoveryService` runs ordered providers as fallbacks and stops after the first provider that produces valid destination URLs.
+1. optional configured SearXNG JSON endpoint;
+2. low-volume DuckDuckGo HTML through the BROWSER runtime.
 
-Current external discovery providers:
+Discovery is planned separately for every uncovered intent. One global query budget is shared across the collection, so multi-intent requests do not multiply search traffic without bound.
 
-1. optional self-hosted SearXNG JSON API;
-2. low-volume DuckDuckGo HTML Playwright fallback when enabled.
+An explicit seed URL is a source candidate, not proof that all requested intents are covered. Wildcard `generic_web` therefore does not suppress discovery for other intents.
 
-The browser fallback submits the public no-JS search form in a real browser. CAPTCHA/anti-bot/access challenges are never bypassed. A fully blocked discovery with no destination URL is reported as collection `blocked`.
+If the same destination URL is relevant to several intents, ARGUS downloads it once and merges `research_goals` into the task/provenance rather than spending page budget on duplicate fetches.
 
-If all configured discovery providers complete normally but return no valid destination URL, ARGUS records `DISCOVERY_NO_RESULTS`. This prevents a mixed request from being reported as fully complete when another source covered only some intents. Existing factual data plus an uncovered intent becomes `partial`; a request with no executable source remains `failed`.
+Discovery outcomes are explicit:
 
-If all available discovery routes are blocked before any valid URL is found, ARGUS records both `DISCOVERY_BLOCKED` and `DISCOVERY_INCOMPLETE`. If earlier factual observations already exist, the collection is degraded rather than silently reported complete. If discovery was the initial/only path, the collection terminates as `blocked`.
+- normal empty providers -> `DISCOVERY_NO_RESULTS`;
+- all usable discovery paths blocked -> `DISCOVERY_BLOCKED` + `DISCOVERY_INCOMPLETE`;
+- exhausted global search budget -> `DISCOVERY_QUERY_BUDGET_EXHAUSTED`;
+- planner emits no query for one intent -> `DISCOVERY_NO_QUERIES`.
 
-Discovery is only run for intents not already covered by self-discovering source adapters or explicit seed tasks. The checkpoint stores `planning_complete` so restart recovery does not rerun discovery after planning has already completed.
+## Recovery and idempotency
 
-When `historical_context` is active and `wayback_cdx` is configured, each valid discovery hit produces two independent source tasks: a normal `generic_web` task for the current page and an exact-URL `wayback_cdx` companion task. The archive task is not created for non-historical intents.
+Collection execution is checkpointed persistently. Planning state includes:
+
+- `planning_initial_tasks_complete`;
+- `planning_complete`;
+- `covered_intents`;
+- `discovery_queries`;
+- `discovery_providers`;
+- `discovery_completed_intents`;
+- `pending_tasks`;
+- `visited`;
+- `historical_branch_queries`.
+
+The discovery checkpoint is updated after each intent. If the process stops between two intent branches, restart recovery skips completed discovery work and continues only unfinished intents.
+
+Source tasks have stable `dedupe_key` identity. Ordinary GET tasks default to `source_id + URL`; providers that execute distinct operations against one endpoint use explicit `task_key` values. Deterministic Observation/Evidence IDs prevent duplicate facts if a crash happens between data persistence and checkpoint persistence.
 
 ## Same-host robots.txt and Sitemap discovery
 
-`site_discovery` is an internal navigation-only SourceAdapter. It has no request intents and is never considered factual coverage by itself. `generic_web` may enqueue it after a top-level HTML page has already been fetched and only when `ARGUS_SITEMAP_DISCOVERY_ENABLED` is enabled.
+`site_discovery` is internal navigation support and never counts as factual coverage itself. After a top-level HTML fetch, `generic_web` can enqueue a bounded `robots.txt` task. ARGUS also considers the conventional `/sitemap.xml` path.
 
-The first task checks `<origin>/robots.txt` for case-insensitive `Sitemap:` records and also considers the conventional `<origin>/sitemap.xml`. Each network operation remains an explicit SourceTask, so sitemap traversal consumes the same `max_pages` budget as other collection work.
+Rules:
 
-Sitemap processing is deliberately narrow:
+- only HTTP(S) URLs on the original hostname;
+- allowed/denied domain constraints still apply;
+- `.gz` sitemap files are currently skipped;
+- sitemap-index fan-out and final URL counts are bounded by settings;
+- every sitemap network request is a SourceTask and consumes normal `max_pages` budget;
+- selected page URLs must still be fetched through `generic_web`;
+- sitemap-discovered pages do not recursively start a new sitemap pass;
+- missing/invalid/blocked optional Sitemap navigation is fail-open.
 
-- only HTTP(S) candidates on the original hostname are accepted;
-- `.gz` sitemap files are skipped for the current milestone;
-- one sitemap-index level is followed;
-- index fan-out is bounded by `ARGUS_SITEMAP_MAX_INDEXES`;
-- final page candidates are bounded by `ARGUS_SITEMAP_MAX_URLS`;
-- request allowed/denied-domain constraints still apply;
-- selected page URLs are marked `discovery_provider=sitemap` and must pass through `generic_web` before becoming facts;
-- sitemap-discovered pages do not recursively start another sitemap pass.
+Sitemap and RSS/Atom XML are parsed with `defusedxml`; DTD/entity/external-reference payloads are rejected instead of expanded.
 
-Robots/Sitemap failures are fail-open because this path is optional navigation support. A missing `robots.txt`, absent sitemap, invalid XML or blocked optional sitemap does not by itself degrade already valid factual evidence.
+## JSON-LD structured extraction
 
-Sitemap and RSS/Atom XML are parsed with `defusedxml`. DTD/entity/external-reference payloads are rejected rather than expanded. For RSS/Atom, the feed URL is the Evidence source because that is the document ARGUS actually fetched; an entry URL is retained separately as entity/navigation provenance.
+`EmbeddedJsonLdExtractor` parses `application/ld+json` blocks already embedded in fetched HTML. It does not perform JSON-LD expansion/compaction and does not dereference remote contexts.
 
-## Research Planner and recursive historical research
+Parsing is bounded by block count, block size, entity count, recursion depth, container size and string size. Non-standard `NaN`/`Infinity` and recursion failures are rejected as invalid blocks. Each accepted entity becomes a separate `source_kind=json_ld` Observation/Evidence backed by the same fetched page and snapshot.
 
-`OllamaResearchPlanner` uses the local Ollama HTTP API and falls back to deterministic planning if Ollama is unavailable. Planning may create research queries but never facts. Factual output must originate from an Observation/Evidence pair.
+## Recursive historical research
 
-`HistoricalBranchPlanner` is activated only for the neutral `historical_context` intent. After a factual Observation has been persisted, it may use conservative labels from `title`, `name`, `former_name`, `old_name`, `operator` or `brand` to create follow-up search queries. Those labels are navigation hypotheses only; they do not become facts until a later source is opened and normalized.
+`HistoricalBranchPlanner` is activated only for `historical_context`. It derives bounded follow-up navigation queries from already persisted factual Observation labels such as `title`, `name`, `former_name`, `old_name`, `operator` and `brand`.
 
-Technical archive-index observations are excluded from entity branching. Their archived page content may still create a later branch after the concrete capture has been fetched as a normal web page.
+Those labels are navigation hypotheses. They become facts only when a subsequent source is fetched and normalized.
 
-Historical branching is bounded in three ways: at most three queries are emitted per expansion, at most twelve follow-up queries are emitted per collection, and recursive expansion stops at `constraints.max_depth`. Generated queries are persisted in `checkpoint.historical_branch_queries`, so restart recovery does not repeat the same branch searches.
+Historical branching is bounded by:
 
-An empty secondary historical search ends that branch without degrading otherwise valid evidence. Provider errors or fully blocked secondary discovery are retained as degraded coverage. This prevents infinite "nothing found" recursion while still surfacing real access failures.
+- `constraints.max_depth`;
+- at most three queries per expansion;
+- at most twelve branch queries per collection;
+- the normal page budget;
+- persisted query de-duplication.
 
-Recursive page crawling remains bounded by collection `max_pages` and `max_depth`. Discovered tasks are persisted in the collection checkpoint before the next page is processed, so a restart can resume unfinished branches. Deterministic Observation/Evidence identities prevent duplicates if data was stored immediately before a crash but the checkpoint was not yet updated.
+Archive-index technical observations are excluded from entity branching.
 
-## Wayback CDX archive provider
+## Wayback CDX
 
-`wayback_cdx` is optional and registered only when `ARGUS_WAYBACK_CDX_URL` is configured. ARGUS performs exact-URL CDX queries only; it does not issue bulk domain or prefix scans.
+`wayback_cdx` is optional and enabled only by configuration. ARGUS performs bounded exact-URL CDX lookup; it does not bulk crawl archive prefixes/domains.
 
-The CDX provider requests a bounded set of successful unique captures using public fields such as timestamp, original URL, MIME type, status code, digest and length. Each capture becomes an `archive_capture_index` Observation/Evidence plus a canonical metadata snapshot.
+A CDX capture row creates an `archive_capture_index` Observation/Evidence proving that a capture exists. The actual archived page is then scheduled as a normal `generic_web` task and must pass through the normal fetch, SSRF, size, snapshot and Evidence pipeline.
 
-A CDX row proves only that the archive index contains a capture. ARGUS separately schedules the concrete `.../web/<timestamp>id_/<original-url>` capture through `generic_web`. Page contents therefore pass through the ordinary fetch runtime, SSRF checks, size limits, snapshots and Evidence normalization before they can be used as factual page content.
+When `historical_context` discovery finds a current URL and Wayback is configured, ARGUS can create both a current-page task and a separate exact archive companion task.
 
-Manual historical seed URLs are looked up directly. Historical search-discovery hits automatically receive archive companion tasks when the provider is configured. A URL with no archive captures ends that archive branch normally; rate/access blocks remain structured degraded coverage. ARGUS does not bypass archive restrictions.
+## Maps and geocoding
 
-## Source task identity
+`argus.maps` defines provider-neutral map contracts. The current implementation is optional OpenStreetMap Overpass. It is registered only when an endpoint is explicitly configured. No donated public Overpass endpoint is silently enabled.
 
-Ordinary GET crawling uses backward-compatible `source_id + URL` task identity. Providers that execute distinct POST/search operations against one endpoint can set an explicit `SourceTask.task_key`. The orchestrator uses this key consistently for queue de-duplication, visited checkpoints and restart recovery.
+For address-only map requests, an optional configured Nominatim provider can resolve coordinates. Nominatim results retain OSM attribution/ODbL provenance; factual map evidence URLs point to public OpenStreetMap rather than the configured geocoder service.
 
-This is required for providers such as Overpass: `school` and `pharmacy` searches may use the same interpreter URL but must remain separate tasks with independent limits, errors and coverage. Wayback tasks likewise identify the original target URL independently of the configured CDX endpoint. Site discovery uses explicit identities such as `site_discovery:robots:<origin>` and `site_discovery:sitemap:<url>`.
+Map contracts contain factual collection output only. Competition scoring, demand interpretation, risk assessment and other consumer analytics remain outside ARGUS.
+
+## Rate policy
+
+Crawlee owns ordinary crawler queue/session/retry/concurrency behavior. Direct providers such as Overpass, Nominatim and Wayback use separate process-local minimum-interval gates plus a bounded 429/503 retry policy.
+
+A valid server `Retry-After` is authoritative. If it requires waiting longer than ARGUS' configured maximum wait, ARGUS does not issue an early retry; the operation finishes as blocked/retryable provider failure for the current collection.
 
 ## Source operational health
 
-`SourceRegistry` wraps every registered adapter with operational health tracking. No external probe traffic is generated just to make a health endpoint look green.
+`SourceRegistry` wraps each SourceAdapter with runtime state without creating external health probes. States are `ready`, `running`, `ok`, `degraded` and `blocked`, with timestamps and last error code.
 
-Before the first factual attempt, a registered source reports `ready`. During work it reports `running`. A completed factual pipeline reports `ok`; a partial/error result reports `degraded`; an access/rate block reports `blocked`.
-
-Cancellation restores the previous stable operational status instead of erasing a known `ok`, `degraded` or `blocked` state. `GET /v1/sources/{id}/health` retains the adapter's own static/configuration state as `adapter_status` and adds operational timestamps: `last_attempt_at`, `last_success_at`, `last_failure_at`, and `last_error_code`.
-
-## SiteRecipe
-
-A recipe is versioned by domain + goal and stores deterministic browser steps. Recipes can wait for fixed durations or bounded Playwright load states.
-
-When deterministic browsing fails and an enabled AGENT finds a path, ARGUS compiles only supported/reproducible actions into a candidate recipe. The candidate must succeed in a Playwright replay before it is persisted. Broken recipes are marked failed and can be replaced by a newer validated version.
-
-## History
-
-Every successful factual collection creates temporal snapshots containing `collected_at`, SHA-256 `content_hash`, `source_url`, `source_id`, `extractor_version` and normalized/raw content. Unchanged facts still create a temporal snapshot with `diff=null`; changed facts also store a unified diff against the previous snapshot.
-
-Web documents snapshot fetched content. Map places snapshot canonical normalized POI facts so changes to coordinates, address, categories or attributes can be detected over time. Wayback capture-index observations snapshot canonical capture metadata; the archived page itself receives a normal web-document snapshot.
-
-## Map and geocoding providers
-
-`argus.maps` defines provider-neutral contracts: `MapSearchRequest`, `MapPlace`, `MapSearchResult`, provider capabilities and `MapProviderRegistry`.
-
-The first real map provider is optional `openstreetmap_overpass`. It is registered only when `ARGUS_OVERPASS_URL` is configured. The corresponding `OverpassSourceAdapter` is a normal factual source adapter and is activated by neutral POI intents such as `school`, `kindergarten`, `hospital`, `pharmacy`, `cafe`, `supermarket` and `park`. It never branches on `consumer`.
-
-Overpass itself requires coordinates. If a collection already contains `territory.point`, no geocoder is called. For address/city-only requests, the adapter can use an optional `GeocodeProvider`. The current implementation is Nominatim, enabled only by an explicit `ARGUS_NOMINATIM_URL`. The selected geocoding candidate is retained in Observation/Evidence provenance.
-
-No public Overpass or Nominatim endpoint is silently enabled by default. Operators must configure a self-hosted or explicitly approved endpoint. This keeps rate-policy choices at deployment level and avoids treating donated public infrastructure as an unlimited backend.
-
-Map/geocoding contracts contain collection facts only. Competition scoring, demand interpretation, risk assessment and other consumer analytics remain outside ARGUS.
+Cancellation restores the previous stable state rather than erasing known source health.
 
 ## Storage
 
-The orchestrator depends on `Repository`, not `SQLiteRepository`. PostgreSQL can implement the same contract later. SQLite is WAL-enabled for standalone/dev use.
+The collection engine depends only on the `Repository` protocol.
+
+### Product/server
+
+PostgreSQL is the target server backend and is mandatory in `geo-analyzer-module.json`.
+
+ARGUS owns the dedicated PostgreSQL schema `argus`. Schema migrations are versioned and checksummed. Migration application uses a stable PostgreSQL advisory lock so concurrent installers/processes cannot apply the same migration simultaneously. Startup verifies that the installed schema version exactly matches the application expectation.
+
+The repository uses Psycopg 3 native asyncio and an explicitly opened `AsyncConnectionPool`. The pool participates in the FastAPI service lifecycle and is closed on normal shutdown and startup failure.
+
+### Local development
+
+SQLite remains available through the same Repository interface for local development and isolated tests. It is not the server product storage selected by the deployment manifest.
+
+## Module-management contract
+
+ARGUS publishes two different contracts for two different responsibilities:
+
+1. `geo-analyzer-module.json` — installation/supervision contract read before code execution;
+2. authenticated `GET /v1/manifest` — runtime identity/capability contract checked after process startup.
+
+`GET /v1/health` includes `protocol_version`, `module_id` and database readiness. PostgreSQL schema or connectivity failure prevents `status=ok`, so Geo Analyzer cannot register a broken installation as healthy.
+
+ARGUS intentionally does not implement consumer analytics or expose itself as an analysis launch option. Kraken/Janus use the collection API instead of Geo Analyzer invoking ARGUS as a selected analytical module.
 
 ## Security
 
-- localhost bind by default;
-- Bearer token stored outside Git and created atomically;
-- empty/invalid token files are not accepted as credentials;
-- arbitrary URLs limited to HTTP(S);
+- localhost API bind in server manifest;
+- bearer token generated and stored outside the repository;
+- PostgreSQL DSN supplied through deployment secrets; secret-file value is preferred;
+- secret values use Pydantic `SecretStr` and are not emitted by normal settings repr;
+- HTTP(S)-only arbitrary target URLs;
 - URL userinfo rejected;
-- DNS-resolved loopback/private/link-local/reserved/multicast/metadata targets rejected unless explicitly allowlisted;
-- FAST validates every redirect hop before HTTPX sends it;
-- BROWSER intercepts and validates page network requests and unsafe redirects;
-- untrusted RSS/Atom/Sitemap XML uses `defusedxml` rather than raw entity-expanding parsers;
-- unknown declared response charsets fall back safely instead of crashing FAST;
-- response/browser size, time and concurrency/rate limits;
-- CAPTCHA/access blocks surfaced as blocked/partial, never bypassed;
-- structured errors and JSON logs redact common credential forms and URL query strings.
+- DNS-resolved loopback/private/link-local/reserved/multicast/cloud-metadata targets rejected unless explicitly allowlisted;
+- redirect hops validated before FAST sends them;
+- BROWSER intercepts unsafe page network destinations;
+- bounded response sizes, timeouts, concurrency and rate policies;
+- hardened XML and JSON-LD parsing;
+- structured logs/errors redact common credential forms and URL query strings;
+- CAPTCHA/access restrictions are surfaced, not bypassed.
 
-Production still requires network egress controls because application URL validation is defense in depth and cannot eliminate all DNS rebinding/transport-layer risks.
+Application SSRF validation is defense in depth. Production deployment must also enforce network egress controls.
 
-## Deferred provider implementations
+## Provider rule
 
-2GIS, Yandex Maps, Google Maps, GIS ЖКХ and developer/public-portal adapters remain separate provider implementations.
-
-All future providers must use the common contracts, preserve source provenance and remain free of consumer analytics.
+All future adapters/providers must use the common contracts, preserve provenance and stay free of consumer analytics. Product expansion means adding factual collection capability, not adding Kraken/Janus-specific branches to ARGUS core.
