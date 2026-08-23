@@ -63,6 +63,7 @@ async def test_collection_operations_use_stable_keyset_pagination_and_filters():
     repository = PostgresRepository(dsn, min_size=1, max_size=2, timeout_seconds=10)
     await repository.initialize()
     store = PostgresOperationsStore(dsn)
+    await store.initialize()
     consumer = f"operations-{uuid4()}"
     records = [
         record(
@@ -129,4 +130,5 @@ async def test_collection_operations_use_stable_keyset_pagination_and_filters():
                 "DELETE FROM argus.collections WHERE collection_id = ANY(%s)",
                 ([item.collection_id for item in records],),
             )
+        await store.close()
         await repository.close()
