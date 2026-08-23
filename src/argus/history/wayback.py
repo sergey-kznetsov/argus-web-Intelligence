@@ -135,6 +135,10 @@ class WaybackCDXProvider:
                             base_delay_seconds=self.settings.direct_provider_retry_base_seconds,
                             max_delay_seconds=self.settings.direct_provider_retry_max_seconds,
                         )
+                        if retry_delay is None:
+                            if status_code == 429:
+                                return [], status_code
+                            response.raise_for_status()
                     else:
                         if status_code not in {403, 429}:
                             response.raise_for_status()
