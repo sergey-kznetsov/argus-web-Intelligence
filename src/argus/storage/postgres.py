@@ -77,10 +77,18 @@ class PostgresRepository:
         async with self._pool.connection() as conn:
             cursor = await conn.execute(
                 "SELECT to_regclass('argus.schema_migrations') AS migrations, "
-                "to_regclass('argus.collections') AS collections"
+                "to_regclass('argus.collections') AS collections, "
+                "to_regclass('argus.collection_leases') AS collection_leases, "
+                "to_regclass('argus.worker_instances') AS worker_instances"
             )
             row = await cursor.fetchone()
-            if not row or row["migrations"] is None or row["collections"] is None:
+            if (
+                not row
+                or row["migrations"] is None
+                or row["collections"] is None
+                or row["collection_leases"] is None
+                or row["worker_instances"] is None
+            ):
                 raise RuntimeError(
                     "ARGUS PostgreSQL schema is not migrated; "
                     "run `python -m argus.storage.cli migrate`"
@@ -149,6 +157,143 @@ class PostgresRepository:
             )
             rows = await cursor.fetchall()
         return [CollectionRecord.model_validate(row["body"]) for row in rows]
+
+    async def register_worker(
+        self,
+        worker_id: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        worker = worker_id.strip()
+        if not worker:
+            raise ValueError("worker_id must not be empty")
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO argus.worker_instances(worker_id, started_at, heartbeat_at, metadata)
+                VALUES(%s, NOW(), NOW(), %s)
+                ON CONFLICT (worker_id) DO UPDATE
+                SET started_at=NOW(), heartbeat_at=NOW(), metadata=EXCLUDED.metadata
+                """,
+                (worker, Jsonb(metadata or {})),
+            )
+
+    async def heartbeat_worker(self, worker_id: str) -> bool:
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE argus.worker_instances
+                SET heartbeat_at=NOW()
+                WHERE worker_id=%s
+                """,
+                (worker_id,),
+            )
+        return cursor.rowcount == 1
+
+    async def unregister_worker(self, worker_id: str) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM argus.worker_instances WHERE worker_id=%s",
+                (worker_id,),
+            )
+
+    async def active_worker_count(self, *, max_age_seconds: float) -> int:
+        age = max(1.0, float(max_age_seconds))
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM argus.worker_instances
+                WHERE heartbeat_at >= NOW() - (%s * INTERVAL '1 second')
+                """,
+                (age,),
+            )
+            row = await cursor.fetchone()
+        return int(row["count"]) if row else 0
+
+    async def claim_next_collection(
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: float,
+    ) -> str | None:
+        lease = max(1.0, float(lease_seconds))
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT c.collection_id
+                FROM argus.collections AS c
+                LEFT JOIN argus.collection_leases AS l
+                  ON l.collection_id = c.collection_id
+                WHERE c.status IN ('queued', 'running')
+                  AND (l.collection_id IS NULL OR l.lease_until <= NOW())
+                ORDER BY
+                  CASE c.status WHEN 'queued' THEN 0 ELSE 1 END,
+                  c.created_at ASC,
+                  c.collection_id ASC
+                FOR UPDATE OF c SKIP LOCKED
+                LIMIT 1
+                """
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            collection_id = str(row["collection_id"])
+            cursor = await conn.execute(
+                """
+                INSERT INTO argus.collection_leases(
+                  collection_id, worker_id, leased_at, heartbeat_at, lease_until
+                )
+                VALUES(%s, %s, NOW(), NOW(), NOW() + (%s * INTERVAL '1 second'))
+                ON CONFLICT (collection_id) DO UPDATE
+                SET worker_id=EXCLUDED.worker_id,
+                    leased_at=NOW(),
+                    heartbeat_at=NOW(),
+                    lease_until=EXCLUDED.lease_until
+                WHERE argus.collection_leases.lease_until <= NOW()
+                   OR argus.collection_leases.worker_id = EXCLUDED.worker_id
+                """,
+                (collection_id, worker_id, lease),
+            )
+            if cursor.rowcount != 1:
+                return None
+            return collection_id
+
+    async def renew_collection_lease(
+        self,
+        collection_id: str,
+        worker_id: str,
+        *,
+        lease_seconds: float,
+    ) -> bool:
+        lease = max(1.0, float(lease_seconds))
+        async with self._pool.connection() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE argus.collection_leases
+                SET heartbeat_at=NOW(),
+                    lease_until=NOW() + (%s * INTERVAL '1 second')
+                WHERE collection_id=%s
+                  AND worker_id=%s
+                  AND lease_until > NOW()
+                """,
+                (lease, collection_id, worker_id),
+            )
+        return cursor.rowcount == 1
+
+    async def release_collection_lease(
+        self,
+        collection_id: str,
+        worker_id: str,
+    ) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                """
+                DELETE FROM argus.collection_leases
+                WHERE collection_id=%s AND worker_id=%s
+                """,
+                (collection_id, worker_id),
+            )
 
     async def add_observation(self, observation: Observation) -> None:
         await self._upsert_collection_json(
