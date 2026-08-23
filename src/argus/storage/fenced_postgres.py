@@ -395,8 +395,45 @@ class FencedPostgresRepository(PostgresRepository):
         if fence is None:
             await super().save_recipe(recipe)
             return
+
         try:
-            await super().save_recipe(recipe)
+            async with self._pool.connection() as conn:
+                async with conn.transaction():
+                    lease_row = await (
+                        await conn.execute(
+                            """
+                            SELECT worker_id
+                            FROM argus.collection_leases
+                            WHERE collection_id=%s
+                              AND worker_id=%s
+                              AND lease_until > NOW()
+                            FOR UPDATE
+                            """,
+                            (fence.collection_id, fence.worker_id),
+                        )
+                    ).fetchone()
+                    if lease_row is None:
+                        raise LeaseLostError(
+                            f"worker {fence.worker_id} no longer owns lease for "
+                            f"{fence.collection_id}"
+                        )
+                    await conn.execute(
+                        """
+                        INSERT INTO argus.site_recipes(recipe_id, domain, goal, version, body)
+                        VALUES(%s, %s, %s, %s, %s)
+                        ON CONFLICT (domain, goal, version) DO UPDATE
+                        SET recipe_id=EXCLUDED.recipe_id, body=EXCLUDED.body
+                        """,
+                        (
+                            recipe.recipe_id,
+                            recipe.domain,
+                            recipe.goal,
+                            recipe.version,
+                            Jsonb(recipe.model_dump(mode="json")),
+                        ),
+                    )
+        except LeaseLostError:
+            raise
         except Exception as exc:
             self._raise_storage_failure(fence, "save_recipe", exc)
 
