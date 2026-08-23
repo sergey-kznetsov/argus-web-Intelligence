@@ -4,6 +4,7 @@ from argus.bootstrap import build_services
 from argus.config import Settings
 from argus.orchestrator.atomic import AtomicCollectionOrchestrator
 from argus.sources.document_web import DocumentAwareGenericWebAdapter
+from argus.sources.office_web import OfficeAwareGenericWebAdapter
 from argus.storage.atomic_sqlite import AtomicSQLiteRepository
 
 
@@ -33,6 +34,7 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     tracked = services.registry.get("generic_web")
     adapter = getattr(tracked, "_adapter", None)
     assert isinstance(adapter, DocumentAwareGenericWebAdapter)
+    assert isinstance(adapter, OfficeAwareGenericWebAdapter)
     extractor = adapter.structured_data_extractor
     assert extractor.max_bytes == 123_456
     assert extractor.max_records == 7
@@ -40,3 +42,5 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     assert extractor.max_cell_chars == 321
     assert extractor.max_json_depth == 9
     assert extractor.max_json_nodes == 77
+    assert extractor.max_xml_depth == 9
+    assert extractor.max_xml_nodes == 77
