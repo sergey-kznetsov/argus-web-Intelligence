@@ -140,3 +140,48 @@ async def test_pool_wait_queue_is_bounded_under_saturation():
         waiting_connection = await waiter
         await repository._pool.putconn(waiting_connection)
         await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_pool_recovers_after_postgresql_backend_is_terminated():
+    dsn = postgres_dsn()
+    await migration_module.run_postgres_migrations(dsn)
+    repository = PostgresRepository(
+        dsn,
+        min_size=1,
+        max_size=2,
+        timeout_seconds=5,
+        max_waiting=4,
+    )
+    await repository.initialize()
+    held = await repository._pool.getconn()
+    terminator = await psycopg.AsyncConnection.connect(dsn, autocommit=True)
+    try:
+        pid_row = await (await held.execute("SELECT pg_backend_pid()" )).fetchone()
+        assert pid_row is not None
+        backend_pid = int(pid_row[0])
+        terminated = await (
+            await terminator.execute("SELECT pg_terminate_backend(%s)", (backend_pid,))
+        ).fetchone()
+        assert terminated is not None
+        assert bool(terminated[0]) is True
+
+        with pytest.raises(psycopg.Error):
+            await held.execute("SELECT 1")
+        await repository._pool.putconn(held)
+        held = None
+
+        await repository._pool.check()
+        health = {"status": "error"}
+        for _ in range(50):
+            health = await repository.health()
+            if health.get("status") == "ok":
+                break
+            await asyncio.sleep(0.05)
+        assert health["status"] == "ok"
+        assert health["schema_version"] == migration_module.EXPECTED_SCHEMA_VERSION
+    finally:
+        if held is not None:
+            await repository._pool.putconn(held)
+        await terminator.close()
+        await repository.close()
