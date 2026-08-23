@@ -118,6 +118,7 @@ class WaybackSourceAdapter:
             capture.capture_url,
             canonical,
             "application/json",
+            collection_id=collection_id,
         )
         entity_id = f"{capture.timestamp}:{capture.original_url}"
         observation_id = stable_observation_id(
@@ -145,9 +146,7 @@ class WaybackSourceAdapter:
             entity_type="archive_capture",
             entity_id=entity_id,
             title=f"Archived capture: {capture.original_url}",
-            text=(
-                f"Wayback capture {capture.timestamp} for {capture.original_url}"
-            ),
+            text=f"Wayback capture {capture.timestamp} for {capture.original_url}",
             data=facts,
             published_at=capture.captured_at,
             content_hash=content_hash,
