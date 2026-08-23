@@ -139,6 +139,48 @@ def test_xml_declaration_allows_plain_text_detection():
     assert result.payload["children"][0]["text"] == "ok"
 
 
+def test_xml_http_charset_is_authoritative_without_bom():
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<root>Школа</root>'
+    ).encode("cp1251")
+
+    result = extractor().extract(
+        body,
+        content_type="application/xml; charset=windows-1251",
+        url="https://example.com/data.xml",
+    )
+
+    assert result.error_code is None
+    assert result.encoding == "windows-1251"
+    assert result.payload["text"] == "Школа"
+
+
+def test_xml_bom_is_authoritative_over_http_charset():
+    body = '<?xml version="1.0"?><root>Школа</root>'.encode("utf-16")
+
+    result = extractor().extract(
+        body,
+        content_type="application/xml; charset=cp1251",
+        url="https://example.com/data.xml",
+    )
+
+    assert result.error_code is None
+    assert result.encoding == "utf-16"
+    assert result.payload["text"] == "Школа"
+
+
+def test_invalid_xml_transport_charset_fails_without_guessing():
+    result = extractor().extract(
+        b"<root>ok</root>",
+        content_type="application/xml; charset=no-such-codec",
+        url="https://example.com/data.xml",
+    )
+
+    assert result.payload is None
+    assert result.error_code == "STRUCTURED_DATA_DECODE_ERROR"
+
+
 def test_unsafe_xml_entity_is_rejected_without_expansion():
     body = b'<!DOCTYPE root [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><root>&xxe;</root>'
 
