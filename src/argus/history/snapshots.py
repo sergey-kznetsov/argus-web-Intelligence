@@ -79,8 +79,11 @@ class SnapshotService:
         if snapshot_id is not None:
             payload["snapshot_id"] = snapshot_id
         snapshot = Snapshot.model_validate(payload)
-        await self.repository.add_snapshot(
-            snapshot,
-            collection_id=normalized_collection_id or None,
-        )
+        if normalized_collection_id:
+            await self.repository.add_snapshot(
+                snapshot,
+                collection_id=normalized_collection_id,
+            )
+        else:
+            await self.repository.add_snapshot(snapshot)
         return snapshot
