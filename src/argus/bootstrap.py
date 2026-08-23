@@ -23,7 +23,7 @@ from argus.research.planner import OllamaResearchPlanner
 from argus.research.searxng import SearxngDiscoveryProvider
 from argus.security.urls import UrlGuard
 from argus.services import ServiceContainer
-from argus.sources.document_web import DocumentAwareGenericWebAdapter
+from argus.sources.office_web import OfficeAwareGenericWebAdapter
 from argus.sources.overpass_map import OverpassSourceAdapter
 from argus.sources.registry import SourceRegistry
 from argus.sources.rss import RSSAdapter
@@ -129,7 +129,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     map_registry = build_map_registry(settings)
     registry = SourceRegistry()
     registry.register(
-        DocumentAwareGenericWebAdapter(
+        OfficeAwareGenericWebAdapter(
             fast=fast,
             browser=browser,
             snapshots=snapshots,
