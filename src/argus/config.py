@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     retention_maintenance_interval_seconds: int = Field(default=3600, ge=60, le=86_400)
     retention_collection_days: int = Field(default=180, ge=1, le=3650)
     retention_snapshot_days: int = Field(default=365, ge=1, le=3650)
+    retention_worker_registration_days: int = Field(default=7, ge=1, le=3650)
     retention_batch_size: int = Field(default=500, ge=1, le=10_000)
 
     log_level: str = "INFO"
