@@ -193,6 +193,23 @@ MIGRATIONS: tuple[PostgresMigration, ...] = (
             """,
         ),
     ),
+    PostgresMigration(
+        version=7,
+        name="result_access_retention_grace",
+        statements=(
+            f"""
+            CREATE TABLE IF NOT EXISTS {_SCHEMA}.collection_result_access (
+              collection_id TEXT PRIMARY KEY
+                REFERENCES {_SCHEMA}.collections(collection_id) ON DELETE CASCADE,
+              last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            f"""
+            CREATE INDEX IF NOT EXISTS ix_argus_collection_result_access_time
+            ON {_SCHEMA}.collection_result_access(last_accessed_at DESC)
+            """,
+        ),
+    ),
 )
 
 
