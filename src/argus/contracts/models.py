@@ -157,6 +157,26 @@ class CollectionRecord(BaseModel):
     checkpoint: dict[str, Any] = Field(default_factory=dict)
 
 
+class CollectionSummary(BaseModel):
+    collection_id: str
+    analysis_id: str
+    consumer: str
+    status: CollectionStatus
+    created_at: datetime
+    updated_at: datetime
+    progress_percent: int = Field(ge=0, le=100)
+    stage: str | None = None
+    partial: bool
+    error_count: int = Field(ge=0)
+    observation_count: int = Field(ge=0)
+    evidence_count: int = Field(ge=0)
+
+
+class CollectionListPage(BaseModel):
+    items: list[CollectionSummary]
+    next_cursor: str | None = None
+
+
 class CollectionAccepted(BaseModel):
     collection_id: str
     status: CollectionStatus = CollectionStatus.QUEUED
