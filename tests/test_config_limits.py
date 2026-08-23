@@ -28,6 +28,22 @@ def test_snapshot_retention_cannot_be_shorter_than_collection_retention():
         )
 
 
+def test_result_page_default_cannot_exceed_page_maximum():
+    with pytest.raises(ValidationError):
+        Settings(
+            api_result_page_default_size=101,
+            api_result_page_max_size=100,
+        )
+
+
+def test_result_delivery_defaults_are_bounded():
+    settings = Settings()
+    assert settings.api_full_result_max_items == 100
+    assert settings.api_full_result_max_bytes == 4 * 1024 * 1024
+    assert settings.api_result_page_default_size == 50
+    assert settings.api_result_page_max_size == 100
+
+
 def test_idempotency_defaults_to_24_hours():
     assert Settings().idempotency_window_seconds == 86_400
 
