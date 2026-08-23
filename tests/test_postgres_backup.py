@@ -121,7 +121,7 @@ def test_restore_uses_verified_archive_and_password_safe_command(tmp_path: Path,
     assert manifest.schema_version == 6
     restore_command, restore_environment = calls[-1]
     assert restore_command[0] == "pg_restore"
-    assert "--exit-on-error" in restore_command
+    assert "--single-transaction" in restore_command
     assert "--clean" in restore_command
     assert "--if-exists" in restore_command
     assert "--schema=argus" in restore_command
