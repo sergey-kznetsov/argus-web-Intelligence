@@ -62,11 +62,13 @@ python -m argus.storage.cli restore \
 The restore path:
 
 1. verifies the manifest, archive size and SHA-256;
-2. refuses an archive whose schema version is newer than the running ARGUS runtime;
+2. requires the archive schema version to match the running ARGUS schema version exactly;
 3. calls `pg_restore` with `--single-transaction --clean --if-exists --schema=argus`;
 4. restores without ownership/privilege commands;
-5. runs normal ARGUS migrations after restore so an older compatible backup reaches the current schema version;
+5. runs normal migration verification after restore;
 6. verifies the resulting schema version.
+
+Exact schema-version matching is intentional. A custom archive from an older schema does not know about objects introduced by newer migrations; selectively cleaning such an archive over a newer live schema can leave dependency conflicts or mixed-version objects. To restore an older backup, run the matching ARGUS version, restore and verify it there, then update ARGUS through the normal migration/module-update path.
 
 `--single-transaction` is intentional: PostgreSQL must either apply the whole restore or leave the database unchanged by that restore attempt.
 
