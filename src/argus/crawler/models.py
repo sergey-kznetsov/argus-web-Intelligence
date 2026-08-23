@@ -15,3 +15,4 @@ class FetchResult:
     blocked: bool = False
     runtime: str = "fast"
     metadata: dict[str, object] = field(default_factory=dict)
+    body: bytes | None = None
