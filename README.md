@@ -1,6 +1,6 @@
 # ARGUS Web Intelligence
 
-ARGUS is a server-side evidence-first web intelligence backend for Kraken, Janus and future analytical consumers in the Geo Analyzer ecosystem.
+ARGUS `0.2.0` is a server-side evidence-first web intelligence backend for Kraken, Janus and future analytical consumers in the Geo Analyzer ecosystem.
 
 Core rule: **ARGUS = find + obtain + prove + store. Consumers = interpret + calculate + conclude.**
 
@@ -11,7 +11,13 @@ ARGUS is installed and supervised by the universal Geo Analyzer server-module ma
 ARGUS currently provides:
 
 - protocol `1.0.0` CollectionRequest/CollectionResult contracts;
-- asynchronous collection orchestration with persistent recovery checkpoints;
+- separate server API and collection-worker processes;
+- PostgreSQL-backed queue with worker heartbeat and per-collection leases;
+- atomic queue claim through `FOR UPDATE ... SKIP LOCKED`;
+- lease recovery after worker/process failure;
+- idempotent server collection submission with optional explicit keys and automatic request fingerprints;
+- terminal PostgreSQL cancellation that stale workers cannot overwrite;
+- persistent research/discovery checkpoints for restart recovery;
 - product PostgreSQL storage in dedicated schema `argus`;
 - local/dev SQLite backend through the same Repository contract;
 - versioned/checksummed PostgreSQL migrations protected by an advisory lock;
@@ -28,13 +34,13 @@ ARGUS currently provides:
 - deterministic task/Observation/Evidence identities;
 - per-source operational health;
 - redirect-aware SSRF defenses, Bearer authentication, resource/rate limits and secret-safe logging;
-- GitHub CI configured with a real PostgreSQL service.
+- GitHub CI configured with a PostgreSQL service.
 
 Discovery results and navigation hints are not facts. Search snippets, Sitemap entries and archive navigation metadata only seed factual retrieval. A destination page must be fetched before it can become page Evidence. Embedded JSON-LD is evidence only because it is contained in the already fetched page.
 
 ## Server deployment through Geo Analyzer
 
-The repository root contains `geo-analyzer-module.json`. The universal manager can use it to install ARGUS from the GitHub repository without ARGUS-specific branches in Geo Analyzer.
+The repository root contains `geo-analyzer-module.json`. The universal manager can install ARGUS without ARGUS-specific branches in Geo Analyzer.
 
 The deployment contract requires:
 
@@ -43,9 +49,13 @@ The deployment contract requires:
 - shared PostgreSQL supplied through `GEOANALYZER_DATABASE_DSN` / `GEOANALYZER_DATABASE_DSN_FILE`;
 - ARGUS migrations and schema check before process startup;
 - a separate generated Bearer token file through `ARGUS_TOKEN_FILE`;
-- localhost-only API process;
+- localhost-only API and worker-probe ports;
+- one API process with `ARGUS_EXECUTION_ROLE=api`;
+- one collection worker with `ARGUS_EXECUTION_ROLE=worker`;
 - authenticated `/v1/manifest` and `/v1/health` checks;
-- automatic registration/enablement only after health succeeds.
+- automatic registration/enablement only after readiness succeeds.
+
+The API process is not considered ready merely because its HTTP socket is open. In server mode `/v1/health` requires both a healthy PostgreSQL schema and at least one fresh worker heartbeat. If the worker does not start, dies, or becomes stale, readiness degrades and `HEAD /v1/health` returns `503`.
 
 The runtime manifest identifies the service as `argus.web.intelligence` and publishes:
 
@@ -62,11 +72,86 @@ The runtime manifest identifies the service as `argus.web.intelligence` and publ
 
 Therefore ARGUS is manageable as a server module but does not appear as a checkbox in «Новый анализ».
 
+## Server queue and recovery
+
+Server API and collection execution are intentionally separated:
+
+```text
+Kraken / Janus
+      |
+      v
+POST /v1/collections
+      |
+      v
+PostgreSQL queued collection
+      |
+      v
+worker claim + lease
+      |
+      v
+CollectionOrchestrator
+      |
+      v
+Observation / Evidence / snapshots
+```
+
+Workers register in `argus.worker_instances`. A collection is claimed through `argus.collection_leases`; concurrent workers skip already locked/leased work. The worker periodically renews both its own heartbeat and each active collection lease. An expired lease allows another worker to resume the persisted collection checkpoint after a crash.
+
+The configurable defaults are:
+
+```bash
+ARGUS_WORKER_CONCURRENCY=2
+ARGUS_WORKER_POLL_INTERVAL_SECONDS=1
+ARGUS_WORKER_LEASE_SECONDS=90
+ARGUS_WORKER_HEARTBEAT_SECONDS=20
+ARGUS_WORKER_HEALTH_MAX_AGE_SECONDS=60
+```
+
+`ARGUS_WORKER_HEARTBEAT_SECONDS` must be shorter than the lease duration.
+
+Cancellation is terminal in PostgreSQL. If API records `cancelled`, a stale worker cannot change the collection back to `running`; Observation/Evidence writes that start after the cancellation is visible are rejected by the storage layer. A network operation already in flight may finish before the worker observes cancellation, but it cannot resurrect the collection state.
+
+## Idempotent collection submission
+
+`POST /v1/collections` is idempotent in server API mode.
+
+A consumer may supply an explicit `idempotency_key`:
+
+```json
+{
+  "protocol_version": "1.0.0",
+  "consumer": "kraken",
+  "analysis_id": "analysis-id",
+  "idempotency_key": "kraken-analysis-id-attempt-1",
+  "territory": {
+    "city": "Ижевск",
+    "address": "Ижевск, Пушкинская, 277"
+  },
+  "intents": ["public_mentions", "local_news"],
+  "constraints": {
+    "max_pages": 30,
+    "max_depth": 2
+  },
+  "allow_partial": true
+}
+```
+
+Rules:
+
+- retrying the same request with the same explicit key returns the original `collection_id`;
+- an explicit key is scoped by `consumer`, so independent consumers may reuse the same literal key;
+- reusing one consumer's explicit key for a different request returns HTTP `409`;
+- blank/whitespace-only keys are rejected by request validation;
+- when the key is omitted, ARGUS builds a SHA-256 fingerprint from the canonical request and uses it as the retry identity;
+- the transport `idempotency_key` itself is excluded from the request fingerprint.
+
+Because `analysis_id` is part of the request fingerprint, a genuinely new consumer analysis should use a new analysis ID. Network retries of the same analysis resolve to the same collection rather than creating duplicate web work.
+
 ## Storage
 
 ### Server/product
 
-Server deployment uses PostgreSQL. ARGUS owns schema `argus` and stores collections, observations, evidence, temporal snapshots and SiteRecipe state there.
+Server deployment uses PostgreSQL. ARGUS owns schema `argus` and currently stores collections, collection idempotency mappings, worker/lease state, observations, evidence, temporal snapshots and SiteRecipe state there.
 
 Migrations:
 
@@ -82,6 +167,7 @@ Migrations are versioned and checksummed. Application startup refuses to become 
 SQLite remains available for isolated local development and tests:
 
 ```bash
+ARGUS_EXECUTION_ROLE=embedded
 ARGUS_STORAGE_BACKEND=sqlite
 ARGUS_DB_PATH=.argus/argus.sqlite3
 ```
@@ -118,14 +204,14 @@ Run:
 argus serve
 ```
 
-The default local bind is `127.0.0.1:8787`.
+The default local bind is `127.0.0.1:8787`. Local CLI/API use `embedded` execution unless configured otherwise.
 
 ## API
 
 Module-management endpoints:
 
 - `GET /v1/manifest` — authenticated runtime identity/capabilities;
-- `GET /v1/health` — service/database readiness;
+- `GET /v1/health` — service/database/worker readiness;
 - `HEAD /v1/health` — readiness status code.
 
 Collection API:
@@ -143,27 +229,9 @@ Capabilities/sources:
 
 All endpoints except `GET/HEAD /v1/health` require `Authorization: Bearer <token>`.
 
-The request contract is consumer-neutral:
+`GET /v1/capabilities` exposes the active storage/execution mode. Server API reports `queue_backend=postgresql_leases`, `idempotent_submission=true` and `worker_required_for_readiness=true`. Local embedded mode reports `queue_backend=embedded`.
 
-```json
-{
-  "protocol_version": "1.0.0",
-  "consumer": "kraken",
-  "analysis_id": "analysis-id",
-  "territory": {
-    "city": "Ижевск",
-    "address": "Ижевск, Пушкинская, 277"
-  },
-  "intents": ["public_mentions", "local_news"],
-  "constraints": {
-    "max_pages": 30,
-    "max_depth": 2
-  },
-  "allow_partial": true
-}
-```
-
-`consumer` records who requested the data; it does not select a Kraken/Janus branch. `intents` define the factual research goals.
+`consumer` records who requested the data; it does not select a Kraken/Janus branch. `intents` define factual research goals.
 
 ## CLI
 
@@ -204,7 +272,7 @@ CAPTCHA/access challenges are reported as blocked; ARGUS does not attempt bypass
 
 Discovery is run independently for uncovered intents while sharing one collection-level query budget. A seed URL does not automatically mark every intent covered. If the same URL is discovered for several intents, ARGUS fetches it once and merges the research goals into provenance.
 
-Discovery progress is checkpointed after each intent. A process restart therefore resumes only unfinished discovery branches.
+Discovery progress is checkpointed after each intent. A process/worker restart therefore resumes only unfinished discovery branches.
 
 ## Same-host robots.txt and Sitemap
 
@@ -216,7 +284,7 @@ ARGUS_SITEMAP_MAX_URLS=20
 ARGUS_SITEMAP_MAX_INDEXES=5
 ```
 
-Only same-host HTTP(S) candidates are accepted; domain constraints still apply. Sitemap tasks consume the normal page budget. Sitemap discovery is navigation-only and is fail-open when missing, malformed or unavailable.
+Only same-host HTTP(S) candidates are accepted; domain constraints still apply. Sitemap tasks consume the normal page budget. Sitemap discovery is navigation-only and fail-open when missing, malformed or unavailable.
 
 RSS/Atom and Sitemap XML use `defusedxml` to reject unsafe DTD/entity payloads.
 
@@ -268,6 +336,7 @@ ARGUS includes application-level defenses for:
 - hardened XML/JSON-LD parsing;
 - Bearer token files outside Git;
 - PostgreSQL secret-file preference and `SecretStr` handling;
+- stale-worker protection for terminal cancellation;
 - structured log/error redaction;
 - CAPTCHA/access-control non-bypass.
 
