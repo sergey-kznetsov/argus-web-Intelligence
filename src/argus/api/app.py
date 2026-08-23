@@ -32,6 +32,7 @@ from argus.pagination import (
     encode_collection_cursor,
 )
 from argus.security.auth import bearer_dependency, ensure_token
+from argus.security.request_limits import RequestSizeLimitMiddleware
 from argus.storage.base import IdempotencyConflictError, QueueCapacityError
 from argus.storage.postgres_operations import PostgresOperationsStore
 
@@ -66,6 +67,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await services.shutdown()
 
     app = FastAPI(title="ARGUS Web Intelligence", version=__version__, lifespan=lifespan)
+    app.add_middleware(RequestSizeLimitMiddleware, max_bytes=settings.api_max_request_bytes)
 
     async def readiness() -> tuple[bool, dict[str, object]]:
         database = await repository.health()
@@ -118,6 +120,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "runtimes": ["fast", "browser", "agent"],
             "storage": settings.storage_backend,
             "execution_role": settings.execution_role,
+            "api_max_request_bytes": settings.api_max_request_bytes,
             "queue_backend": "postgresql_leases" if server_queue else "embedded",
             "idempotent_submission": settings.execution_role == "api",
             "idempotency_window_seconds": (
