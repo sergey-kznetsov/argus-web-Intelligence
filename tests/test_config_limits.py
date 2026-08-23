@@ -42,6 +42,7 @@ def test_result_delivery_defaults_are_bounded():
     assert settings.api_full_result_max_bytes == 4 * 1024 * 1024
     assert settings.api_result_page_default_size == 50
     assert settings.api_result_page_max_size == 100
+    assert settings.api_result_page_max_bytes == 2 * 1024 * 1024
 
 
 def test_idempotency_defaults_to_24_hours():
