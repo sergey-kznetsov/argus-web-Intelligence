@@ -32,6 +32,10 @@ def test_idempotency_defaults_to_24_hours():
     assert Settings().idempotency_window_seconds == 86_400
 
 
+def test_stale_worker_registration_retention_defaults_to_seven_days():
+    assert Settings().retention_worker_registration_days == 7
+
+
 def test_server_roles_require_postgresql():
     with pytest.raises(ValidationError):
         Settings(execution_role="api", storage_backend="sqlite")
