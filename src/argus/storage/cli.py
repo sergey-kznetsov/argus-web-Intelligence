@@ -194,10 +194,10 @@ async def _restore(archive: Path, *, replace_existing_argus: bool) -> None:
         )
     _, dsn = _settings_and_dsn()
     manifest = await asyncio.to_thread(verify_argus_backup, archive)
-    if manifest.schema_version > EXPECTED_SCHEMA_VERSION:
+    if manifest.schema_version != EXPECTED_SCHEMA_VERSION:
         raise SystemExit(
-            f"backup schema version {manifest.schema_version} is newer than this ARGUS "
-            f"runtime ({EXPECTED_SCHEMA_VERSION})"
+            f"backup schema version {manifest.schema_version} does not match this ARGUS "
+            f"runtime ({EXPECTED_SCHEMA_VERSION}); restore with the matching ARGUS version first"
         )
     await asyncio.to_thread(
         restore_argus_schema,
