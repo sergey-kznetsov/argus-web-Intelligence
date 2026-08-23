@@ -4,28 +4,15 @@
     "module_id": "argus.web.intelligence",
     "display_name": "ARGUS Web Intelligence",
     "description": "Скрытый инфраструктурный backend сбора и доказательного хранения данных из публичных интернет-источников для серверных аналитических модулей.",
-    "module_version": "0.2.0",
+    "module_version": "0.3.0",
     "protocol_version": "1.0.0"
   },
   "runtime": {
     "kind": "python",
     "python": ">=3.11,<3.14",
     "install": [
-      [
-        "{python}",
-        "-m",
-        "pip",
-        "install",
-        "--disable-pip-version-check",
-        "."
-      ],
-      [
-        "{python}",
-        "-m",
-        "playwright",
-        "install",
-        "chromium"
-      ]
+      ["{python}", "-m", "pip", "install", "--disable-pip-version-check", "."],
+      ["{python}", "-m", "playwright", "install", "chromium"]
     ]
   },
   "database": {
@@ -38,70 +25,36 @@
       ["{python}", "-m", "argus.storage.cli", "check"]
     ]
   },
-  "secrets": {
-    "auth_token_file_env": "ARGUS_TOKEN_FILE"
-  },
+  "secrets": {"auth_token_file_env": "ARGUS_TOKEN_FILE"},
   "processes": [
     {
       "id": "api",
       "role": "module_api",
-      "command": [
-        "{python}",
-        "-m",
-        "uvicorn",
-        "argus.api.app:app",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "{api_port}"
-      ],
+      "command": ["{python}", "-m", "uvicorn", "argus.api.app:app", "--host", "127.0.0.1", "--port", "{api_port}"],
       "environment": {
         "ARGUS_EXECUTION_ROLE": "api",
         "ARGUS_STORAGE_BACKEND": "postgresql",
         "ARGUS_LOG_LEVEL": "INFO",
         "PYTHONUNBUFFERED": "1"
       },
-      "health": {
-        "path": "/v1/health",
-        "authenticated": true
-      }
+      "health": {"path": "/v1/health", "authenticated": true}
     },
     {
       "id": "worker",
       "role": "worker",
-      "command": [
-        "{python}",
-        "-m",
-        "argus.worker",
-        "--probe-host",
-        "127.0.0.1",
-        "--probe-port",
-        "{worker_probe_port}"
-      ],
+      "command": ["{python}", "-m", "argus.worker", "--probe-host", "127.0.0.1", "--probe-port", "{worker_probe_port}"],
       "environment": {
         "ARGUS_EXECUTION_ROLE": "worker",
         "ARGUS_STORAGE_BACKEND": "postgresql",
         "ARGUS_LOG_LEVEL": "INFO",
         "PYTHONUNBUFFERED": "1"
       },
-      "health": {
-        "path": "/readyz",
-        "port": "worker_probe_port",
-        "authenticated": false
-      }
+      "health": {"path": "/readyz", "port": "worker_probe_port", "authenticated": false}
     }
   ],
   "ports": {
-    "api": {
-      "placeholder": "api_port",
-      "preferred": 9180,
-      "host": "127.0.0.1"
-    },
-    "worker_probe": {
-      "placeholder": "worker_probe_port",
-      "preferred": 9181,
-      "host": "127.0.0.1"
-    }
+    "api": {"placeholder": "api_port", "preferred": 9180, "host": "127.0.0.1"},
+    "worker_probe": {"placeholder": "worker_probe_port", "preferred": 9181, "host": "127.0.0.1"}
   },
   "integration": {
     "endpoint_process": "api",
