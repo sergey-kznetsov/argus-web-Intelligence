@@ -41,6 +41,7 @@ def _repository(settings: Settings, dsn: str) -> PostgresRepository:
         min_size=settings.postgres_pool_min_size,
         max_size=settings.postgres_pool_max_size,
         timeout_seconds=settings.postgres_pool_timeout_seconds,
+        max_waiting=settings.postgres_pool_max_waiting,
     )
 
 
@@ -96,6 +97,7 @@ async def _operations() -> None:
                 "max_active_collections": settings.queue_max_active_collections,
                 "max_active_per_consumer": settings.queue_max_active_per_consumer,
                 "idempotency_window_seconds": settings.idempotency_window_seconds,
+                "postgres_pool": repository.pool_stats(),
             }
         )
         print(json.dumps(payload, ensure_ascii=False))
