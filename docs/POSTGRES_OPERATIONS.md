@@ -118,12 +118,33 @@ Automatic passes run from workers under one PostgreSQL advisory lock. Current ru
 - stale idempotency mappings and worker registrations are bounded-cleaned;
 - old snapshots are cleaned in bounded batches, while the newest snapshot for each source URL remains available as the next diff baseline.
 
+## JSONB and relation growth
+
+Inspect actual storage growth without loading stored JSONB into ARGUS memory:
+
+```bash
+python -m argus.storage.cli storage-stats
+```
+
+The command uses PostgreSQL-native size functions and reports:
+
+- row count for each JSONB-bearing ARGUS table;
+- sum, average and maximum `pg_column_size(body)`;
+- table bytes, index bytes and total relation bytes including TOAST where PostgreSQL accounts for it;
+- the table holding the largest aggregate JSONB volume;
+- the table containing the largest individual JSONB row.
+
+The audited JSONB tables are `collections`, `observations`, `evidence`, `snapshots` and `site_recipes`. Relation sizes also include leases, worker registrations, idempotency, result-access markers and migration metadata.
+
+A large result is not automatically truncated at the database layer because doing so could silently corrupt factual Evidence. Growth is controlled first by crawler/extractor/result limits and retention, then observed with these database metrics. Unexpected increases in maximum row size or total relation bytes are investigated before raising limits.
+
 ## Operational inspection
 
 ```bash
 python -m argus.storage.cli operations
+python -m argus.storage.cli storage-stats
 ```
 
-The command reports queue/worker/lease state and PostgreSQL pool statistics without reading complete CollectionResult payloads into memory.
+`operations` reports queue/worker/lease state and PostgreSQL pool statistics. `storage-stats` reports JSONB and physical relation growth. Neither command reads complete CollectionResult payloads into Python memory.
 
 For incident recovery, preserve the failing archive, manifest, ARGUS version, schema version and relevant secret-safe logs. Do not edit a backup manifest to force a mismatched archive through verification.
