@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from argus.contracts.models import CollectionRecord, Evidence, Observation, Snapshot
 from argus.recipes.models import SiteRecipe
@@ -22,3 +22,37 @@ class Repository(Protocol):
     async def latest_snapshot(self, source_url: str) -> Snapshot | None: ...
     async def save_recipe(self, recipe: SiteRecipe) -> None: ...
     async def get_recipe(self, domain: str, goal: str) -> SiteRecipe | None: ...
+
+
+class WorkerQueueRepository(Repository, Protocol):
+    async def register_worker(
+        self,
+        worker_id: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> None: ...
+
+    async def heartbeat_worker(self, worker_id: str) -> bool: ...
+    async def unregister_worker(self, worker_id: str) -> None: ...
+    async def active_worker_count(self, *, max_age_seconds: float) -> int: ...
+
+    async def claim_next_collection(
+        self,
+        worker_id: str,
+        *,
+        lease_seconds: float,
+    ) -> str | None: ...
+
+    async def renew_collection_lease(
+        self,
+        collection_id: str,
+        worker_id: str,
+        *,
+        lease_seconds: float,
+    ) -> bool: ...
+
+    async def release_collection_lease(
+        self,
+        collection_id: str,
+        worker_id: str,
+    ) -> None: ...
