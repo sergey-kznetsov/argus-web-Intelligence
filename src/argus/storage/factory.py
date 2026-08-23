@@ -21,5 +21,6 @@ def build_repository(settings: Settings) -> Repository:
             min_size=settings.postgres_pool_min_size,
             max_size=settings.postgres_pool_max_size,
             timeout_seconds=settings.postgres_pool_timeout_seconds,
+            max_waiting=settings.postgres_pool_max_waiting,
         )
     raise RuntimeError(f"unsupported ARGUS storage backend: {settings.storage_backend}")
