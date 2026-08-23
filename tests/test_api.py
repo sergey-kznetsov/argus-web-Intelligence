@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from argus.api.app import create_app
 from argus.config import Settings
+from argus.module_protocol import MODULE_ID
 
 
 def auth_headers(settings: Settings) -> dict[str, str]:
@@ -14,7 +15,28 @@ def auth_headers(settings: Settings) -> dict[str, str]:
 def test_health_and_auth(tmp_path: Path):
     settings = Settings(db_path=tmp_path / "db.sqlite", token_file=tmp_path / "token")
     with TestClient(create_app(settings)) as client:
-        assert client.get("/v1/health").status_code == 200
+        health_response = client.get("/v1/health")
+        assert health_response.status_code == 200
+        health = health_response.json()
+        assert health["protocol_version"] == "1.0.0"
+        assert health["module_id"] == MODULE_ID
+        assert health["status"] == "ok"
+        assert health["checks"]["database"]["backend"] == "sqlite"
+        assert client.head("/v1/health").status_code == 200
+
+        assert client.get("/v1/manifest").status_code == 401
+        manifest_response = client.get("/v1/manifest", headers=auth_headers(settings))
+        assert manifest_response.status_code == 200
+        manifest = manifest_response.json()
+        assert manifest["protocol_version"] == "1.0.0"
+        assert manifest["module_id"] == MODULE_ID
+        assert manifest["ui"] == {
+            "optional": False,
+            "default_enabled": True,
+            "analysis_launch_toggle": False,
+            "capability_card": False,
+        }
+
         assert client.get("/v1/capabilities").status_code == 401
         response = client.get("/v1/capabilities", headers=auth_headers(settings))
         assert response.status_code == 200
