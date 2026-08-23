@@ -177,44 +177,16 @@ class CollectionOrchestrator:
                         intent for intent in record.request.intents if intent not in covered_intents
                     ]
                     if self.discovery is not None and uncovered_intents:
-                        discovery_request = record.request.model_copy(
-                            update={"intents": uncovered_intents}
+                        (
+                            pending,
+                            discovery_queries,
+                            discovery_providers,
+                            discovery_blocked,
+                        ) = await self._discover_uncovered_intents(
+                            record,
+                            pending,
+                            uncovered_intents,
                         )
-                        discovery_plan = (
-                            plan
-                            if uncovered_intents == record.request.intents
-                            else await self.planner.plan(discovery_request)
-                        )
-                        discovery_queries = discovery_plan.queries
-                        if discovery_queries:
-                            record.stage = "discovery"
-                            record.updated_at = now()
-                            await self.repository.update_collection(record)
-                            outcome = await self.discovery.discover(
-                                discovery_queries,
-                                discovery_request,
-                            )
-                            discovery_providers = outcome.providers_attempted
-                            discovery_blocked = outcome.blocked
-                            record.errors.extend(outcome.errors)
-                            pending = self._merge_tasks(
-                                pending,
-                                outcome.tasks,
-                                record.collection_id,
-                            )
-                            if outcome.errors:
-                                logger.warning(
-                                    "discovery provider degraded",
-                                    extra=_log_extra(
-                                        record,
-                                        "discovery_error",
-                                        error_code=(
-                                            "DISCOVERY_BLOCKED"
-                                            if outcome.blocked
-                                            else "DISCOVERY_ERROR"
-                                        ),
-                                    ),
-                                )
                     pending = self._merge_tasks(pending, plan.tasks, record.collection_id)
                     planning_complete = True
 
@@ -307,6 +279,82 @@ class CollectionOrchestrator:
             finally:
                 self._cancelled.discard(collection_id)
 
+    async def _discover_uncovered_intents(
+        self,
+        record: CollectionRecord,
+        pending: list[SourceTask],
+        uncovered_intents: list[str],
+    ) -> tuple[list[SourceTask], list[str], list[str], bool]:
+        if self.discovery is None:
+            return pending, [], [], False
+
+        query_budget = max(1, int(getattr(self.discovery, "max_queries", 8)))
+        remaining_queries = query_budget
+        discovery_queries: list[str] = []
+        discovery_providers: list[str] = []
+        discovery_blocked = False
+
+        record.stage = "discovery"
+        record.updated_at = now()
+        await self.repository.update_collection(record)
+
+        for index, intent in enumerate(uncovered_intents):
+            if remaining_queries <= 0:
+                remaining_intents = uncovered_intents[index:]
+                record.errors.append(
+                    StructuredError(
+                        code="DISCOVERY_QUERY_BUDGET_EXHAUSTED",
+                        message=(
+                            "Discovery query budget was exhausted before all uncovered intents "
+                            f"could be researched: {', '.join(remaining_intents)}"
+                        ),
+                        retryable=False,
+                        source_id="discovery",
+                    )
+                )
+                break
+
+            intent_request = record.request.model_copy(update={"intents": [intent]})
+            intent_plan = await self.planner.plan(intent_request)
+            remaining_intent_count = len(uncovered_intents) - index
+            allocation = max(1, remaining_queries // remaining_intent_count)
+            queries = [query for query in intent_plan.queries if query.strip()][:allocation]
+            if not queries:
+                record.errors.append(
+                    StructuredError(
+                        code="DISCOVERY_NO_QUERIES",
+                        message=f"Research planner produced no discovery queries for intent '{intent}'.",
+                        retryable=False,
+                        source_id="discovery",
+                    )
+                )
+                continue
+
+            remaining_queries -= len(queries)
+            discovery_queries.extend(queries)
+            outcome = await self.discovery.discover(queries, intent_request)
+            discovery_blocked = discovery_blocked or outcome.blocked
+            for provider in outcome.providers_attempted:
+                if provider not in discovery_providers:
+                    discovery_providers.append(provider)
+            record.errors.extend(outcome.errors)
+            pending = self._merge_tasks(pending, outcome.tasks, record.collection_id)
+
+            if outcome.errors:
+                logger.warning(
+                    "discovery provider degraded",
+                    extra=_log_extra(
+                        record,
+                        "discovery_error",
+                        intent=intent,
+                        error_code=(
+                            "DISCOVERY_BLOCKED" if outcome.blocked else outcome.errors[0].code
+                        ),
+                    ),
+                )
+
+        return pending, discovery_queries, discovery_providers, discovery_blocked
+
     async def _initial_tasks(self, record: CollectionRecord) -> tuple[list[SourceTask], set[str]]:
         tasks: list[SourceTask] = []
         seen: set[str] = set()
@@ -314,11 +362,8 @@ class CollectionOrchestrator:
         requested_intents = set(record.request.intents)
         for adapter in self.registry.for_intents(record.request.intents):
             discovered = await adapter.discover(record.request)
-            if discovered:
-                if "*" in adapter.intents:
-                    covered_intents.update(requested_intents)
-                else:
-                    covered_intents.update(requested_intents & adapter.intents)
+            if discovered and "*" not in adapter.intents:
+                covered_intents.update(requested_intents & adapter.intents)
             for task in discovered:
                 task.metadata["collection_id"] = record.collection_id
                 key = task.dedupe_key
