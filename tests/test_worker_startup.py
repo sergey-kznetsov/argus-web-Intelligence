@@ -58,6 +58,7 @@ async def test_worker_startup_rolls_back_registration_when_probe_port_is_busy(
     assert register_calls == 0
     assert worker._started is False
     assert worker._heartbeat_task is None
+    assert worker._maintenance_task is None
     assert worker._probe_server is None
 
     with psycopg.connect(dsn) as conn:
