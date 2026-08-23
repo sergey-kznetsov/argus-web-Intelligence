@@ -20,7 +20,11 @@ from argus.contracts.models import (
     CollectionRecord,
     CollectionRequest,
     CollectionResult,
+    CollectionResultSummary,
     CollectionStatus,
+    EvidencePage,
+    ObservationPage,
+    ResultDeliveryLimits,
     utcnow,
 )
 from argus.idempotency import request_fingerprint, storage_idempotency_key
@@ -29,12 +33,27 @@ from argus.observability import configure_logging
 from argus.pagination import (
     InvalidCursorError,
     decode_collection_cursor,
+    decode_result_cursor,
     encode_collection_cursor,
+    encode_result_cursor,
+)
+from argus.result_delivery import (
+    ResultReadStore,
+    ResultTooLargeError,
+    SQLiteResultReadStore,
 )
 from argus.security.auth import bearer_dependency, ensure_token
 from argus.security.request_limits import RequestSizeLimitMiddleware
 from argus.storage.base import IdempotencyConflictError, QueueCapacityError
 from argus.storage.postgres_operations import PostgresOperationsStore
+
+_TERMINAL_RESULT_STATUSES = {
+    CollectionStatus.COMPLETED,
+    CollectionStatus.PARTIAL,
+    CollectionStatus.BLOCKED,
+    CollectionStatus.FAILED,
+    CollectionStatus.CANCELLED,
+}
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -45,25 +64,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     registry = services.registry
     orchestrator = services.orchestrator
     require_bearer = bearer_dependency(settings)
+
     operations_store: PostgresOperationsStore | None = None
-    if settings.execution_role == "api":
+    result_store: ResultReadStore
+    if settings.storage_backend == "postgresql":
         dsn = settings.database_dsn_value()
         if not dsn:
-            raise RuntimeError("server API operations require PostgreSQL DSN")
-        operations_store = PostgresOperationsStore(dsn)
+            raise RuntimeError("PostgreSQL API reads require a database DSN")
+        postgres_read_store = PostgresOperationsStore(
+            dsn,
+            min_size=0,
+            max_size=max(1, min(4, settings.postgres_pool_max_size)),
+            timeout_seconds=settings.postgres_pool_timeout_seconds,
+        )
+        result_store = postgres_read_store
+        if settings.execution_role == "api":
+            operations_store = postgres_read_store
+    else:
+        result_store = SQLiteResultReadStore(settings.db_path)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         ensure_token(settings)
         await services.start()
+        try:
+            await result_store.initialize()
+        except BaseException:
+            await services.shutdown()
+            raise
         app.state.services = services
         app.state.repository = repository
         app.state.registry = registry
         app.state.map_registry = services.map_registry
         app.state.orchestrator = orchestrator
+        app.state.result_store = result_store
         try:
             yield
         finally:
+            await result_store.close()
             await services.shutdown()
 
     app = FastAPI(title="ARGUS Web Intelligence", version=__version__, lifespan=lifespan)
@@ -95,6 +133,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ready = ready and worker_status == "ok"
         return ready, checks
 
+    def delivery_limits() -> ResultDeliveryLimits:
+        return ResultDeliveryLimits(
+            full_result_max_items=settings.api_full_result_max_items,
+            full_result_max_bytes=settings.api_full_result_max_bytes,
+            page_max_size=settings.api_result_page_max_size,
+        )
+
     @app.get("/v1/manifest", dependencies=[Depends(require_bearer)])
     async def manifest():
         return runtime_manifest()
@@ -121,6 +166,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "storage": settings.storage_backend,
             "execution_role": settings.execution_role,
             "api_max_request_bytes": settings.api_max_request_bytes,
+            "result_delivery": {
+                "full_result_max_items": settings.api_full_result_max_items,
+                "full_result_max_bytes": settings.api_full_result_max_bytes,
+                "page_default_size": settings.api_result_page_default_size,
+                "page_max_size": settings.api_result_page_max_size,
+                "pagination": "opaque_keyset",
+                "paged_results_require_terminal_status": True,
+            },
             "queue_backend": "postgresql_leases" if server_queue else "embedded",
             "idempotent_submission": settings.execution_role == "api",
             "idempotency_window_seconds": (
@@ -310,15 +363,187 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return record
 
     @app.get(
+        "/v1/collections/{collection_id}/result/summary",
+        response_model=CollectionResultSummary,
+        dependencies=[Depends(require_bearer)],
+    )
+    async def collection_result_summary(collection_id: str):
+        payload = await result_store.result_stats(collection_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="collection not found")
+        record, stats = payload
+        full_available = (
+            stats.total_items <= settings.api_full_result_max_items
+            and stats.stored_bytes <= settings.api_full_result_max_bytes
+        )
+        return CollectionResultSummary(
+            collection_id=collection_id,
+            analysis_id=record.request.analysis_id,
+            consumer=record.request.consumer,
+            status=record.status,
+            partial=record.partial,
+            observation_count=stats.observation_count,
+            evidence_count=stats.evidence_count,
+            stored_bytes=stats.stored_bytes,
+            full_result_available=full_available,
+            delivery_limits=delivery_limits(),
+            coverage=record.coverage,
+            errors=record.errors,
+        )
+
+    @app.get(
         "/v1/collections/{collection_id}/result",
         response_model=CollectionResult,
         dependencies=[Depends(require_bearer)],
     )
     async def collection_result(collection_id: str):
-        result = await orchestrator.result(collection_id)
-        if not result:
+        try:
+            bundle = await result_store.read_bounded_result(
+                collection_id,
+                max_items=settings.api_full_result_max_items,
+                max_bytes=settings.api_full_result_max_bytes,
+            )
+        except ResultTooLargeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "RESULT_REQUIRES_PAGINATION",
+                    "observation_count": exc.stats.observation_count,
+                    "evidence_count": exc.stats.evidence_count,
+                    "stored_bytes": exc.stats.stored_bytes,
+                    "summary": f"/v1/collections/{collection_id}/result/summary",
+                    "observations": f"/v1/collections/{collection_id}/result/observations",
+                    "evidence": f"/v1/collections/{collection_id}/result/evidence",
+                },
+            ) from exc
+        if bundle is None:
             raise HTTPException(status_code=404, detail="collection not found")
-        return result
+        record = bundle.record
+        return CollectionResult(
+            collection_id=collection_id,
+            analysis_id=record.request.analysis_id,
+            consumer=record.request.consumer,
+            status=record.status,
+            partial=record.partial,
+            observations=bundle.observations,
+            evidence=bundle.evidence,
+            coverage=record.coverage,
+            errors=record.errors,
+        )
+
+    @app.get(
+        "/v1/collections/{collection_id}/result/observations",
+        response_model=ObservationPage,
+        dependencies=[Depends(require_bearer)],
+    )
+    async def collection_result_observations(
+        collection_id: str,
+        limit: int = Query(
+            default=settings.api_result_page_default_size,
+            ge=1,
+            le=settings.api_result_page_max_size,
+        ),
+        cursor: str | None = Query(default=None, max_length=2048),
+    ) -> ObservationPage:
+        after_id = None
+        if cursor is not None:
+            try:
+                after_id = decode_result_cursor(
+                    cursor,
+                    collection_id=collection_id,
+                    kind="observation",
+                ).item_id
+            except InvalidCursorError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="invalid observation pagination cursor",
+                ) from exc
+        page = await result_store.observation_page(
+            collection_id,
+            after_id=after_id,
+            limit=limit,
+        )
+        if page is None:
+            raise HTTPException(status_code=404, detail="collection not found")
+        if page.record.status not in _TERMINAL_RESULT_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "RESULT_NOT_FINAL",
+                    "status": page.record.status.value,
+                },
+            )
+        next_cursor = None
+        if page.has_more and page.items:
+            next_cursor = encode_result_cursor(
+                collection_id,
+                "observation",
+                page.items[-1].observation_id,
+            )
+        return ObservationPage(
+            collection_id=collection_id,
+            status=page.record.status,
+            total_count=page.total_count,
+            items=page.items,
+            next_cursor=next_cursor,
+        )
+
+    @app.get(
+        "/v1/collections/{collection_id}/result/evidence",
+        response_model=EvidencePage,
+        dependencies=[Depends(require_bearer)],
+    )
+    async def collection_result_evidence(
+        collection_id: str,
+        limit: int = Query(
+            default=settings.api_result_page_default_size,
+            ge=1,
+            le=settings.api_result_page_max_size,
+        ),
+        cursor: str | None = Query(default=None, max_length=2048),
+    ) -> EvidencePage:
+        after_id = None
+        if cursor is not None:
+            try:
+                after_id = decode_result_cursor(
+                    cursor,
+                    collection_id=collection_id,
+                    kind="evidence",
+                ).item_id
+            except InvalidCursorError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="invalid evidence pagination cursor",
+                ) from exc
+        page = await result_store.evidence_page(
+            collection_id,
+            after_id=after_id,
+            limit=limit,
+        )
+        if page is None:
+            raise HTTPException(status_code=404, detail="collection not found")
+        if page.record.status not in _TERMINAL_RESULT_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "RESULT_NOT_FINAL",
+                    "status": page.record.status.value,
+                },
+            )
+        next_cursor = None
+        if page.has_more and page.items:
+            next_cursor = encode_result_cursor(
+                collection_id,
+                "evidence",
+                page.items[-1].evidence_id,
+            )
+        return EvidencePage(
+            collection_id=collection_id,
+            status=page.record.status,
+            total_count=page.total_count,
+            items=page.items,
+            next_cursor=next_cursor,
+        )
 
     @app.post(
         "/v1/collections/{collection_id}/cancel",
