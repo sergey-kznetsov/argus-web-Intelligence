@@ -122,18 +122,22 @@ class PostgresRepository:
             )
 
     async def update_collection(self, record: CollectionRecord) -> None:
+        """Persist collection state without allowing stale workers to resurrect cancellation."""
+
         async with self._pool.connection() as conn:
             await conn.execute(
                 """
                 UPDATE argus.collections
                 SET status=%s, body=%s, updated_at=%s
                 WHERE collection_id=%s
+                  AND (status <> 'cancelled' OR %s = 'cancelled')
                 """,
                 (
                     record.status.value,
                     Jsonb(record.model_dump(mode="json")),
                     record.updated_at,
                     record.collection_id,
+                    record.status.value,
                 ),
             )
 
@@ -339,11 +343,19 @@ class PostgresRepository:
             await conn.execute(
                 f"""
                 INSERT INTO argus.{table}({id_column}, collection_id, body)
-                VALUES(%s, %s, %s)
+                SELECT %s, %s, %s
+                WHERE EXISTS (
+                  SELECT 1 FROM argus.collections
+                  WHERE collection_id=%s AND status <> 'cancelled'
+                )
                 ON CONFLICT ({id_column}) DO UPDATE
                 SET collection_id=EXCLUDED.collection_id, body=EXCLUDED.body
+                WHERE EXISTS (
+                  SELECT 1 FROM argus.collections
+                  WHERE collection_id=%s AND status <> 'cancelled'
+                )
                 """,
-                (item_id, collection_id, Jsonb(body)),
+                (item_id, collection_id, Jsonb(body), collection_id, collection_id),
             )
 
     async def _list_collection_json(
