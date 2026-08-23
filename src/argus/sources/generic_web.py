@@ -11,6 +11,7 @@ from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.crawler.models import FetchResult
 from argus.extraction.jsonld import EmbeddedJsonLdExtractor, JsonLdExtraction
+from argus.extraction.page_metadata import PageMetadataExtraction, extract_page_metadata
 from argus.history.snapshots import SnapshotService, sha256_text
 from argus.normalization.identity import stable_evidence_id, stable_observation_id
 from argus.recipes.compiler import AgentRecipeCompiler
@@ -190,6 +191,11 @@ class GenericWebAdapter:
         content_hash = sha256_text(text)
         research_goals = self._research_goals(task)
         json_ld = self.json_ld_extractor.extract(fetched.text, fetched.content_type)
+        page_metadata = extract_page_metadata(
+            fetched.text,
+            content_type=fetched.content_type,
+            base_url=fetched.final_url,
+        )
         observation_id = stable_observation_id(
             collection_id=collection_id,
             source_id=self.source_id,
@@ -206,6 +212,10 @@ class GenericWebAdapter:
                 "blocks_invalid": json_ld.blocks_invalid,
                 "blocks_oversized": json_ld.blocks_oversized,
                 "entities": len(json_ld.entities),
+            },
+            "page_metadata_summary": {
+                "fields": len(page_metadata.fields),
+                "truncated": page_metadata.truncated,
             },
         }
         if fetched.metadata:
@@ -277,6 +287,17 @@ class GenericWebAdapter:
         )
         observations.extend(structured_observations)
         evidence_items.extend(structured_evidence)
+        metadata_observation, metadata_evidence = self._page_metadata_observation(
+            page_metadata,
+            collection_id=collection_id,
+            request=request,
+            source_url=fetched.final_url,
+            snapshot_id=snapshot.snapshot_id,
+            research_goals=research_goals,
+        )
+        if metadata_observation is not None and metadata_evidence is not None:
+            observations.append(metadata_observation)
+            evidence_items.append(metadata_evidence)
         discovered = self._discovered_tasks(task, fetched, request, observation.collection_id)
         return SourceResult(
             observations=observations,
@@ -373,6 +394,109 @@ class GenericWebAdapter:
             evidence_items.append(evidence)
         return observations, evidence_items
 
+    def _page_metadata_observation(
+        self,
+        extraction: PageMetadataExtraction,
+        *,
+        collection_id: str,
+        request: CollectionRequest,
+        source_url: str,
+        snapshot_id: str,
+        research_goals: list[str],
+    ) -> tuple[Observation | None, Evidence | None]:
+        if not extraction.fields:
+            return None, None
+        canonical = json.dumps(
+            extraction.fields,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        content_hash = sha256_text(canonical)
+        entity_id = extraction.canonical_url or source_url
+        observation_id = stable_observation_id(
+            collection_id=collection_id,
+            source_id=self.source_id,
+            entity_type="document_metadata",
+            entity_id=entity_id,
+            source_url=source_url,
+            content_hash=content_hash,
+        )
+        title = self._metadata_string(
+            extraction.fields,
+            "og_title",
+            "dcterms_title",
+            "dc_title",
+        )
+        description = self._metadata_string(
+            extraction.fields,
+            "og_description",
+            "description",
+            "dcterms_description",
+            "dc_description",
+        )
+        observation = Observation(
+            observation_id=observation_id,
+            collection_id=collection_id,
+            analysis_id=request.analysis_id,
+            consumer=request.consumer,
+            source=self.source_id,
+            source_kind="page_metadata",
+            url=source_url,
+            entity_type="document_metadata",
+            entity_id=entity_id,
+            title=title,
+            text=description,
+            data=extraction.fields,
+            published_at=extraction.published_at,
+            content_hash=content_hash,
+            provenance={
+                "snapshot_id": snapshot_id,
+                "page_url": source_url,
+                "canonical_url": extraction.canonical_url,
+                "research_goals": research_goals,
+                "extractor": extraction.extractor_version,
+                "truncated_scan": extraction.truncated,
+            },
+            quality={
+                "evidence_backed": True,
+                "machine_readable": True,
+                "source_declared": True,
+            },
+        )
+        evidence_text = canonical[:10_000]
+        evidence = Evidence(
+            evidence_id=stable_evidence_id(
+                observation_id=observation.observation_id,
+                evidence_type="page_metadata",
+                source_url=source_url,
+                text=evidence_text,
+            ),
+            observation_id=observation.observation_id,
+            type="page_metadata",
+            text=evidence_text,
+            source=EvidenceSource(
+                provider=self.source_id,
+                url=source_url,
+                collected_at=observation.collected_at,
+                source_id=self.source_id,
+            ),
+            metadata={
+                "canonical_url": extraction.canonical_url,
+                "research_goals": research_goals,
+                "extractor": extraction.extractor_version,
+            },
+        )
+        return observation, evidence
+
+    @staticmethod
+    def _metadata_string(fields: dict[str, object], *keys: str) -> str | None:
+        for key in keys:
+            value = fields.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
     async def normalize(self, result: SourceResult) -> SourceResult:
         return result
 
@@ -384,6 +508,7 @@ class GenericWebAdapter:
             "recipes_enabled": self.recipes is not None,
             "sitemap_discovery_enabled": self.sitemap_discovery_enabled,
             "json_ld_extraction": True,
+            "page_metadata_extraction": True,
         }
 
     def _discovered_tasks(
