@@ -28,6 +28,15 @@ def test_snapshot_retention_cannot_be_shorter_than_collection_retention():
         )
 
 
+def test_result_access_retention_grace_defaults_to_one_hour():
+    assert Settings().retention_result_access_grace_seconds == 3600
+
+
+def test_result_access_retention_grace_cannot_be_too_short():
+    with pytest.raises(ValidationError):
+        Settings(retention_result_access_grace_seconds=59)
+
+
 def test_result_page_default_cannot_exceed_page_maximum():
     with pytest.raises(ValidationError):
         Settings(
