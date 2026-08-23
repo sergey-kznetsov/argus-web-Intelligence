@@ -17,6 +17,7 @@ from argus.storage.postgres_migrations import (
     current_postgres_schema_version,
     run_postgres_migrations,
 )
+from argus.storage.postgres_storage_stats import postgres_storage_stats
 
 
 def _settings_and_dsn() -> tuple[Settings, str]:
@@ -103,6 +104,11 @@ async def _operations() -> None:
         print(json.dumps(payload, ensure_ascii=False))
     finally:
         await repository.close()
+
+
+async def _storage_stats() -> None:
+    payload = await postgres_storage_stats(_dsn())
+    print(json.dumps({"status": "ok", **payload}, ensure_ascii=False))
 
 
 async def _retention() -> None:
@@ -227,6 +233,7 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("migrate")
     commands.add_parser("check")
     commands.add_parser("operations")
+    commands.add_parser("storage-stats")
     commands.add_parser("retention")
 
     backup = commands.add_parser("backup")
@@ -250,6 +257,8 @@ def main() -> None:
         asyncio.run(_check())
     elif args.command == "operations":
         asyncio.run(_operations())
+    elif args.command == "storage-stats":
+        asyncio.run(_storage_stats())
     elif args.command == "retention":
         asyncio.run(_retention())
     elif args.command == "backup":
