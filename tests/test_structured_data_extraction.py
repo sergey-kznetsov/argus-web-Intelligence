@@ -66,3 +66,16 @@ def test_csv_record_limit_marks_normalized_payload_partial():
     assert result.truncated is True
     assert result.rows_extracted == 2
     assert len(result.payload["records"]) == 2
+
+
+def test_pathological_json_nesting_becomes_explicit_limit_error():
+    body = ("[" * 1500 + "0" + "]" * 1500).encode()
+
+    result = extractor(max_bytes=20_000).extract(
+        body,
+        content_type="application/json",
+        url="https://example.com/deep.json",
+    )
+
+    assert result.payload is None
+    assert result.error_code == "STRUCTURED_DATA_LIMIT_EXCEEDED"
