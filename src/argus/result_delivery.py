@@ -161,9 +161,13 @@ class SQLiteResultReadStore:
             SELECT
               (SELECT COUNT(*) FROM observations WHERE collection_id=?) AS observations,
               (SELECT COUNT(*) FROM evidence WHERE collection_id=?) AS evidence,
-              COALESCE((SELECT SUM(LENGTH(body)) FROM observations WHERE collection_id=?), 0)
-                + COALESCE((SELECT SUM(LENGTH(body)) FROM evidence WHERE collection_id=?), 0)
-                AS stored_bytes
+              COALESCE((
+                SELECT SUM(LENGTH(CAST(body AS BLOB)))
+                FROM observations WHERE collection_id=?
+              ), 0) + COALESCE((
+                SELECT SUM(LENGTH(CAST(body AS BLOB)))
+                FROM evidence WHERE collection_id=?
+              ), 0) AS stored_bytes
             """,
             (collection_id, collection_id, collection_id, collection_id),
         ).fetchone()
