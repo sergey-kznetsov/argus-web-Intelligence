@@ -33,8 +33,6 @@ def _apply_memory_limit(memory_mb: int) -> None:
     try:
         resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
     except (OSError, ValueError):
-        # Windows does not expose resource, while some Unix/container configurations do
-        # not permit lowering RLIMIT_AS. The parent wall-clock/process isolation still applies.
         return
 
 
@@ -130,7 +128,7 @@ def _extract_pdf_worker(
                 "error_message": "PDF extraction exceeded its memory limit",
             },
         )
-    except BaseException as exc:
+    except Exception as exc:
         _send(
             connection,
             {
@@ -184,7 +182,16 @@ class BoundedPdfExtractor:
             name="argus-pdf-extractor",
             daemon=True,
         )
-        process.start()
+        try:
+            process.start()
+        except Exception as exc:
+            receiver.close()
+            sender.close()
+            return PdfExtraction(
+                error_code="PDF_EXTRACTOR_START_FAILED",
+                error_message=f"PDF extractor could not start: {type(exc).__name__}",
+            )
+
         sender.close()
         payload: dict[str, Any] | None = None
         try:
@@ -216,7 +223,11 @@ class BoundedPdfExtractor:
         return PdfExtraction(
             text=str(payload.get("text") or "")[: self.max_text_chars],
             title=(str(payload["title"])[:1_000] if payload.get("title") else None),
-            page_count=(int(payload["page_count"]) if payload.get("page_count") is not None else None),
+            page_count=(
+                int(payload["page_count"])
+                if payload.get("page_count") is not None
+                else None
+            ),
             pages_extracted=max(0, int(payload.get("pages_extracted") or 0)),
             truncated=bool(payload.get("truncated", False)),
             encrypted=bool(payload.get("encrypted", False)),
