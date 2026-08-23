@@ -50,12 +50,14 @@ class RetentionResult:
     idempotency_deleted: int = 0
     collections_deleted: int = 0
     snapshots_deleted: int = 0
+    workers_deleted: int = 0
 
     def as_dict(self) -> dict[str, int]:
         return {
             "idempotency_deleted": self.idempotency_deleted,
             "collections_deleted": self.collections_deleted,
             "snapshots_deleted": self.snapshots_deleted,
+            "workers_deleted": self.workers_deleted,
         }
 
 
@@ -107,6 +109,7 @@ class WorkerQueueRepository(Repository, Protocol):
         idempotency_window_seconds: int,
         collection_retention_days: int,
         snapshot_retention_days: int,
+        worker_registration_retention_days: int,
         batch_size: int,
     ) -> RetentionResult: ...
 
