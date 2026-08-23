@@ -1,0 +1,25 @@
+from __future__ import annotations
+
+from argus.config import Settings
+from argus.storage.base import Repository
+from argus.storage.postgres import PostgresRepository
+from argus.storage.sqlite import SQLiteRepository
+
+
+def build_repository(settings: Settings) -> Repository:
+    if settings.storage_backend == "sqlite":
+        return SQLiteRepository(settings.db_path)
+    if settings.storage_backend == "postgresql":
+        dsn = settings.database_dsn_value()
+        if not dsn:
+            raise RuntimeError(
+                "ARGUS PostgreSQL storage requires a DSN from the deployment manager "
+                "or ARGUS_DATABASE_DSN[_FILE]"
+            )
+        return PostgresRepository(
+            dsn,
+            min_size=settings.postgres_pool_min_size,
+            max_size=settings.postgres_pool_max_size,
+            timeout_seconds=settings.postgres_pool_timeout_seconds,
+        )
+    raise RuntimeError(f"unsupported ARGUS storage backend: {settings.storage_backend}")
