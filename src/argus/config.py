@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     retention_worker_registration_days: int = Field(default=7, ge=1, le=3650)
     retention_batch_size: int = Field(default=500, ge=1, le=10_000)
 
+    api_max_request_bytes: int = Field(default=1024 * 1024, ge=4096, le=16 * 1024 * 1024)
     log_level: str = "INFO"
     max_response_bytes: int = Field(default=5 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     http_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
