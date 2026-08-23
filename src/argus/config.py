@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     retention_collection_days: int = Field(default=180, ge=1, le=3650)
     retention_snapshot_days: int = Field(default=365, ge=1, le=3650)
     retention_worker_registration_days: int = Field(default=7, ge=1, le=3650)
+    retention_result_access_grace_seconds: int = Field(default=3600, ge=60, le=604_800)
     retention_batch_size: int = Field(default=500, ge=1, le=10_000)
 
     api_max_request_bytes: int = Field(default=1024 * 1024, ge=4096, le=16 * 1024 * 1024)
