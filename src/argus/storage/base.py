@@ -93,6 +93,17 @@ class Repository(Protocol):
     async def get_recipe(self, domain: str, goal: str) -> SiteRecipe | None: ...
 
 
+class AtomicTaskRepository(Repository, Protocol):
+    async def commit_task_success(
+        self,
+        record: CollectionRecord,
+        *,
+        observations: list[Observation],
+        evidence: list[Evidence],
+        snapshots: list[Snapshot],
+    ) -> None: ...
+
+
 class WorkerQueueRepository(Repository, Protocol):
     async def register_worker(
         self,
