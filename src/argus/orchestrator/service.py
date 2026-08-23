@@ -55,18 +55,23 @@ class CollectionOrchestrator:
         max_concurrency: int = 4,
         discovery: DiscoveryService | None = None,
         historical_branch_planner: HistoricalBranchPlanner | None = None,
+        *,
+        auto_execute: bool = True,
     ) -> None:
         self.repository = repository
         self.registry = registry
         self.planner = planner
         self.discovery = discovery
         self.historical_branch_planner = historical_branch_planner
+        self.auto_execute = auto_execute
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._jobs: dict[str, asyncio.Task[None]] = {}
         self._cancelled: set[str] = set()
 
     async def start(self) -> None:
         await self.repository.initialize()
+        if not self.auto_execute:
+            return
         for record in await self.repository.list_recoverable_collections():
             if record.status == CollectionStatus.RUNNING:
                 record.status = CollectionStatus.QUEUED
@@ -96,8 +101,18 @@ class CollectionOrchestrator:
         )
         await self.repository.create_collection(record)
         logger.info("collection accepted", extra=_log_extra(record, "collection_accepted"))
-        self._spawn(collection_id)
+        if self.auto_execute:
+            self._spawn(collection_id)
         return CollectionAccepted(collection_id=collection_id)
+
+    async def execute(self, collection_id: str) -> None:
+        """Execute one already-persisted collection.
+
+        Server workers call this after obtaining a PostgreSQL lease. Embedded/local mode
+        continues to use the in-process `_spawn()` path.
+        """
+
+        await self._run(collection_id)
 
     def _spawn(self, collection_id: str) -> None:
         existing = self._jobs.get(collection_id)
@@ -148,6 +163,12 @@ class CollectionOrchestrator:
             errors=record.errors,
         )
 
+    async def _is_cancelled(self, collection_id: str) -> bool:
+        if collection_id in self._cancelled:
+            return True
+        record = await self.repository.get_collection(collection_id)
+        return record is not None and record.status == CollectionStatus.CANCELLED
+
     async def _run(self, collection_id: str) -> None:
         async with self._semaphore:
             record = await self.repository.get_collection(collection_id)
@@ -160,6 +181,8 @@ class CollectionOrchestrator:
             logger.info("collection started", extra=_log_extra(record, "collection_started"))
             try:
                 plan = await self.planner.plan(record.request)
+                if await self._is_cancelled(collection_id):
+                    return
                 pending = self._load_tasks(record)
                 planning_complete = bool(record.checkpoint.get("planning_complete", False))
                 initial_tasks_complete = bool(
@@ -193,6 +216,8 @@ class CollectionOrchestrator:
                         record.updated_at = now()
                         await self.repository.update_collection(record)
 
+                    if await self._is_cancelled(collection_id):
+                        return
                     uncovered_intents = [
                         intent for intent in record.request.intents if intent not in covered_intents
                     ]
@@ -207,6 +232,8 @@ class CollectionOrchestrator:
                             pending,
                             uncovered_intents,
                         )
+                    if await self._is_cancelled(collection_id):
+                        return
                     pending = self._merge_tasks(pending, plan.tasks, record.collection_id)
                     planning_complete = True
 
@@ -271,7 +298,10 @@ class CollectionOrchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                record = await self.repository.get_collection(collection_id) or record
+                latest = await self.repository.get_collection(collection_id)
+                if latest is not None and latest.status == CollectionStatus.CANCELLED:
+                    return
+                record = latest or record
                 message = safe_error_message(exc, max_length=500)
                 record.errors.append(
                     StructuredError(
@@ -323,6 +353,8 @@ class CollectionOrchestrator:
         await self.repository.update_collection(record)
 
         for index, intent in enumerate(intents_to_run):
+            if await self._is_cancelled(record.collection_id):
+                break
             if remaining_queries <= 0:
                 remaining_intents = intents_to_run[index:]
                 self._append_error_once(
@@ -518,7 +550,7 @@ class CollectionOrchestrator:
         total_budget = record.request.constraints.max_pages
         processed = len(visited)
         while pending and processed < total_budget:
-            if record.collection_id in self._cancelled:
+            if await self._is_cancelled(record.collection_id):
                 return
             task = pending.pop(0)
             key = task.dedupe_key
@@ -623,6 +655,8 @@ class CollectionOrchestrator:
             }
             await self.repository.update_collection(record)
 
+        if await self._is_cancelled(record.collection_id):
+            return
         observations = await self.repository.list_observations(record.collection_id)
         blocked = any(item.blocked for item in record.coverage)
         source_partial = any(item.status == "partial" for item in record.coverage)
