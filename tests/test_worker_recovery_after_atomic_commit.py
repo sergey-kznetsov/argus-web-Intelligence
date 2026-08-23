@@ -20,6 +20,8 @@ from argus.contracts.models import (
 )
 from argus.history.snapshots import sha256_text
 from argus.orchestrator.atomic import AtomicCollectionOrchestrator
+from argus.research.discovery import DiscoveryOutcome
+from argus.research.historical import HistoricalBranchPlanner
 from argus.research.planner import HeuristicResearchPlanner
 from argus.sources.base import SourceResult, SourceTask
 from argus.sources.registry import SourceRegistry
@@ -95,6 +97,147 @@ class RecoveryAfterCommitAdapter:
         return {"status": "ok"}
 
 
+class HistoricalSeedRecoveryAdapter:
+    source_id = "historical_seed_recovery"
+    intents = {"historical_context"}
+
+    def __init__(self, counter: FetchCounter) -> None:
+        self.counter = counter
+
+    async def discover(self, request):
+        del request
+        return [
+            SourceTask(
+                source_id=self.source_id,
+                goal="historical_context",
+                url="https://example.com/historical-seed-recovery",
+            )
+        ]
+
+    async def fetch(self, task):
+        self.counter.calls += 1
+        return SimpleNamespace(
+            blocked=False,
+            final_url=task.url,
+            text="Дом купца Иванова",
+            content_type="text/plain",
+        )
+
+    async def extract(self, task, fetched, request):
+        collection_id = str(task.metadata["collection_id"])
+        content_hash = sha256_text(fetched.text)
+        observation = Observation(
+            observation_id=f"historical-seed-recovery-{collection_id}",
+            collection_id=collection_id,
+            analysis_id=request.analysis_id,
+            consumer=request.consumer,
+            source=self.source_id,
+            source_kind="historical_test",
+            url=fetched.final_url,
+            entity_type="document",
+            title=fetched.text,
+            text=fetched.text,
+            content_hash=content_hash,
+        )
+        evidence = Evidence(
+            evidence_id=f"historical-seed-evidence-{collection_id}",
+            observation_id=observation.observation_id,
+            type="test",
+            text=fetched.text,
+            source=EvidenceSource(
+                provider=self.source_id,
+                url=fetched.final_url,
+                collected_at=observation.collected_at,
+                source_id=self.source_id,
+            ),
+        )
+        return SourceResult(observations=[observation], evidence=[evidence])
+
+    async def normalize(self, result):
+        return result
+
+    async def health(self):
+        return {"status": "ok"}
+
+
+class HistoricalBranchRecoveryAdapter:
+    source_id = "historical_branch_recovery"
+    intents = {"branch_only"}
+
+    def __init__(self, counter: FetchCounter) -> None:
+        self.counter = counter
+
+    async def discover(self, request):
+        del request
+        return []
+
+    async def fetch(self, task):
+        self.counter.calls += 1
+        return SimpleNamespace(
+            blocked=False,
+            final_url=task.url,
+            text="Архивная публикация о доме купца Иванова",
+            content_type="text/plain",
+        )
+
+    async def extract(self, task, fetched, request):
+        collection_id = str(task.metadata["collection_id"])
+        content_hash = sha256_text(fetched.text)
+        observation = Observation(
+            observation_id=f"historical-branch-recovery-{collection_id}",
+            collection_id=collection_id,
+            analysis_id=request.analysis_id,
+            consumer=request.consumer,
+            source=self.source_id,
+            source_kind="historical_test",
+            url=fetched.final_url,
+            entity_type="document",
+            title=fetched.text,
+            text=fetched.text,
+            content_hash=content_hash,
+        )
+        evidence = Evidence(
+            evidence_id=f"historical-branch-evidence-{collection_id}",
+            observation_id=observation.observation_id,
+            type="test",
+            text=fetched.text,
+            source=EvidenceSource(
+                provider=self.source_id,
+                url=fetched.final_url,
+                collected_at=observation.collected_at,
+                source_id=self.source_id,
+            ),
+        )
+        return SourceResult(observations=[observation], evidence=[evidence])
+
+    async def normalize(self, result):
+        return result
+
+    async def health(self):
+        return {"status": "ok"}
+
+
+class HistoricalRecoveryDiscovery:
+    max_queries = 8
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    async def discover(self, queries, request):
+        assert request.intents == ["historical_context"]
+        self.calls.append(list(queries))
+        return DiscoveryOutcome(
+            tasks=[
+                SourceTask(
+                    source_id="historical_branch_recovery",
+                    goal="historical_context",
+                    url="https://archive.example/recovery-item",
+                )
+            ],
+            providers_attempted=["historical-recovery-test"],
+        )
+
+
 class CrashAfterAtomicCommitRepository(FencedPostgresRepository):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -123,6 +266,37 @@ def registry(counter: FetchCounter) -> SourceRegistry:
     value = SourceRegistry()
     value.register(RecoveryAfterCommitAdapter(counter))
     return value
+
+
+def historical_registry(
+    seed_counter: FetchCounter,
+    branch_counter: FetchCounter,
+) -> SourceRegistry:
+    value = SourceRegistry()
+    value.register(HistoricalSeedRecoveryAdapter(seed_counter))
+    value.register(HistoricalBranchRecoveryAdapter(branch_counter))
+    return value
+
+
+async def expire_and_claim(
+    repository: FencedPostgresRepository,
+    collection_id: str,
+    previous_worker: str,
+    next_worker: str,
+) -> None:
+    async with repository._pool.connection() as conn:
+        await conn.execute(
+            """
+            UPDATE argus.collection_leases
+            SET lease_until=NOW() - INTERVAL '1 second'
+            WHERE collection_id=%s AND worker_id=%s
+            """,
+            (collection_id, previous_worker),
+        )
+    assert await repository.claim_next_collection(
+        next_worker,
+        lease_seconds=30,
+    ) == collection_id
 
 
 @pytest.mark.asyncio
@@ -203,19 +377,12 @@ async def test_recovery_after_atomic_commit_finalizes_without_refetching():
         assert len(await first_repository.list_observations(collection_id)) == 1
         assert len(await first_repository.list_evidence(collection_id)) == 1
 
-        async with recovery_repository._pool.connection() as conn:
-            await conn.execute(
-                """
-                UPDATE argus.collection_leases
-                SET lease_until=NOW() - INTERVAL '1 second'
-                WHERE collection_id=%s AND worker_id=%s
-                """,
-                (collection_id, worker_a),
-            )
-        assert await recovery_repository.claim_next_collection(
+        await expire_and_claim(
+            recovery_repository,
+            collection_id,
+            worker_a,
             worker_b,
-            lease_seconds=30,
-        ) == collection_id
+        )
 
         with lease_fence(collection_id, worker_b):
             await recovered.execute(collection_id)
@@ -233,6 +400,129 @@ async def test_recovery_after_atomic_commit_finalizes_without_refetching():
         assert len(observations) == 1
         assert len(evidence) == 1
         assert evidence[0].observation_id == observations[0].observation_id
+    finally:
+        await first_repository.unregister_worker(worker_a)
+        await recovery_repository.unregister_worker(worker_b)
+        with psycopg.connect(dsn) as conn:
+            conn.execute(
+                "DELETE FROM argus.collections WHERE collection_id=%s",
+                (collection_id,),
+            )
+        await first_repository.close()
+        await recovery_repository.close()
+
+
+@pytest.mark.asyncio
+async def test_historical_branch_checkpoint_survives_crash_without_rediscovery():
+    dsn = postgres_dsn()
+    await run_postgres_migrations(dsn)
+
+    first_repository = CrashAfterAtomicCommitRepository(
+        dsn,
+        min_size=1,
+        max_size=2,
+        timeout_seconds=10,
+        max_waiting=4,
+    )
+    recovery_repository = FencedPostgresRepository(
+        dsn,
+        min_size=1,
+        max_size=2,
+        timeout_seconds=10,
+        max_waiting=4,
+    )
+    seed_counter = FetchCounter()
+    branch_counter = FetchCounter()
+    discovery = HistoricalRecoveryDiscovery()
+    first = AtomicCollectionOrchestrator(
+        first_repository,
+        historical_registry(seed_counter, branch_counter),
+        HeuristicResearchPlanner(),
+        discovery=discovery,
+        historical_branch_planner=HistoricalBranchPlanner(),
+        auto_execute=False,
+    )
+    recovered = AtomicCollectionOrchestrator(
+        recovery_repository,
+        historical_registry(seed_counter, branch_counter),
+        HeuristicResearchPlanner(),
+        discovery=discovery,
+        historical_branch_planner=HistoricalBranchPlanner(),
+        auto_execute=False,
+    )
+
+    collection_id = f"historical-recovery-{uuid4()}"
+    worker_a = f"worker-a-{uuid4()}"
+    worker_b = f"worker-b-{uuid4()}"
+    timestamp = utcnow()
+    record = CollectionRecord(
+        collection_id=collection_id,
+        request=CollectionRequest(
+            consumer="historical-recovery-test",
+            analysis_id=f"analysis-{uuid4()}",
+            territory={"city": "Ижевск", "address": "Советская, 1"},
+            intents=["historical_context"],
+            constraints={"max_depth": 1, "max_pages": 5, "language": "ru"},
+        ),
+        status=CollectionStatus.QUEUED,
+        stage="queued",
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+
+    try:
+        await first_repository.initialize()
+        await recovery_repository.initialize()
+        await first_repository.register_worker(worker_a, metadata={"test": True})
+        await recovery_repository.register_worker(worker_b, metadata={"test": True})
+        await first_repository.create_collection(record)
+        assert await first_repository.claim_next_collection(
+            worker_a,
+            lease_seconds=30,
+        ) == collection_id
+
+        with lease_fence(collection_id, worker_a):
+            with pytest.raises(asyncio.CancelledError):
+                await first.execute(collection_id)
+
+        interrupted = await first_repository.get_collection(collection_id)
+        assert interrupted is not None
+        assert interrupted.status == CollectionStatus.RUNNING
+        assert seed_counter.calls == 1
+        assert branch_counter.calls == 0
+        assert len(discovery.calls) == 1
+        assert interrupted.checkpoint["historical_branch_queries"] == sorted(
+            discovery.calls[0]
+        )
+        pending = interrupted.checkpoint["pending_tasks"]
+        assert len(pending) == 1
+        assert pending[0]["source_id"] == "historical_branch_recovery"
+        assert pending[0]["metadata"]["historical_branch_depth"] == 1
+        assert len(await first_repository.list_observations(collection_id)) == 1
+        assert len(await first_repository.list_evidence(collection_id)) == 1
+
+        await expire_and_claim(
+            recovery_repository,
+            collection_id,
+            worker_a,
+            worker_b,
+        )
+        with lease_fence(collection_id, worker_b):
+            await recovered.execute(collection_id)
+
+        completed = await recovery_repository.get_collection(collection_id)
+        assert completed is not None
+        assert completed.status == CollectionStatus.COMPLETED
+        assert completed.checkpoint["pending_tasks"] == []
+        assert len(discovery.calls) == 1
+        assert seed_counter.calls == 1
+        assert branch_counter.calls == 1
+        observations = await recovery_repository.list_observations(collection_id)
+        evidence = await recovery_repository.list_evidence(collection_id)
+        assert len(observations) == 2
+        assert len(evidence) == 2
+        assert len({item.observation_id for item in observations}) == 2
+        assert len({item.evidence_id for item in evidence}) == 2
     finally:
         await first_repository.unregister_worker(worker_a)
         await recovery_repository.unregister_worker(worker_b)
