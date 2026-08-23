@@ -50,6 +50,16 @@ class CollectionWorker:
         await self.services.start()
         registered = False
         try:
+            # Bind the local readiness socket before publishing this worker in PostgreSQL.
+            # Otherwise API readiness could briefly observe a worker that is about to fail
+            # startup because its probe port cannot be bound.
+            if self.probe_port:
+                self._probe_server = await asyncio.start_server(
+                    self._handle_probe,
+                    self.probe_host,
+                    self.probe_port,
+                )
+
             await self.repository.register_worker(
                 self.worker_id,
                 metadata={
@@ -63,25 +73,19 @@ class CollectionWorker:
                 self._worker_heartbeat_loop(),
                 name=f"argus-worker-heartbeat:{self.worker_id}",
             )
-            if self.probe_port:
-                self._probe_server = await asyncio.start_server(
-                    self._handle_probe,
-                    self.probe_host,
-                    self.probe_port,
-                )
             self._started = True
         except BaseException:
             if self._heartbeat_task is not None:
                 self._heartbeat_task.cancel()
                 await asyncio.gather(self._heartbeat_task, return_exceptions=True)
                 self._heartbeat_task = None
+            if registered:
+                with suppress(Exception):
+                    await self.repository.unregister_worker(self.worker_id)
             if self._probe_server is not None:
                 self._probe_server.close()
                 await self._probe_server.wait_closed()
                 self._probe_server = None
-            if registered:
-                with suppress(Exception):
-                    await self.repository.unregister_worker(self.worker_id)
             await self.services.shutdown()
             raise
 
