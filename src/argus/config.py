@@ -176,8 +176,6 @@ class Settings(BaseSettings):
             raise ValueError(
                 "direct_provider_retry_max_seconds must be >= direct_provider_retry_base_seconds"
             )
-        if self.pdf_max_bytes > self.max_response_bytes:
-            raise ValueError("pdf_max_bytes must be <= max_response_bytes")
         if self.browser_max_concurrency > self.max_concurrency:
             self.browser_max_concurrency = self.max_concurrency
         if self.postgres_pool_min_size > self.postgres_pool_max_size:
