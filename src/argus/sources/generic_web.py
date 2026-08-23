@@ -48,6 +48,7 @@ class GenericWebAdapter:
                 depth=0,
                 metadata={
                     "intents": list(request.intents),
+                    "research_goals": list(request.intents),
                     "allowed_domains": list(request.constraints.allowed_domains),
                 },
             )
@@ -100,15 +101,20 @@ class GenericWebAdapter:
     async def _agent_guided_fetch(self, task: SourceTask) -> FetchResult | None:
         if self.agent is None:
             return None
+        goals = self._research_goals(task)
+        goal_text = ", ".join(goals)
         agent_result = await self.agent.run(
             AgentTask(
                 url=task.url,
-                goal=task.goal,
+                goal=goal_text,
                 instruction=(
-                    f"Find the public page or view needed for goal '{task.goal}'. Use public site "
+                    f"Find the public page or view needed for goals '{goal_text}'. Use public site "
                     "navigation, search, filters and expandable sections when needed."
                 ),
-                context={"allowed_domains": task.metadata.get("allowed_domains", [])},
+                context={
+                    "allowed_domains": task.metadata.get("allowed_domains", []),
+                    "research_goals": goals,
+                },
             )
         )
         if agent_result.blocked:
@@ -184,10 +190,18 @@ class GenericWebAdapter:
             source_url=fetched.final_url,
             content_hash=content_hash,
         )
-        data = {"runtime": fetched.runtime, "status_code": fetched.status_code}
+        research_goals = self._research_goals(task)
+        data = {
+            "runtime": fetched.runtime,
+            "status_code": fetched.status_code,
+            "research_goals": research_goals,
+        }
         if fetched.metadata:
             data["fetch_metadata"] = fetched.metadata
-        provenance: dict[str, object] = {"snapshot_id": snapshot.snapshot_id}
+        provenance: dict[str, object] = {
+            "snapshot_id": snapshot.snapshot_id,
+            "research_goals": research_goals,
+        }
         if "recipe_id" in fetched.metadata:
             provenance["recipe_id"] = fetched.metadata["recipe_id"]
             provenance["recipe_version"] = fetched.metadata.get("recipe_version")
@@ -237,6 +251,7 @@ class GenericWebAdapter:
                 collected_at=observation.collected_at,
                 source_id=self.source_id,
             ),
+            metadata={"research_goals": research_goals},
         )
         discovered = self._discovered_tasks(task, fetched, request, observation.collection_id)
         return SourceResult(
@@ -271,6 +286,7 @@ class GenericWebAdapter:
         denied = {d.lower().strip(".") for d in request.constraints.denied_domains}
         parsed_final = urlparse(fetched.final_url)
         seed_host = (parsed_final.hostname or "").lower().strip(".")
+        research_goals = self._research_goals(task)
 
         for feed_url in self._feed_links(fetched.text, fetched.final_url, fetched.content_type):
             if self._domain_allowed(feed_url, seed_host, allowed, denied):
@@ -286,6 +302,7 @@ class GenericWebAdapter:
                             metadata={
                                 "collection_id": collection_id,
                                 "discovered_from": fetched.final_url,
+                                "research_goals": research_goals,
                             },
                         )
                     )
@@ -308,6 +325,7 @@ class GenericWebAdapter:
                         metadata={
                             "collection_id": collection_id,
                             "allowed_domains": list(request.constraints.allowed_domains),
+                            "research_goals": research_goals,
                         },
                     )
                 )
@@ -356,8 +374,22 @@ class GenericWebAdapter:
                 "root_origin": origin,
                 "discovered_from": final_url,
                 "allowed_domains": list(request.constraints.allowed_domains),
+                "research_goals": self._research_goals(task),
             },
         )
+
+    @staticmethod
+    def _research_goals(task: SourceTask) -> list[str]:
+        raw = task.metadata.get("research_goals", [])
+        goals: list[str] = []
+        if isinstance(raw, list):
+            for value in raw:
+                goal = str(value).strip()
+                if goal and goal not in goals:
+                    goals.append(goal)
+        if not goals and task.goal:
+            goals.append(task.goal)
+        return goals
 
     @staticmethod
     def _domain_allowed(url: str, seed_host: str, allowed: set[str], denied: set[str]) -> bool:
