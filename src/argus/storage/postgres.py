@@ -375,10 +375,7 @@ class PostgresRepository:
                   ON l.collection_id = c.collection_id
                 WHERE c.status IN ('queued', 'running')
                   AND (l.collection_id IS NULL OR l.lease_until <= NOW())
-                ORDER BY
-                  CASE c.status WHEN 'queued' THEN 0 ELSE 1 END,
-                  c.created_at ASC,
-                  c.collection_id ASC
+                ORDER BY c.created_at ASC, c.collection_id ASC
                 FOR UPDATE OF c SKIP LOCKED
                 LIMIT 1
                 """
