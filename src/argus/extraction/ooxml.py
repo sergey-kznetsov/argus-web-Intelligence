@@ -26,9 +26,9 @@ class _OoxmlError(Exception):
 class BoundedOoxmlExtractor:
     """Read bounded DOCX/XLSX packages entirely in memory.
 
-    The extractor never writes ZIP members to disk, never follows package relationships
-    outside the archive and parses XML only through defusedxml. Values are preserved as
-    source-declared strings; formulas are recorded but never evaluated.
+    ZIP members are never extracted to disk. Package relationships are never followed
+    outside the archive. XML is parsed only with defusedxml. Spreadsheet formulas are
+    retained as source text and are never evaluated.
     """
 
     _ALLOWED_COMPRESSION = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
@@ -173,39 +173,35 @@ class BoundedOoxmlExtractor:
             raise _OoxmlError("OOXML_DOCUMENT_BODY_MISSING", "DOCX main part has no body")
 
         blocks: list[dict[str, object]] = []
-        records_used = 0
+        record_units = 0
         max_columns_seen = 0
         truncated = False
         for child in list(body):
+            if record_units >= self.max_records:
+                truncated = True
+                break
             kind = self._local_name(child)
             if kind == "p":
-                if records_used >= self.max_records:
-                    truncated = True
-                    break
                 text, text_truncated = self._word_text(child)
                 blocks.append({"type": "paragraph", "text": text})
-                records_used += 1
+                record_units += 1
                 truncated = truncated or text_truncated
             elif kind == "tbl":
-                if records_used >= self.max_records:
-                    truncated = True
-                    break
                 table, consumed, columns, table_truncated = self._word_table(
                     child,
-                    self.max_records - records_used,
+                    self.max_records - record_units,
                 )
                 blocks.append({"type": "table", "rows": table})
-                records_used += consumed
+                record_units += max(1, consumed)
                 max_columns_seen = max(max_columns_seen, columns)
                 truncated = truncated or table_truncated
 
         return StructuredDataExtraction(
             document_type="docx",
-            entity_type="document",
             payload={"blocks": blocks},
             encoding="utf-8/xml",
-            row_count=records_used,
-            rows_extracted=records_used,
+            row_count=record_units,
+            rows_extracted=record_units,
             column_count=max_columns_seen or None,
             truncated=truncated,
             extractor_version="ooxml-stdlib/1",
@@ -287,7 +283,6 @@ class BoundedOoxmlExtractor:
 
         return StructuredDataExtraction(
             document_type="xlsx",
-            entity_type="dataset",
             payload={"sheets": sheets},
             encoding="utf-8/xml",
             row_count=records_used,
@@ -343,11 +338,11 @@ class BoundedOoxmlExtractor:
             if len(rows) >= record_budget:
                 truncated = True
                 break
-            cells: list[dict[str, object]] = []
             cell_elements = [item for item in list(row) if self._local_name(item) == "c"]
             if len(cell_elements) > self.max_columns:
                 truncated = True
                 cell_elements = cell_elements[: self.max_columns]
+            cells: list[dict[str, object]] = []
             for cell in cell_elements:
                 parsed, cell_truncated = self._worksheet_cell(cell, shared_strings)
                 cells.append(parsed)
@@ -603,7 +598,6 @@ class BoundedOoxmlExtractor:
     def _error(document_type: str, code: str, message: str) -> StructuredDataExtraction:
         return StructuredDataExtraction(
             document_type=document_type,
-            entity_type="document" if document_type == "docx" else "dataset",
             error_code=code,
             error_message=message,
             extractor_version="ooxml-stdlib/1",
