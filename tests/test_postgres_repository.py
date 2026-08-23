@@ -29,6 +29,22 @@ def postgres_dsn() -> str:
     return value
 
 
+def collection(collection_id: str) -> CollectionRecord:
+    created_at = utcnow()
+    return CollectionRecord(
+        collection_id=collection_id,
+        request=CollectionRequest(
+            consumer="postgres-test",
+            analysis_id=f"analysis-{uuid4()}",
+            territory={"city": "Ижевск"},
+            intents=["public_mentions"],
+        ),
+        status=CollectionStatus.QUEUED,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+
+
 @pytest.mark.asyncio
 async def test_postgres_repository_full_contract():
     dsn = postgres_dsn()
@@ -42,20 +58,8 @@ async def test_postgres_repository_full_contract():
     await repository.initialize()
     try:
         collection_id = f"test-{uuid4()}"
-        created_at = utcnow()
-        request = CollectionRequest(
-            consumer="postgres-test",
-            analysis_id=f"analysis-{uuid4()}",
-            territory={"city": "Ижевск"},
-            intents=["public_mentions"],
-        )
-        record = CollectionRecord(
-            collection_id=collection_id,
-            request=request,
-            status=CollectionStatus.QUEUED,
-            created_at=created_at,
-            updated_at=created_at,
-        )
+        record = collection(collection_id)
+        request = record.request
         await repository.create_collection(record)
         loaded = await repository.get_collection(collection_id)
         assert loaded is not None
@@ -137,9 +141,84 @@ async def test_postgres_repository_full_contract():
         assert saved_recipe is not None
         assert saved_recipe.recipe_id == recipe.recipe_id
 
+        record.status = CollectionStatus.COMPLETED
+        record.stage = "completed"
+        record.updated_at = utcnow()
+        await repository.update_collection(record)
+
         health = await repository.health()
         assert health["status"] == "ok"
         assert health["backend"] == "postgresql"
         assert health["schema_version"] == EXPECTED_SCHEMA_VERSION
+    finally:
+        await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_worker_lease_is_exclusive_and_recoverable():
+    dsn = postgres_dsn()
+    await run_postgres_migrations(dsn)
+    repository = PostgresRepository(dsn, min_size=1, max_size=3, timeout_seconds=10)
+    await repository.initialize()
+    worker_a = f"worker-a-{uuid4()}"
+    worker_b = f"worker-b-{uuid4()}"
+    collection_id = f"lease-{uuid4()}"
+    try:
+        await repository.register_worker(worker_a, metadata={"test": True})
+        await repository.register_worker(worker_b, metadata={"test": True})
+        assert await repository.active_worker_count(max_age_seconds=60) >= 2
+
+        await repository.create_collection(collection(collection_id))
+        assert await repository.claim_next_collection(worker_a, lease_seconds=30) == collection_id
+        assert await repository.claim_next_collection(worker_b, lease_seconds=30) is None
+        assert (
+            await repository.renew_collection_lease(
+                collection_id,
+                worker_b,
+                lease_seconds=30,
+            )
+            is False
+        )
+        assert (
+            await repository.renew_collection_lease(
+                collection_id,
+                worker_a,
+                lease_seconds=30,
+            )
+            is True
+        )
+
+        # Simulate a crashed worker without sleeping for the lease duration.
+        async with repository._pool.connection() as conn:
+            await conn.execute(
+                """
+                UPDATE argus.collection_leases
+                SET lease_until=NOW() - INTERVAL '1 second'
+                WHERE collection_id=%s
+                """,
+                (collection_id,),
+            )
+
+        assert await repository.claim_next_collection(worker_b, lease_seconds=30) == collection_id
+        assert (
+            await repository.renew_collection_lease(
+                collection_id,
+                worker_a,
+                lease_seconds=30,
+            )
+            is False
+        )
+        await repository.release_collection_lease(collection_id, worker_b)
+
+        record = await repository.get_collection(collection_id)
+        assert record is not None
+        record.status = CollectionStatus.CANCELLED
+        record.stage = "test-cleanup"
+        record.updated_at = utcnow()
+        await repository.update_collection(record)
+
+        await repository.unregister_worker(worker_a)
+        await repository.unregister_worker(worker_b)
+        assert await repository.active_worker_count(max_age_seconds=60) == 0
     finally:
         await repository.close()
