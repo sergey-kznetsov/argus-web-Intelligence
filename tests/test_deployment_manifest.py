@@ -31,11 +31,30 @@ def test_deployment_manifest_matches_hidden_runtime_contract():
     assert ["{python}", "-m", "argus.storage.cli", "check"] in database["migrations"]
 
     assert deployment["secrets"]["auth_token_file_env"] == "ARGUS_TOKEN_FILE"
-    api_process = next(item for item in deployment["processes"] if item["id"] == "api")
+    processes = {item["id"]: item for item in deployment["processes"]}
+    assert set(processes) == {"api", "worker"}
+
+    api_process = processes["api"]
     assert "127.0.0.1" in api_process["command"]
     assert "{api_port}" in api_process["command"]
+    assert api_process["environment"]["ARGUS_EXECUTION_ROLE"] == "api"
     assert api_process["environment"]["ARGUS_STORAGE_BACKEND"] == "postgresql"
     assert api_process["health"] == {"path": "/v1/health", "authenticated": True}
+
+    worker_process = processes["worker"]
+    assert worker_process["role"] == "worker"
+    assert "argus.worker" in worker_process["command"]
+    assert "{worker_probe_port}" in worker_process["command"]
+    assert worker_process["environment"]["ARGUS_EXECUTION_ROLE"] == "worker"
+    assert worker_process["environment"]["ARGUS_STORAGE_BACKEND"] == "postgresql"
+    assert worker_process["health"] == {
+        "path": "/readyz",
+        "port": "worker_probe_port",
+        "authenticated": False,
+    }
+
+    assert deployment["ports"]["api"]["host"] == "127.0.0.1"
+    assert deployment["ports"]["worker_probe"]["host"] == "127.0.0.1"
 
     integration = deployment["integration"]
     assert integration["endpoint_process"] == "api"
