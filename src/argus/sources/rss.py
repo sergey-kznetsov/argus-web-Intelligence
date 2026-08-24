@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import io
 from urllib.parse import urljoin, urlsplit
 from xml.etree.ElementTree import Element, ParseError
 
@@ -72,9 +73,9 @@ class RSSAdapter:
             fetched.content_type,
             collection_id=collection_id,
         )
-        try:
-            root = DefusedET.fromstring(fetched.text)
-        except (DefusedXmlException, ParseError, ValueError, RecursionError):
+
+        preflight, node_count, max_depth = self._xml_preflight(fetched.text)
+        if preflight == "invalid":
             return SourceResult(
                 observations=[],
                 errors=[
@@ -86,9 +87,7 @@ class RSSAdapter:
                     )
                 ],
             )
-
-        within_limits, node_count, max_depth = self._xml_within_limits(root)
-        if not within_limits:
+        if preflight == "limit":
             return SourceResult(
                 observations=[],
                 partial=True,
@@ -98,6 +97,21 @@ class RSSAdapter:
                         message=(
                             "RSS/Atom XML exceeds configured node or depth limits"
                         ),
+                        retryable=False,
+                        source_id=self.source_id,
+                    )
+                ],
+            )
+
+        try:
+            root = DefusedET.fromstring(fetched.text)
+        except (DefusedXmlException, ParseError, ValueError, RecursionError):
+            return SourceResult(
+                observations=[],
+                errors=[
+                    StructuredError(
+                        code="FEED_XML_INVALID",
+                        message="RSS/Atom XML could not be parsed safely",
                         retryable=False,
                         source_id=self.source_id,
                     )
@@ -241,20 +255,27 @@ class RSSAdapter:
             "max_xml_depth": self.max_xml_depth,
         }
 
-    def _xml_within_limits(self, root: Element) -> tuple[bool, int, int]:
-        stack: list[tuple[Element, int]] = [(root, 0)]
+    def _xml_preflight(self, text: str) -> tuple[str, int, int]:
         nodes = 0
+        depth = 0
         maximum_depth = 0
-        while stack:
-            node, depth = stack.pop()
-            nodes += 1
-            maximum_depth = max(maximum_depth, depth)
-            if nodes > self.max_xml_nodes or depth > self.max_xml_depth:
-                return False, nodes, maximum_depth
-            children = list(node)
-            for child in reversed(children):
-                stack.append((child, depth + 1))
-        return True, nodes, maximum_depth
+        try:
+            for event, element in DefusedET.iterparse(
+                io.StringIO(text),
+                events=("start", "end"),
+            ):
+                if event == "start":
+                    nodes += 1
+                    maximum_depth = max(maximum_depth, depth)
+                    if nodes > self.max_xml_nodes or depth > self.max_xml_depth:
+                        return "limit", nodes, maximum_depth
+                    depth += 1
+                    continue
+                depth = max(0, depth - 1)
+                element.clear()
+        except (DefusedXmlException, ParseError, ValueError, RecursionError):
+            return "invalid", nodes, maximum_depth
+        return "ok", nodes, maximum_depth
 
     @staticmethod
     def _text(
