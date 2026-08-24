@@ -8,10 +8,10 @@ from argus.extraction.microdata import MicrodataExtraction, extract_microdata
 from argus.history.snapshots import sha256_text
 from argus.normalization.identity import stable_evidence_id, stable_observation_id
 from argus.sources.base import SourceResult, SourceTask
-from argus.sources.office_web import OfficeAwareGenericWebAdapter
+from argus.sources.compressed_web import CompressedOfficeAwareGenericWebAdapter
 
 
-class SemanticWebAdapter(OfficeAwareGenericWebAdapter):
+class SemanticWebAdapter(CompressedOfficeAwareGenericWebAdapter):
     """Add bounded semantic HTML structures to the generic factual web result.
 
     The parent adapter remains responsible for fetch, document classification,
