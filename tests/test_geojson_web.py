@@ -133,6 +133,7 @@ async def test_feature_collection_keeps_dataset_and_adds_only_valid_point_facts(
         "invalid_features_skipped": 0,
         "invalid_points_skipped": 1,
         "axis_order": "longitude_latitude",
+        "max_supported_dimensions": 3,
         "extractor": "geojson-point/1",
     }
 
@@ -206,6 +207,32 @@ async def test_string_coordinates_are_not_reinterpreted_as_geojson_numbers(tmp_p
     assert not any(item.source_kind == "geojson_point" for item in result.observations)
     dataset = next(item for item in result.observations if item.source_kind == "structured_data")
     assert dataset.data["geojson_summary"]["invalid_points_skipped"] == 1
+    await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_over_dimensional_position_is_not_silently_flattened(tmp_path: Path):
+    repository = SQLiteRepository(tmp_path / "argus.sqlite")
+    await repository.initialize()
+    web = adapter(repository)
+    payload = {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [53.2045, 56.8526, 100.0, 999.0]},
+        "properties": {"name": "Four dimensions"},
+    }
+    body = json.dumps(payload).encode("utf-8")
+    url = "https://example.com/data.geojson"
+
+    result = await web.extract(
+        task(url, "collection-geojson-four-dim"),
+        fetched(url, body, "application/geo+json"),
+        request(),
+    )
+
+    assert not any(item.source_kind == "geojson_point" for item in result.observations)
+    dataset = next(item for item in result.observations if item.source_kind == "structured_data")
+    assert dataset.data["geojson_summary"]["invalid_points_skipped"] == 1
+    assert dataset.data["payload"] == payload
     await repository.close()
 
 
