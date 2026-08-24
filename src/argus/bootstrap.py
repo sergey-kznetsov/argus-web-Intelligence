@@ -169,7 +169,21 @@ def build_services(settings: Settings) -> ServiceContainer:
             microdata_max_value_chars=settings.structured_data_max_cell_chars,
         )
     )
-    registry.register(RSSAdapter(fast, snapshots))
+    registry.register(
+        RSSAdapter(
+            fast,
+            snapshots,
+            max_items=min(settings.structured_data_max_records, 100),
+            max_xml_nodes=settings.structured_data_max_json_nodes,
+            max_xml_depth=settings.structured_data_max_json_depth,
+            max_title_chars=min(settings.structured_data_max_cell_chars, 1_000),
+            max_entry_text_chars=min(
+                settings.structured_data_max_cell_chars * 10,
+                100_000,
+            ),
+            max_identifier_chars=min(settings.structured_data_max_cell_chars, 2_000),
+        )
+    )
     registry.register(JSONFeedAdapter(fast, snapshots, structured_extractor))
     if settings.sitemap_discovery_enabled:
         registry.register(SitemapDiscoveryAdapter(settings, fast))
