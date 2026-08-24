@@ -27,6 +27,7 @@ class CompressedOfficeAwareGenericWebAdapter(OfficeAwareGenericWebAdapter):
         ".json",
         ".geojson",
         ".xml",
+        ".kml",
     }
 
     def __init__(
@@ -163,6 +164,6 @@ class CompressedOfficeAwareGenericWebAdapter(OfficeAwareGenericWebAdapter):
     async def health(self) -> dict[str, object]:
         payload = dict(await super().health())
         payload["gzip_structured_data_extraction"] = True
-        payload["gzip_structured_data_formats"] = ["csv", "tsv", "json", "xml"]
+        payload["gzip_structured_data_formats"] = ["csv", "tsv", "json", "xml", "kml"]
         payload["gzip_single_member_only"] = True
         return payload
