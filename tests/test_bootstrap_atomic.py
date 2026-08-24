@@ -3,6 +3,7 @@ from pathlib import Path
 from argus.bootstrap import build_services
 from argus.config import Settings
 from argus.orchestrator.atomic import AtomicCollectionOrchestrator
+from argus.sources.compressed_web import CompressedOfficeAwareGenericWebAdapter
 from argus.sources.document_web import DocumentAwareGenericWebAdapter
 from argus.sources.json_feed import JSONFeedAdapter
 from argus.sources.office_web import OfficeAwareGenericWebAdapter
@@ -37,6 +38,7 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     adapter = getattr(tracked, "_adapter", None)
     assert isinstance(adapter, DocumentAwareGenericWebAdapter)
     assert isinstance(adapter, OfficeAwareGenericWebAdapter)
+    assert isinstance(adapter, CompressedOfficeAwareGenericWebAdapter)
     assert isinstance(adapter, SemanticWebAdapter)
 
     extractor = adapter.structured_data_extractor
@@ -48,6 +50,9 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     assert extractor.max_json_nodes == 77
     assert extractor.max_xml_depth == 9
     assert extractor.max_xml_nodes == 77
+
+    assert adapter.gzip_extractor.max_compressed_bytes == 123_456
+    assert adapter.gzip_extractor.max_uncompressed_bytes == 123_456
 
     assert adapter.html_table_max_scan_chars == 123_456
     assert adapter.html_table_max_rows_per_table == 7
