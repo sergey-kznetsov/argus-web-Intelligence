@@ -49,6 +49,12 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     assert extractor.max_xml_depth == 9
     assert extractor.max_xml_nodes == 77
 
+    assert adapter.html_table_max_scan_chars == 123_456
+    assert adapter.html_table_max_rows_per_table == 7
+    assert adapter.html_table_max_total_rows == 7
+    assert adapter.html_table_max_columns == 8
+    assert adapter.html_table_max_cell_chars == 321
+
     json_feed_tracked = services.registry.get("json_feed")
     json_feed = getattr(json_feed_tracked, "_adapter", None)
     assert isinstance(json_feed, JSONFeedAdapter)
