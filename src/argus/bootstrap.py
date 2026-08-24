@@ -163,6 +163,10 @@ def build_services(settings: Settings) -> ServiceContainer:
             html_table_max_total_rows=settings.structured_data_max_records,
             html_table_max_columns=settings.structured_data_max_columns,
             html_table_max_cell_chars=settings.structured_data_max_cell_chars,
+            microdata_max_scan_chars=min(settings.structured_data_max_bytes, 750_000),
+            microdata_max_items=min(settings.structured_data_max_records, 100),
+            microdata_max_properties_per_item=min(settings.structured_data_max_columns, 100),
+            microdata_max_value_chars=settings.structured_data_max_cell_chars,
         )
     )
     registry.register(RSSAdapter(fast, snapshots))
