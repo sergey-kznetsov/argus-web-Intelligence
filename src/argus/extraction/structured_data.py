@@ -458,43 +458,52 @@ class BoundedStructuredDataExtractor:
         bom_encoding = cls._bom_encoding(body)
         if bom_encoding:
             return body, bom_encoding
-        declared = cls._declared_charset(content_type)
-        if declared:
+        declared_http = cls._declared_charset(content_type)
+        if declared_http:
             try:
-                text = body.decode(declared, errors="strict")
+                text = body.decode(declared_http, errors="strict")
             except (LookupError, UnicodeDecodeError):
-                return None, declared
-            return cls._XML_DECL_ENCODING_TEXT_RE.sub(r"\1", text, count=1), declared
-        xml_declared = cls._xml_declared_encoding(body)
-        return body, xml_declared or "xml-auto"
+                return None, declared_http
+            text = cls._XML_DECL_ENCODING_TEXT_RE.sub(r"\1", text, count=1)
+            return text, declared_http
+        return body, cls._xml_encoding(body, content_type)
 
     @classmethod
-    def _xml_declared_encoding(cls, body: bytes) -> str | None:
-        match = cls._XML_ENCODING_RE.search(body[:256])
-        if not match:
-            return None
-        try:
-            return match.group(1).decode("ascii").casefold()
-        except UnicodeDecodeError:
-            return None
+    def _xml_encoding(cls, body: bytes, content_type: str | None) -> str:
+        bom_encoding = cls._bom_encoding(body)
+        if bom_encoding:
+            return bom_encoding
+        declared_http = cls._declared_charset(content_type)
+        if declared_http:
+            return declared_http
+        match = cls._XML_ENCODING_RE.search(body[:512])
+        if match:
+            try:
+                return match.group(1).decode("ascii").casefold()
+            except UnicodeDecodeError:
+                pass
+        return "xml-auto"
 
     @staticmethod
-    def _declared_charset(content_type: str | None) -> str | None:
-        if not content_type:
-            return None
-        for part in content_type.split(";")[1:]:
-            key, separator, value = part.partition("=")
-            if separator and key.strip().casefold() == "charset":
-                return value.strip().strip("'\"").casefold() or None
-        return None
+    def _reject_json_constant(value: str) -> None:
+        raise ValueError(f"non-standard JSON constant: {value}")
 
     @staticmethod
     def _media_type(content_type: str | None) -> str:
-        return (content_type or "").split(";", 1)[0].strip().casefold()
+        return str(content_type or "").split(";", 1)[0].strip().casefold()
+
+    @staticmethod
+    def _declared_charset(content_type: str | None) -> str | None:
+        if content_type:
+            for part in content_type.split(";")[1:]:
+                key, separator, value = part.strip().partition("=")
+                if separator and key.casefold() == "charset" and value.strip():
+                    return value.strip().strip('"\'').casefold()
+        return None
 
     @staticmethod
     def _csv_delimiter(text: str) -> str:
-        sample = text[: min(len(text), 64 * 1024)]
+        sample = text[:16_384]
         try:
             return csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
         except csv.Error:
@@ -502,23 +511,20 @@ class BoundedStructuredDataExtractor:
 
     @staticmethod
     def _has_header(text: str, delimiter: str) -> bool:
-        sample = text[: min(len(text), 64 * 1024)]
+        sample = text[:16_384]
         try:
-            return csv.Sniffer().has_header(sample)
+            dialect = csv.Sniffer().sniff(sample, delimiters=delimiter)
+            return csv.Sniffer().has_header(sample) if dialect else False
         except csv.Error:
             return False
 
     @staticmethod
-    def _unique_columns(values: list[str]) -> list[str]:
-        seen: dict[str, int] = {}
+    def _unique_columns(header: list[str]) -> list[str]:
         columns: list[str] = []
-        for index, raw in enumerate(values):
-            base = raw.strip() or f"column_{index + 1}"
-            count = seen.get(base, 0) + 1
-            seen[base] = count
+        counts: dict[str, int] = {}
+        for index, raw in enumerate(header, start=1):
+            base = raw.strip() or f"column_{index}"
+            count = counts.get(base, 0) + 1
+            counts[base] = count
             columns.append(base if count == 1 else f"{base}_{count}")
         return columns
-
-    @staticmethod
-    def _reject_json_constant(value: str) -> None:
-        raise ValueError(f"non-standard JSON constant: {value}")
