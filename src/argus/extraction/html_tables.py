@@ -37,7 +37,12 @@ def extract_html_tables(
     max_columns: int = 50,
     max_cell_chars: int = 5_000,
 ) -> HtmlTableExtraction:
-    """Extract only clearly semantic, simple HTML data tables with bounded shape."""
+    """Extract only clearly semantic, simple HTML data tables with bounded shape.
+
+    Complex span grids are deliberately rejected rather than flattened incorrectly.
+    Any configured limit that clips extracted source data is surfaced through the
+    table-level and extraction-level ``truncated`` flags.
+    """
 
     extraction = HtmlTableExtraction()
     if content_type and "html" not in content_type.casefold():
@@ -58,10 +63,10 @@ def extract_html_tables(
 
     total_rows = 0
     for index, table in enumerate(tables[:table_limit]):
-        if _looks_like_layout(table):
-            extraction.layout_skipped += 1
-            continue
-        if not _looks_like_data(table):
+        if total_rows >= total_row_limit:
+            extraction.truncated = True
+            break
+        if _looks_like_layout(table) or not _looks_like_data(table):
             extraction.layout_skipped += 1
             continue
 
@@ -73,35 +78,42 @@ def extract_html_tables(
             extraction.complex_skipped += 1
             continue
 
+        first_cells = _row_cells(rows[0])
+        first_is_header = bool(first_cells) and all(cell.name == "th" for cell in first_cells)
         normalized_rows: list[list[str]] = []
-        row_truncated = False
-        for row in rows:
+        table_truncated = False
+        raw_rows = rows[:row_limit]
+        if len(rows) > row_limit:
+            table_truncated = True
+
+        for row in raw_rows:
             cells = _row_cells(row)
             if not cells:
                 continue
             if len(cells) > column_limit:
-                row_truncated = True
-            values = [_cell_text(cell, cell_limit) for cell in cells[:column_limit]]
+                table_truncated = True
+            values: list[str] = []
+            for cell in cells[:column_limit]:
+                value, value_truncated = _cell_text(cell, cell_limit)
+                values.append(value)
+                table_truncated = table_truncated or value_truncated
             normalized_rows.append(values)
-            if len(normalized_rows) >= row_limit:
-                if len(rows) > len(normalized_rows):
-                    row_truncated = True
-                break
-            if total_rows + len(normalized_rows) >= total_row_limit:
-                row_truncated = True
-                extraction.truncated = True
-                break
 
         if not normalized_rows:
             extraction.empty_skipped += 1
             continue
-        first_cells = _row_cells(rows[0])
-        first_is_header = bool(first_cells) and all(cell.name == "th" for cell in first_cells)
+
         headers: list[str] = []
         data_rows = normalized_rows
         if first_is_header:
             headers = normalized_rows[0]
             data_rows = normalized_rows[1:]
+
+        remaining_total = total_row_limit - total_rows
+        if len(data_rows) > remaining_total:
+            data_rows = data_rows[:remaining_total]
+            table_truncated = True
+
         if not data_rows and not headers:
             extraction.empty_skipped += 1
             continue
@@ -111,10 +123,14 @@ def extract_html_tables(
             default=0,
         )
         caption_tag = table.find("caption", recursive=False)
-        caption = _cell_text(caption_tag, cell_limit) if isinstance(caption_tag, Tag) else None
+        caption: str | None = None
+        if isinstance(caption_tag, Tag):
+            caption, caption_truncated = _cell_text(caption_tag, cell_limit)
+            table_truncated = table_truncated or caption_truncated
         if not caption:
-            aria = table.get("aria-label")
-            caption = _bounded_text(aria, cell_limit)
+            caption, caption_truncated = _bounded_text(table.get("aria-label"), cell_limit)
+            table_truncated = table_truncated or caption_truncated
+
         extraction.tables.append(
             HtmlTable(
                 index=index,
@@ -122,13 +138,12 @@ def extract_html_tables(
                 headers=headers,
                 rows=data_rows,
                 column_count=column_count,
-                truncated=row_truncated,
+                truncated=table_truncated,
             )
         )
         total_rows += len(data_rows)
-        if total_rows >= total_row_limit:
+        if table_truncated:
             extraction.truncated = True
-            break
     return extraction
 
 
@@ -182,14 +197,22 @@ def _has_complex_spans(rows: list[Tag]) -> bool:
     return False
 
 
-def _cell_text(cell: Tag, limit: int) -> str:
-    for nested in cell.find_all("table"):
-        nested.decompose()
-    return _bounded_text(cell.get_text(" ", strip=True), limit) or ""
+def _cell_text(cell: Tag, limit: int) -> tuple[str, bool]:
+    owner_table = cell.find_parent("table")
+    parts: list[str] = []
+    for value in cell.stripped_strings:
+        parent = value.parent if isinstance(value.parent, Tag) else None
+        nearest_table = parent.find_parent("table") if parent is not None else None
+        if nearest_table is owner_table:
+            parts.append(str(value))
+    bounded, truncated = _bounded_text(" ".join(parts), limit)
+    return bounded or "", truncated
 
 
-def _bounded_text(value: object, limit: int) -> str | None:
+def _bounded_text(value: object, limit: int) -> tuple[str | None, bool]:
     if value is None:
-        return None
+        return None, False
     clean = " ".join(str(value).split()).strip()
-    return clean[:limit] if clean else None
+    if not clean:
+        return None, False
+    return clean[:limit], len(clean) > limit
