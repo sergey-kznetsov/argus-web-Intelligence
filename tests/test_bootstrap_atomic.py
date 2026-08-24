@@ -8,6 +8,7 @@ from argus.sources.document_web import DocumentAwareGenericWebAdapter
 from argus.sources.json_feed import JSONFeedAdapter
 from argus.sources.office_web import OfficeAwareGenericWebAdapter
 from argus.sources.rss import RSSAdapter
+from argus.sources.schema_web import SchemaAwareSemanticWebAdapter
 from argus.sources.semantic_web import SemanticWebAdapter
 from argus.storage.atomic_sqlite import AtomicSQLiteRepository
 
@@ -41,6 +42,7 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     assert isinstance(adapter, OfficeAwareGenericWebAdapter)
     assert isinstance(adapter, CompressedOfficeAwareGenericWebAdapter)
     assert isinstance(adapter, SemanticWebAdapter)
+    assert isinstance(adapter, SchemaAwareSemanticWebAdapter)
 
     extractor = adapter.structured_data_extractor
     assert extractor.max_bytes == 123_456
