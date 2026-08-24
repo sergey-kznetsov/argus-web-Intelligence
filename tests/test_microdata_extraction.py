@@ -81,7 +81,7 @@ def test_itemref_item_is_skipped_instead_of_partial_extraction():
     assert result.items == []
 
 
-def test_unsafe_url_property_is_not_emitted():
+def test_unsafe_url_property_is_not_emitted_and_marks_item_incomplete():
     html = """
     <div itemscope itemtype="https://schema.org/Thing">
       <span itemprop="name">Safe name</span>
@@ -98,6 +98,49 @@ def test_unsafe_url_property_is_not_emitted():
     assert len(result.items) == 1
     assert result.items[0].properties["name"] == ["Safe name"]
     assert "url" not in result.items[0].properties
+    assert result.items[0].truncated is True
+    assert result.truncated is True
+
+
+def test_long_text_value_is_clipped_and_marks_item_truncated():
+    html = """
+    <div itemscope itemtype="https://schema.org/Thing">
+      <span itemprop="name">abcdefghij</span>
+    </div>
+    """
+
+    result = extract_microdata(
+        html,
+        content_type="text/html",
+        base_url="https://example.com/",
+        max_value_chars=5,
+    )
+
+    assert result.truncated is True
+    item = result.items[0]
+    assert item.truncated is True
+    assert item.properties["name"] == ["abcde"]
+
+
+def test_overlong_property_name_is_not_rewritten_as_another_property():
+    long_name = "x" * 129
+    html = f"""
+    <div itemscope itemtype="https://schema.org/Thing">
+      <span itemprop="name">Safe</span>
+      <span itemprop="{long_name}">Do not rename me</span>
+    </div>
+    """
+
+    result = extract_microdata(
+        html,
+        content_type="text/html",
+        base_url="https://example.com/",
+    )
+
+    item = result.items[0]
+    assert item.properties == {"name": ["Safe"]}
+    assert item.truncated is True
+    assert result.truncated is True
 
 
 def test_property_and_value_limits_are_reported():
