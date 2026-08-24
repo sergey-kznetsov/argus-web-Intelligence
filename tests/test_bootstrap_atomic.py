@@ -5,6 +5,7 @@ from argus.config import Settings
 from argus.orchestrator.atomic import AtomicCollectionOrchestrator
 from argus.sources.compressed_web import CompressedOfficeAwareGenericWebAdapter
 from argus.sources.document_web import DocumentAwareGenericWebAdapter
+from argus.sources.geojson_web import GeoJsonAwareWebAdapter
 from argus.sources.json_feed import JSONFeedAdapter
 from argus.sources.office_web import OfficeAwareGenericWebAdapter
 from argus.sources.rss import RSSAdapter
@@ -43,6 +44,7 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     assert isinstance(adapter, CompressedOfficeAwareGenericWebAdapter)
     assert isinstance(adapter, SemanticWebAdapter)
     assert isinstance(adapter, SchemaAwareSemanticWebAdapter)
+    assert isinstance(adapter, GeoJsonAwareWebAdapter)
 
     extractor = adapter.structured_data_extractor
     assert extractor.max_bytes == 123_456
