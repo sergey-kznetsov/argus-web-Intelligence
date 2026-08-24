@@ -158,6 +158,11 @@ def build_services(settings: Settings) -> ServiceContainer:
             pdf_extractor=build_pdf_extractor(settings),
             structured_data_extractor=structured_extractor,
             ooxml_extractor=build_ooxml_extractor(settings),
+            html_table_max_scan_chars=min(settings.structured_data_max_bytes, 1_000_000),
+            html_table_max_rows_per_table=min(settings.structured_data_max_records, 200),
+            html_table_max_total_rows=settings.structured_data_max_records,
+            html_table_max_columns=settings.structured_data_max_columns,
+            html_table_max_cell_chars=settings.structured_data_max_cell_chars,
         )
     )
     registry.register(RSSAdapter(fast, snapshots))
