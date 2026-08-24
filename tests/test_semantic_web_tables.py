@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from argus.contracts.models import CollectionRequest
+from argus.extraction.pdf import BoundedPdfExtractor
 from argus.history.snapshots import SnapshotService
 from argus.sources.base import SourceTask
 from argus.sources.semantic_web import SemanticWebAdapter
@@ -16,6 +17,16 @@ class FastStub:
 
 class BrowserStub:
     pass
+
+
+def pdf_extractor() -> BoundedPdfExtractor:
+    return BoundedPdfExtractor(
+        max_bytes=1024,
+        max_pages=1,
+        max_text_chars=1000,
+        timeout_seconds=1,
+        memory_mb=128,
+    )
 
 
 def request() -> CollectionRequest:
@@ -42,15 +53,20 @@ def fetched(html: str):
     )
 
 
+def adapter(repository: SQLiteRepository) -> SemanticWebAdapter:
+    return SemanticWebAdapter(
+        fast=FastStub(),
+        browser=BrowserStub(),
+        snapshots=SnapshotService(repository),
+        pdf_extractor=pdf_extractor(),
+    )
+
+
 @pytest.mark.asyncio
 async def test_semantic_table_reuses_page_snapshot_and_adds_dataset_evidence(tmp_path: Path):
     repository = SQLiteRepository(tmp_path / "argus.sqlite")
     await repository.initialize()
-    adapter = SemanticWebAdapter(
-        fast=FastStub(),
-        browser=BrowserStub(),
-        snapshots=SnapshotService(repository),
-    )
+    value = adapter(repository)
     task = SourceTask(
         source_id="generic_web",
         goal="public_mentions",
@@ -72,7 +88,7 @@ async def test_semantic_table_reuses_page_snapshot_and_adds_dataset_evidence(tmp
     </body></html>
     """
 
-    result = await adapter.extract(task, fetched(html), request())
+    result = await value.extract(task, fetched(html), request())
 
     page = next(item for item in result.observations if item.source_kind == "web_page")
     table = next(item for item in result.observations if item.source_kind == "html_table")
@@ -112,11 +128,7 @@ async def test_semantic_table_reuses_page_snapshot_and_adds_dataset_evidence(tmp
 async def test_complex_table_is_reported_but_not_normalized_as_fact(tmp_path: Path):
     repository = SQLiteRepository(tmp_path / "argus.sqlite")
     await repository.initialize()
-    adapter = SemanticWebAdapter(
-        fast=FastStub(),
-        browser=BrowserStub(),
-        snapshots=SnapshotService(repository),
-    )
+    value = adapter(repository)
     task = SourceTask(
         source_id="generic_web",
         goal="public_mentions",
@@ -130,7 +142,7 @@ async def test_complex_table_is_reported_but_not_normalized_as_fact(tmp_path: Pa
     </table>
     """
 
-    result = await adapter.extract(task, fetched(html), request())
+    result = await value.extract(task, fetched(html), request())
 
     assert not any(item.source_kind == "html_table" for item in result.observations)
     page = next(item for item in result.observations if item.source_kind == "web_page")
@@ -144,13 +156,9 @@ async def test_complex_table_is_reported_but_not_normalized_as_fact(tmp_path: Pa
 async def test_semantic_table_health_capability_is_exposed(tmp_path: Path):
     repository = SQLiteRepository(tmp_path / "argus.sqlite")
     await repository.initialize()
-    adapter = SemanticWebAdapter(
-        fast=FastStub(),
-        browser=BrowserStub(),
-        snapshots=SnapshotService(repository),
-    )
+    value = adapter(repository)
 
-    health = await adapter.health()
+    health = await value.health()
 
     assert health["semantic_html_table_extraction"] is True
     await repository.close()
