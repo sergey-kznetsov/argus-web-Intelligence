@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import io
+import math
 from urllib.parse import urljoin, urlsplit
 from xml.etree.ElementTree import Element, ParseError
 
@@ -13,6 +14,7 @@ from argus.contracts.models import (
     Evidence,
     EvidenceSource,
     Observation,
+    Point,
     StructuredError,
 )
 from argus.crawler.fast.runtime import FastCrawlerRuntime
@@ -30,6 +32,8 @@ class RSSAdapter:
         "discussions",
         "historical_context",
     }
+    _GEORSS_NS = "http://www.georss.org/georss/"
+    _GML_NS = "http://www.opengis.net/gml"
 
     def __init__(
         self,
@@ -142,6 +146,7 @@ class RSSAdapter:
             )
             link_raw, link_truncated = self._link(item, self.max_identifier_chars)
             link = self._safe_item_link(fetched.final_url, link_raw)
+            geo_point, geo_format, geo_declared = self._geo_point(item)
             entry_truncated = any(
                 (
                     title_truncated,
@@ -178,7 +183,13 @@ class RSSAdapter:
                     "entry_index": index,
                     "feed_entry_count": total_items,
                     "entry_truncated": entry_truncated,
+                    "geospatial": {
+                        "declared": geo_declared,
+                        "valid_point": geo_point is not None,
+                        "format": geo_format,
+                    },
                 },
+                geo=geo_point,
                 published_at=self._date(item),
                 content_hash=content_hash,
                 provenance={
@@ -188,11 +199,17 @@ class RSSAdapter:
                     "feed_format": feed_format,
                     "xml_node_count": node_count,
                     "xml_max_depth": max_depth,
+                    "geospatial": {
+                        "source_declared": geo_declared,
+                        "format": geo_format,
+                        "geocoding_used": False,
+                    },
                 },
                 quality={
                     "evidence_backed": True,
                     "machine_readable": True,
                     "lossless": not entry_truncated,
+                    "geospatial_valid": not geo_declared or geo_point is not None,
                 },
             )
             observations.append(observation)
@@ -220,6 +237,8 @@ class RSSAdapter:
                     "snapshot_id": snapshot.snapshot_id,
                     "entry_truncated": entry_truncated,
                     "evidence_excerpt_truncated": len(raw) > len(evidence_text),
+                    "geospatial_format": geo_format,
+                    "geospatial_source_declared": geo_declared,
                 },
             )
             evidence_items.append(evidence)
@@ -253,6 +272,7 @@ class RSSAdapter:
             "max_items": self.max_items,
             "max_xml_nodes": self.max_xml_nodes,
             "max_xml_depth": self.max_xml_depth,
+            "georss_point_extraction": True,
         }
 
     def _xml_preflight(self, text: str) -> tuple[str, int, int]:
@@ -355,3 +375,35 @@ class RSSAdapter:
                 return datetime.fromisoformat(value.replace("Z", "+00:00"))
             except ValueError:
                 return None
+
+    @classmethod
+    def _geo_point(cls, item: Element) -> tuple[Point | None, str | None, bool]:
+        simple = item.find(f".//{{{cls._GEORSS_NS}}}point")
+        if simple is not None:
+            return cls._point_from_text(simple.text), "georss_simple_point", True
+
+        where = item.find(f".//{{{cls._GEORSS_NS}}}where")
+        if where is not None:
+            pos = where.find(f".//{{{cls._GML_NS}}}pos")
+            if pos is None:
+                return None, "georss_gml_point", True
+            return cls._point_from_text(pos.text), "georss_gml_point", True
+        return None, None, False
+
+    @staticmethod
+    def _point_from_text(value: str | None) -> Point | None:
+        if not value:
+            return None
+        parts = value.split()
+        if len(parts) != 2:
+            return None
+        try:
+            latitude = float(parts[0])
+            longitude = float(parts[1])
+        except ValueError:
+            return None
+        if not math.isfinite(latitude) or not math.isfinite(longitude):
+            return None
+        if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+            return None
+        return Point(latitude=latitude, longitude=longitude)
