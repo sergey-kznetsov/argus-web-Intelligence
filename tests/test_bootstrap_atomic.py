@@ -7,6 +7,7 @@ from argus.sources.compressed_web import CompressedOfficeAwareGenericWebAdapter
 from argus.sources.document_web import DocumentAwareGenericWebAdapter
 from argus.sources.json_feed import JSONFeedAdapter
 from argus.sources.office_web import OfficeAwareGenericWebAdapter
+from argus.sources.rss import RSSAdapter
 from argus.sources.semantic_web import SemanticWebAdapter
 from argus.storage.atomic_sqlite import AtomicSQLiteRepository
 
@@ -64,6 +65,16 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     assert adapter.microdata_max_items == 7
     assert adapter.microdata_max_properties_per_item == 8
     assert adapter.microdata_max_value_chars == 321
+
+    rss_tracked = services.registry.get("rss_atom")
+    rss = getattr(rss_tracked, "_adapter", None)
+    assert isinstance(rss, RSSAdapter)
+    assert rss.max_items == 7
+    assert rss.max_xml_nodes == 77
+    assert rss.max_xml_depth == 9
+    assert rss.max_title_chars == 321
+    assert rss.max_entry_text_chars == 3_210
+    assert rss.max_identifier_chars == 321
 
     json_feed_tracked = services.registry.get("json_feed")
     json_feed = getattr(json_feed_tracked, "_adapter", None)
