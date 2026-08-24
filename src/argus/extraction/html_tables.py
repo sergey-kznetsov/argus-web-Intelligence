@@ -155,13 +155,20 @@ def _looks_like_layout(table: Tag) -> bool:
 def _looks_like_data(table: Tag) -> bool:
     if table.find("caption", recursive=False) is not None:
         return True
-    if table.find("thead") is not None or table.find("th") is not None:
+    if _has_owned_descendant(table, "thead") or _has_owned_descendant(table, "th"):
         return True
     role = str(table.get("role", "")).strip().casefold()
     if role in {"table", "grid", "treegrid"}:
         return True
     if table.get("aria-label") or table.get("aria-labelledby"):
         return True
+    return False
+
+
+def _has_owned_descendant(table: Tag, name: str) -> bool:
+    for node in table.find_all(name):
+        if isinstance(node, Tag) and node.find_parent("table") is table:
+            return True
     return False
 
 
