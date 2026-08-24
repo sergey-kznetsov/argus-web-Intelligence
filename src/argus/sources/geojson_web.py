@@ -87,6 +87,7 @@ class GeoJsonAwareWebAdapter(SchemaAwareSemanticWebAdapter):
             "invalid_features_skipped": invalid_features,
             "invalid_points_skipped": invalid_points,
             "axis_order": "longitude_latitude",
+            "max_supported_dimensions": 3,
             "extractor": self.extractor_version,
         }
         result.observations.extend(observations)
@@ -230,11 +231,13 @@ class GeoJsonAwareWebAdapter(SchemaAwareSemanticWebAdapter):
 
     @staticmethod
     def _point(coordinates: object) -> Point | None:
-        if not isinstance(coordinates, list) or len(coordinates) < 2:
+        if not isinstance(coordinates, list) or len(coordinates) not in {2, 3}:
             return None
         longitude = GeoJsonAwareWebAdapter._coordinate(coordinates[0])
         latitude = GeoJsonAwareWebAdapter._coordinate(coordinates[1])
         if longitude is None or latitude is None:
+            return None
+        if len(coordinates) == 3 and GeoJsonAwareWebAdapter._coordinate(coordinates[2]) is None:
             return None
         if not (-180 <= longitude <= 180 and -90 <= latitude <= 90):
             return None
