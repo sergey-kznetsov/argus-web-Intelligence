@@ -44,6 +44,26 @@ def test_skips_layout_table_and_unmarked_table():
     assert result.tables == []
 
 
+def test_nested_semantic_table_does_not_promote_unmarked_outer_table():
+    html = """
+    <table>
+      <tr><td>
+        Wrapper
+        <table><tr><th>Name</th></tr><tr><td>Inner</td></tr></table>
+      </td></tr>
+    </table>
+    """
+
+    result = extract_html_tables(html, content_type="text/html")
+
+    assert result.tables_seen == 2
+    assert result.layout_skipped == 1
+    assert len(result.tables) == 1
+    assert result.tables[0].index == 1
+    assert result.tables[0].headers == ["Name"]
+    assert result.tables[0].rows == [["Inner"]]
+
+
 def test_skips_complex_rowspan_and_colspan_tables():
     html = """
     <table><tr><th colspan="2">Header</th></tr><tr><td>A</td><td>B</td></tr></table>
