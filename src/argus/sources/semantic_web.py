@@ -18,6 +18,25 @@ class SemanticWebAdapter(OfficeAwareGenericWebAdapter):
     HTML data tables and reuses the already-published page snapshot for provenance.
     """
 
+    def __init__(
+        self,
+        *args,
+        html_table_max_scan_chars: int = 1_000_000,
+        html_table_max_tables: int = 20,
+        html_table_max_rows_per_table: int = 200,
+        html_table_max_total_rows: int = 1_000,
+        html_table_max_columns: int = 50,
+        html_table_max_cell_chars: int = 5_000,
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.html_table_max_scan_chars = max(1, int(html_table_max_scan_chars))
+        self.html_table_max_tables = max(1, int(html_table_max_tables))
+        self.html_table_max_rows_per_table = max(1, int(html_table_max_rows_per_table))
+        self.html_table_max_total_rows = max(1, int(html_table_max_total_rows))
+        self.html_table_max_columns = max(1, int(html_table_max_columns))
+        self.html_table_max_cell_chars = max(1, int(html_table_max_cell_chars))
+
     async def extract(
         self,
         task: SourceTask,
@@ -31,6 +50,12 @@ class SemanticWebAdapter(OfficeAwareGenericWebAdapter):
         extraction = extract_html_tables(
             fetched.text,
             content_type=fetched.content_type,
+            max_scan_chars=self.html_table_max_scan_chars,
+            max_tables=self.html_table_max_tables,
+            max_rows_per_table=self.html_table_max_rows_per_table,
+            max_total_rows=self.html_table_max_total_rows,
+            max_columns=self.html_table_max_columns,
+            max_cell_chars=self.html_table_max_cell_chars,
         )
         self._attach_table_summary(result, extraction)
         if not extraction.tables:
