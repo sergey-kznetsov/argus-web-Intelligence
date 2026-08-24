@@ -32,7 +32,15 @@ class OfficeAwareGenericWebAdapter(DocumentAwareGenericWebAdapter):
         ".xls": "xls",
         ".xlsx": "xlsx",
     }
-    _TEXT_DATA_SUFFIXES = {".csv", ".geojson", ".json", ".tab", ".tsv", ".xml"}
+    _TEXT_DATA_SUFFIXES = {
+        ".csv",
+        ".geojson",
+        ".json",
+        ".kml",
+        ".tab",
+        ".tsv",
+        ".xml",
+    }
     _OFFICE_MEDIA_TYPES = {
         "application/msword": "doc",
         "application/vnd.ms-excel": "xls",
