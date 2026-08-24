@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+import math
 
-from argus.contracts.models import CollectionRequest, Evidence, Observation
+from argus.contracts.models import CollectionRequest, Evidence, Observation, Point
 from argus.extraction.jsonld import JsonLdExtraction
 from argus.extraction.microdata import MicrodataExtraction
 from argus.normalization.identity import stable_evidence_id, stable_observation_id
@@ -64,6 +65,12 @@ class SchemaAwareSemanticWebAdapter(SemanticWebAdapter):
                     entity_type=entity_type,
                     value_getter=lambda name, data=entity.data: self._json_ld_string(data, name),
                 )
+                self._apply_json_ld_geo(
+                    observation,
+                    evidence,
+                    data=entity.data,
+                    schema_types=schema_types,
+                )
         return observations, evidence
 
     def _microdata_observations(
@@ -102,6 +109,12 @@ class SchemaAwareSemanticWebAdapter(SemanticWebAdapter):
                     value_getter=lambda name, props=item.properties: self._microdata_string(
                         props, name
                     ),
+                )
+                self._apply_microdata_geo(
+                    observation,
+                    evidence,
+                    properties=item.properties,
+                    schema_types=schema_types,
                 )
         return observations, evidence
 
@@ -184,6 +197,81 @@ class SchemaAwareSemanticWebAdapter(SemanticWebAdapter):
             if evidence.observation_id == observation.observation_id:
                 evidence.metadata["schema_field_normalization"] = field_normalization
 
+    def _apply_json_ld_geo(
+        self,
+        observation: Observation,
+        evidence_items: list[Evidence],
+        *,
+        data: dict[str, object],
+        schema_types: list[str],
+    ) -> None:
+        latitude: object | None = None
+        longitude: object | None = None
+        source_field: str | None = None
+
+        geo = data.get("geo")
+        if isinstance(geo, dict) and ("latitude" in geo or "longitude" in geo):
+            latitude = geo.get("latitude")
+            longitude = geo.get("longitude")
+            source_field = "geo"
+        elif "latitude" in data or "longitude" in data:
+            latitude = data.get("latitude")
+            longitude = data.get("longitude")
+            source_field = "latitude_longitude"
+        elif "GeoCoordinates" not in schema_types:
+            return
+
+        self._apply_geo_values(
+            observation,
+            evidence_items,
+            latitude=latitude,
+            longitude=longitude,
+            source_field=source_field or "GeoCoordinates",
+        )
+
+    def _apply_microdata_geo(
+        self,
+        observation: Observation,
+        evidence_items: list[Evidence],
+        *,
+        properties: dict[str, list[object]],
+        schema_types: list[str],
+    ) -> None:
+        has_coordinates = "latitude" in properties or "longitude" in properties
+        if not has_coordinates and "GeoCoordinates" not in schema_types:
+            return
+        self._apply_geo_values(
+            observation,
+            evidence_items,
+            latitude=self._first_property(properties, "latitude"),
+            longitude=self._first_property(properties, "longitude"),
+            source_field="latitude_longitude",
+        )
+
+    def _apply_geo_values(
+        self,
+        observation: Observation,
+        evidence_items: list[Evidence],
+        *,
+        latitude: object | None,
+        longitude: object | None,
+        source_field: str,
+    ) -> None:
+        point = self._point(latitude, longitude)
+        normalization = {
+            "source_field": source_field,
+            "source_declared": True,
+            "valid_point": point is not None,
+            "geocoding_used": False,
+        }
+        if point is not None:
+            observation.geo = point
+        observation.provenance["schema_geo_normalization"] = normalization
+        observation.quality["geospatial_valid"] = point is not None
+        for evidence in evidence_items:
+            if evidence.observation_id == observation.observation_id:
+                evidence.metadata["schema_geo_normalization"] = normalization
+
     @staticmethod
     def _json_ld_string(data: dict[str, object], name: str) -> str | None:
         value = data.get(name)
@@ -203,6 +291,33 @@ class SchemaAwareSemanticWebAdapter(SemanticWebAdapter):
         return None
 
     @staticmethod
+    def _first_property(properties: dict[str, list[object]], name: str) -> object | None:
+        values = properties.get(name, [])
+        return values[0] if values else None
+
+    @classmethod
+    def _point(cls, latitude: object | None, longitude: object | None) -> Point | None:
+        lat = cls._number(latitude)
+        lon = cls._number(longitude)
+        if lat is None or lon is None:
+            return None
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            return None
+        return Point(latitude=lat, longitude=lon)
+
+    @staticmethod
+    def _number(value: object | None) -> float | None:
+        if isinstance(value, list):
+            value = value[0] if value else None
+        if isinstance(value, bool) or value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
+
+    @staticmethod
     def _datetime(value: str | None) -> datetime | None:
         if not value:
             return None
@@ -215,4 +330,5 @@ class SchemaAwareSemanticWebAdapter(SemanticWebAdapter):
         payload = dict(await super().health())
         payload["schema_org_type_normalization"] = True
         payload["schema_org_field_normalization"] = True
+        payload["schema_org_geo_normalization"] = True
         return payload
