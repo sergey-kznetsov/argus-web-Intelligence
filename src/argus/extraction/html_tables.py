@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 
 @dataclass(slots=True)
@@ -200,11 +200,15 @@ def _has_complex_spans(rows: list[Tag]) -> bool:
 def _cell_text(cell: Tag, limit: int) -> tuple[str, bool]:
     owner_table = cell.find_parent("table")
     parts: list[str] = []
-    for value in cell.stripped_strings:
-        parent = value.parent if isinstance(value.parent, Tag) else None
+    for node in cell.descendants:
+        if not isinstance(node, NavigableString):
+            continue
+        parent = node.parent if isinstance(node.parent, Tag) else None
         nearest_table = parent.find_parent("table") if parent is not None else None
         if nearest_table is owner_table:
-            parts.append(str(value))
+            value = " ".join(str(node).split()).strip()
+            if value:
+                parts.append(value)
     bounded, truncated = _bounded_text(" ".join(parts), limit)
     return bounded or "", truncated
 
