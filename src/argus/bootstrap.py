@@ -25,10 +25,10 @@ from argus.research.searxng import SearxngDiscoveryProvider
 from argus.security.urls import UrlGuard
 from argus.services import ServiceContainer
 from argus.sources.json_feed import JSONFeedAdapter
-from argus.sources.office_web import OfficeAwareGenericWebAdapter
 from argus.sources.overpass_map import OverpassSourceAdapter
 from argus.sources.registry import SourceRegistry
 from argus.sources.rss import RSSAdapter
+from argus.sources.semantic_web import SemanticWebAdapter
 from argus.sources.sitemap import SitemapDiscoveryAdapter
 from argus.sources.wayback import WaybackSourceAdapter
 from argus.storage.factory import build_repository
@@ -148,7 +148,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     structured_extractor = build_structured_data_extractor(settings)
     registry = SourceRegistry()
     registry.register(
-        OfficeAwareGenericWebAdapter(
+        SemanticWebAdapter(
             fast=fast,
             browser=browser,
             snapshots=snapshots,
