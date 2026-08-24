@@ -75,41 +75,89 @@ async def test_jsonld_and_microdata_receive_conservative_schema_entity_types(tmp
         {
           "@context": "https://schema.org",
           "@graph": [
-            {"@id":"https://example.com/review/1","@type":"Review","name":"Отзыв"},
-            {"@id":"https://example.com/news/1","@type":"NewsArticle","headline":"Новость"}
+            {
+              "@id":"https://example.com/review/1",
+              "@type":"Review",
+              "name":"Отзыв",
+              "description":"Короткое описание",
+              "reviewBody":"Полный текст отзыва",
+              "datePublished":"2026-08-19T12:30:00+04:00"
+            },
+            {
+              "@id":"https://example.com/news/1",
+              "@type":"NewsArticle",
+              "headline":"Новость",
+              "description":"Краткая новость",
+              "articleBody":"Полный текст новости",
+              "datePublished":"2026-08-20T10:00:00+04:00"
+            }
           ]
         }
       </script>
     </head><body>
       <div itemscope itemtype="https://schema.org/GovernmentOrganization" itemid="/org/1">
         <span itemprop="name">Администрация</span>
+        <span itemprop="description">Муниципальный орган</span>
       </div>
     </body></html>
     """
 
     result = await adapter.extract(task, fetched(html), request())
 
-    review = next(item for item in result.observations if item.source_kind == "json_ld" and item.title == "Отзыв")
-    article = next(item for item in result.observations if item.source_kind == "json_ld" and item.title == "Новость")
+    review = next(
+        item
+        for item in result.observations
+        if item.source_kind == "json_ld" and item.title == "Отзыв"
+    )
+    article = next(
+        item
+        for item in result.observations
+        if item.source_kind == "json_ld" and item.title == "Новость"
+    )
     organization = next(item for item in result.observations if item.source_kind == "microdata")
 
     assert review.entity_type == "review"
     assert review.data["@type"] == "Review"
+    assert review.text == "Полный текст отзыва"
+    assert review.published_at is not None
+    assert review.published_at.isoformat() == "2026-08-19T12:30:00+04:00"
     assert review.provenance["schema_type_normalization"]["recognized_types"] == ["Review"]
-    assert review.provenance["schema_type_normalization"]["context_hints"] == ["https://schema.org"]
+    assert review.provenance["schema_type_normalization"]["context_hints"] == [
+        "https://schema.org"
+    ]
+    assert review.provenance["schema_field_normalization"] == {
+        "text_field": "reviewBody",
+        "published_at_field": "datePublished",
+        "source_declared_only": True,
+    }
     assert review.quality["schema_org_typed"] is True
 
     assert article.entity_type == "publication"
     assert article.data["@type"] == "NewsArticle"
+    assert article.text == "Полный текст новости"
+    assert article.published_at is not None
+    assert article.published_at.isoformat() == "2026-08-20T10:00:00+04:00"
+    assert article.provenance["schema_field_normalization"]["text_field"] == "articleBody"
 
     assert organization.entity_type == "organization"
     assert organization.data["item_types"] == ["https://schema.org/GovernmentOrganization"]
     assert organization.data["properties"]["name"] == ["Администрация"]
+    assert organization.text == "Муниципальный орган"
+    assert organization.provenance["schema_field_normalization"]["text_field"] == "description"
 
     for observation in (review, article, organization):
-        linked = [item for item in result.evidence if item.observation_id == observation.observation_id]
+        linked = [
+            item for item in result.evidence if item.observation_id == observation.observation_id
+        ]
         assert len(linked) == 1
-        assert linked[0].metadata["schema_type_normalization"]["normalized_entity_type"] == observation.entity_type
+        evidence = linked[0]
+        assert (
+            evidence.metadata["schema_type_normalization"]["normalized_entity_type"]
+            == observation.entity_type
+        )
+        assert evidence.metadata["schema_field_normalization"] == observation.provenance[
+            "schema_field_normalization"
+        ]
 
     await repository.close()
 
@@ -132,7 +180,13 @@ async def test_unknown_jsonld_vocabulary_remains_generic_structured_entity(tmp_p
     )
     html = """
     <script type="application/ld+json">
-      {"@context":"https://example.org/vocab/","@type":"Review","name":"Not schema.org"}
+      {
+        "@context":"https://example.org/vocab/",
+        "@type":"Review",
+        "name":"Not schema.org",
+        "reviewBody":"Must not become schema-normalized text",
+        "datePublished":"2026-08-19T12:30:00+04:00"
+      }
     </script>
     """
 
@@ -141,6 +195,9 @@ async def test_unknown_jsonld_vocabulary_remains_generic_structured_entity(tmp_p
     observation = next(item for item in result.observations if item.source_kind == "json_ld")
     assert observation.entity_type == "structured_entity"
     assert observation.provenance["schema_type_normalization"]["recognized_types"] == []
+    assert "schema_field_normalization" not in observation.provenance
+    assert observation.text is None
+    assert observation.published_at is None
     assert observation.quality["schema_org_typed"] is False
     await repository.close()
 
@@ -159,4 +216,5 @@ async def test_schema_aware_health_capability_is_exposed(tmp_path: Path):
     health = await adapter.health()
 
     assert health["schema_org_type_normalization"] is True
+    assert health["schema_org_field_normalization"] is True
     await repository.close()
