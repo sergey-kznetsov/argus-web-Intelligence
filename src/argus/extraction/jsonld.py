@@ -13,6 +13,7 @@ class JsonLdEntity:
     block_index: int
     node_index: int
     data: dict[str, Any]
+    context_hints: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -28,6 +29,8 @@ class EmbeddedJsonLdExtractor:
 
     The extractor treats JSON-LD as page-declared machine-readable evidence. It does
     not implement JSON-LD expansion/compaction and never dereferences ``@context``.
+    Bounded context hints are retained only so downstream normalization can recognize
+    explicitly declared, well-known vocabularies such as schema.org.
     """
 
     def __init__(
@@ -39,6 +42,8 @@ class EmbeddedJsonLdExtractor:
         max_depth: int = 8,
         max_items_per_container: int = 100,
         max_string_chars: int = 10_000,
+        max_context_hints: int = 10,
+        max_context_hint_chars: int = 2_000,
     ) -> None:
         self.max_blocks = max(1, max_blocks)
         self.max_block_chars = max(1_000, max_block_chars)
@@ -46,6 +51,8 @@ class EmbeddedJsonLdExtractor:
         self.max_depth = max(1, max_depth)
         self.max_items_per_container = max(1, max_items_per_container)
         self.max_string_chars = max(100, max_string_chars)
+        self.max_context_hints = max(1, max_context_hints)
+        self.max_context_hint_chars = max(100, max_context_hint_chars)
 
     def extract(self, html: str, content_type: str | None = None) -> JsonLdExtraction:
         if content_type and "html" not in content_type.casefold():
@@ -73,16 +80,21 @@ class EmbeddedJsonLdExtractor:
                 blocks_invalid += 1
                 continue
 
+            inherited_context = self._context_hints(
+                payload.get("@context") if isinstance(payload, dict) else None
+            )
             for node_index, node in enumerate(self._top_level_nodes(payload)):
                 if len(entities) >= self.max_entities:
                     break
                 sanitized = self._sanitize(node, depth=0)
                 if isinstance(sanitized, dict) and sanitized:
+                    own_context = self._context_hints(node.get("@context"))
                     entities.append(
                         JsonLdEntity(
                             block_index=block_index,
                             node_index=node_index,
                             data=sanitized,
+                            context_hints=own_context or inherited_context,
                         )
                     )
             if len(entities) >= self.max_entities:
@@ -125,6 +137,28 @@ class EmbeddedJsonLdExtractor:
     @staticmethod
     def _has_entity_fields(node: dict[str, Any]) -> bool:
         return any(key in node for key in ("@id", "@type", "name", "headline", "url"))
+
+    def _context_hints(self, value: Any) -> tuple[str, ...]:
+        hints: list[str] = []
+
+        def add(raw: Any) -> None:
+            if not isinstance(raw, str):
+                return
+            clean = raw.strip()[: self.max_context_hint_chars]
+            if clean and clean not in hints and len(hints) < self.max_context_hints:
+                hints.append(clean)
+
+        if isinstance(value, str):
+            add(value)
+        elif isinstance(value, list):
+            for item in value[: self.max_context_hints]:
+                if isinstance(item, str):
+                    add(item)
+                elif isinstance(item, dict):
+                    add(item.get("@vocab"))
+        elif isinstance(value, dict):
+            add(value.get("@vocab"))
+        return tuple(hints)
 
     def _sanitize(self, value: Any, *, depth: int) -> Any:
         if depth >= self.max_depth:
