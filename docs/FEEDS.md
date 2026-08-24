@@ -40,6 +40,19 @@ For Atom entries ARGUS prefers an entry link whose `rel` is `alternate` or omitt
 
 Only HTTP/HTTPS entry URLs without embedded credentials are accepted. Unsafe or invalid entry URLs fall back to the fetched feed URL instead of being used as factual destinations.
 
+## Source-declared geography
+
+ARGUS supports two point forms when the feed entry itself declares them:
+
+- GeoRSS Simple `georss:point`;
+- GeoRSS GML `georss:where/gml:Point/gml:pos`.
+
+Coordinates are interpreted in the GeoRSS order `latitude longitude` and are accepted only when both values are finite and inside WGS84 latitude/longitude ranges. ARGUS does not geocode or guess a replacement when a declared point is malformed.
+
+A valid point is copied to `Observation.geo`. Provenance records the GeoRSS representation and `geocoding_used=false`. An invalid but explicitly declared point remains visible through `data.geospatial` and `quality.geospatial_valid=false` while `Observation.geo` stays empty.
+
+Only points are normalized in the current contract. GeoRSS lines, boxes and polygons are deliberately not flattened into a point because the current Observation contract exposes a `Point`, not a general geometry.
+
 ## Evidence and provenance
 
 Each bounded feed entry produces:
@@ -50,7 +63,8 @@ Each bounded feed entry produces:
 - feed format (`rss` or `atom`);
 - entry index and total feed-entry count;
 - XML node/depth statistics;
-- explicit truncation flags.
+- explicit truncation flags;
+- source-declared GeoRSS point metadata when present.
 
 The feed Snapshot is captured from the fetched source document before semantic normalization, preserving the evidence needed to audit the extracted entry later.
 
