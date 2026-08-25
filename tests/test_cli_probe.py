@@ -7,7 +7,9 @@ import threading
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from argus.cli.main import app
 from argus.cli.probe import render_probe_summary, run_embedded_probe
 from argus.config import Settings
 from argus.contracts.models import (
@@ -53,6 +55,15 @@ def _server():
         finally:
             httpd.shutdown()
             thread.join()
+
+
+def test_probe_command_is_exposed_by_console_app() -> None:
+    result = CliRunner().invoke(app, ["probe", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "--address" in result.output
+    assert "--seed-url" in result.output
+    assert "--no-discovery" in result.output
+    assert "--output" in result.output
 
 
 @pytest.mark.asyncio
