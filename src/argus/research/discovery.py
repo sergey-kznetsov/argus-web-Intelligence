@@ -47,6 +47,11 @@ class DiscoveryOutcome:
     errors: list[StructuredError] = field(default_factory=list)
     providers_attempted: list[str] = field(default_factory=list)
     blocked: bool = False
+    candidates_seen: int = 0
+    valid_destinations: int = 0
+    destinations_selected: int = 0
+    task_budget: int = 0
+    stop_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -56,6 +61,7 @@ class _PreparedHit:
     domain_priority: int
     locality_matches: int
     https: bool
+    navigation_score: int
 
 
 class DiscoveryService:
@@ -66,7 +72,8 @@ class DiscoveryService:
     not generate extra search traffic once factual crawl candidates exist.
     """
 
-    ranking_version = "discovery-ranking/1"
+    ranking_version = "discovery-ranking/2"
+    stop_policy = "first_provider_with_valid_destinations"
 
     def __init__(
         self,
@@ -88,6 +95,7 @@ class DiscoveryService:
         outcome = DiscoveryOutcome()
         selected_queries = [query for query in queries if query.strip()][: self.max_queries]
         if not selected_queries:
+            outcome.stop_reason = "no_queries"
             return outcome
 
         allowed_order = self._normalized_domains(request.constraints.allowed_domains)
@@ -95,7 +103,8 @@ class DiscoveryService:
         denied = set(self._normalized_domains(request.constraints.denied_domains))
         locality_tokens = self._locality_tokens(request)
         seen: set[str] = set()
-        destination_limit = max(1, int(request.constraints.max_pages))
+        task_budget = max(1, int(request.constraints.max_pages))
+        outcome.task_budget = task_budget
 
         for provider in self.providers:
             outcome.providers_attempted.append(provider.name)
@@ -123,6 +132,7 @@ class DiscoveryService:
                 )
                 continue
 
+            outcome.candidates_seen += len(hits)
             prepared = await self._prepare_hits(
                 hits,
                 allowed=allowed,
@@ -131,15 +141,23 @@ class DiscoveryService:
                 locality_tokens=locality_tokens,
                 seen=seen,
             )
+            outcome.valid_destinations += len(prepared)
             prepared.sort(key=self._ranking_key)
 
             destinations_added = 0
             for candidate in prepared:
-                if destinations_added >= destination_limit:
+                if len(outcome.tasks) >= task_budget:
+                    outcome.stop_reason = "task_budget_reached"
                     break
                 hit = candidate.hit
                 canonical_url = candidate.canonical_url
                 seen.add(canonical_url)
+                ranking_components = {
+                    "domain_priority": candidate.domain_priority,
+                    "provider_rank": hit.rank,
+                    "locality_matches": candidate.locality_matches,
+                    "https": candidate.https,
+                }
                 common_metadata = {
                     "discovery_provider": hit.provider,
                     "discovery_engines": hit.engines,
@@ -149,7 +167,11 @@ class DiscoveryService:
                     "discovery_domain_priority": candidate.domain_priority,
                     "discovery_locality_matches": candidate.locality_matches,
                     "discovery_https": candidate.https,
+                    "discovery_navigation_score": candidate.navigation_score,
+                    "discovery_ranking_components": ranking_components,
                     "discovery_ranking_version": self.ranking_version,
+                    "discovery_stop_policy": self.stop_policy,
+                    "discovery_task_budget": task_budget,
                     "allowed_domains": list(request.constraints.allowed_domains),
                     "research_goals": list(request.intents),
                 }
@@ -163,7 +185,12 @@ class DiscoveryService:
                     )
                 )
                 destinations_added += 1
-                if self.historical_archive_source_id and "historical_context" in request.intents:
+                outcome.destinations_selected += 1
+                if (
+                    self.historical_archive_source_id
+                    and "historical_context" in request.intents
+                    and len(outcome.tasks) < task_budget
+                ):
                     outcome.tasks.append(
                         SourceTask(
                             source_id=self.historical_archive_source_id,
@@ -178,9 +205,12 @@ class DiscoveryService:
                         )
                     )
             if destinations_added:
+                if outcome.stop_reason is None:
+                    outcome.stop_reason = self.stop_policy
                 break
 
         if not outcome.tasks and outcome.providers_attempted and outcome.blocked:
+            outcome.stop_reason = "blocked_without_destinations"
             outcome.errors.append(
                 StructuredError(
                     code="DISCOVERY_INCOMPLETE",
@@ -193,6 +223,7 @@ class DiscoveryService:
                 )
             )
         elif not outcome.tasks and outcome.providers_attempted and not outcome.errors:
+            outcome.stop_reason = "no_valid_destinations"
             outcome.errors.append(
                 StructuredError(
                     code="DISCOVERY_NO_RESULTS",
@@ -204,6 +235,8 @@ class DiscoveryService:
                     source_id="discovery",
                 )
             )
+        elif not outcome.tasks and outcome.stop_reason is None:
+            outcome.stop_reason = "providers_exhausted"
         return outcome
 
     async def _prepare_hits(
@@ -229,13 +262,23 @@ class DiscoveryService:
             except UnsafeUrlError:
                 continue
             local_seen.add(canonical_url)
+            domain_priority = self._domain_priority(canonical_url, allowed_order)
+            locality_matches = self._locality_matches(hit, canonical_url, locality_tokens)
+            https = canonical_url.casefold().startswith("https://")
             prepared.append(
                 _PreparedHit(
                     hit=hit,
                     canonical_url=canonical_url,
-                    domain_priority=self._domain_priority(canonical_url, allowed_order),
-                    locality_matches=self._locality_matches(hit, canonical_url, locality_tokens),
-                    https=canonical_url.casefold().startswith("https://"),
+                    domain_priority=domain_priority,
+                    locality_matches=locality_matches,
+                    https=https,
+                    navigation_score=self._navigation_score(
+                        hit,
+                        domain_priority=domain_priority,
+                        allowed_count=len(allowed_order),
+                        locality_matches=locality_matches,
+                        https=https,
+                    ),
                 )
             )
         return prepared
@@ -250,6 +293,26 @@ class DiscoveryService:
             -int(hit.https),
             hit.canonical_url,
         )
+
+    @staticmethod
+    def _navigation_score(
+        hit: DiscoveryHit,
+        *,
+        domain_priority: int,
+        allowed_count: int,
+        locality_matches: int,
+        https: bool,
+    ) -> int:
+        """Return an explainable navigation score; never an Evidence confidence score."""
+        score = 0
+        if allowed_count and domain_priority < allowed_count:
+            score += max(10, 30 - (domain_priority * 5))
+        if hit.rank is not None and hit.rank >= 1:
+            score += max(0, 40 - min(hit.rank - 1, 40))
+        score += min(25, max(0, locality_matches) * 10)
+        if https:
+            score += 5
+        return min(100, score)
 
     @staticmethod
     def _normalized_domains(values: list[str]) -> list[str]:
