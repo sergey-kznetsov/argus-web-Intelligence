@@ -8,6 +8,7 @@ from argus.sources.document_web import DocumentAwareGenericWebAdapter
 from argus.sources.geojson_web import GeoJsonAwareWebAdapter
 from argus.sources.json_feed import JSONFeedAdapter
 from argus.sources.kml_web import KmlAwareWebAdapter
+from argus.sources.kmz_web import KmzAwareWebAdapter
 from argus.sources.office_web import OfficeAwareGenericWebAdapter
 from argus.sources.rss import RSSAdapter
 from argus.sources.schema_web import SchemaAwareSemanticWebAdapter
@@ -47,6 +48,7 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     assert isinstance(adapter, SchemaAwareSemanticWebAdapter)
     assert isinstance(adapter, GeoJsonAwareWebAdapter)
     assert isinstance(adapter, KmlAwareWebAdapter)
+    assert isinstance(adapter, KmzAwareWebAdapter)
 
     extractor = adapter.structured_data_extractor
     assert extractor.max_bytes == 123_456
@@ -72,6 +74,12 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     assert adapter.microdata_max_properties_per_item == 8
     assert adapter.microdata_max_value_chars == 321
     assert adapter.kml_max_placemarks == 7
+
+    assert adapter.kmz_extractor.max_bytes == 123_456
+    assert adapter.kmz_extractor.max_members == 7
+    assert adapter.kmz_extractor.max_uncompressed_bytes == 493_824
+    assert adapter.kmz_extractor.max_member_bytes == 246_912
+    assert adapter.kmz_extractor.max_kml_bytes == 123_456
 
     rss_tracked = services.registry.get("rss_atom")
     rss = getattr(rss_tracked, "_adapter", None)
