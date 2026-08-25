@@ -37,6 +37,7 @@ class OfficeAwareGenericWebAdapter(DocumentAwareGenericWebAdapter):
         ".geojson",
         ".json",
         ".kml",
+        ".kmz",
         ".tab",
         ".tsv",
         ".xml",
