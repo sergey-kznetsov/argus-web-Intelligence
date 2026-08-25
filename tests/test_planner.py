@@ -49,3 +49,63 @@ async def test_explicit_english_language_uses_english_terms():
 
     assert '"Helsinki" reviews' in plan.queries
     assert '"Helsinki" incidents' in plan.queries
+
+
+@pytest.mark.asyncio
+async def test_query_budget_covers_each_intent_before_secondary_variants():
+    request = CollectionRequest(
+        consumer="test",
+        analysis_id="fairness",
+        territory={"city": "Ижевск"},
+        intents=["reviews", "public_mentions", "local_news", "incidents"],
+    )
+    plan = await HeuristicResearchPlanner(max_queries=4).plan(request)
+
+    assert plan.queries == [
+        '"Ижевск" отзывы',
+        '"Ижевск"',
+        '"Ижевск" новости',
+        '"Ижевск" происшествия',
+    ]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_primary_query_does_not_hide_later_unique_round():
+    request = CollectionRequest(
+        consumer="test",
+        analysis_id="duplicate-round",
+        territory={"city": "Ижевск"},
+        intents=["public_mentions", "public_mentions"],
+    )
+    plan = await HeuristicResearchPlanner(max_queries=2).plan(request)
+
+    assert plan.queries == ['"Ижевск"', '"Ижевск" упоминания']
+
+
+@pytest.mark.asyncio
+async def test_query_length_is_bounded_without_losing_nonempty_plan():
+    request = CollectionRequest(
+        consumer="test",
+        analysis_id="bounded",
+        territory={"address": "А" * 2_000},
+        intents=["reviews"],
+    )
+    plan = await HeuristicResearchPlanner(max_queries=2, max_query_chars=128).plan(request)
+
+    assert plan.queries
+    assert all(len(query) <= 128 for query in plan.queries)
+
+
+@pytest.mark.asyncio
+async def test_unknown_intents_are_round_robin_bounded_too():
+    request = CollectionRequest(
+        consumer="test",
+        analysis_id="unknown",
+        territory={"city": "Ижевск"},
+        intents=["custom_one", "custom_two", "custom_three"],
+    )
+    plan = await HeuristicResearchPlanner(max_queries=2).plan(request)
+
+    assert len(plan.queries) == 2
+    assert "custom one" in plan.queries[0]
+    assert "custom two" in plan.queries[1]
