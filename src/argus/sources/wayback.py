@@ -10,7 +10,7 @@ from argus.sources.base import SourceResult, SourceTask
 
 
 class WaybackSourceAdapter:
-    """Turn exact-URL CDX captures into evidence and archived-page crawl tasks."""
+    """Turn exact-URL CDX captures into evidence and chronological archived-page tasks."""
 
     source_id = "wayback_cdx"
     intents = {"historical_context"}
@@ -48,7 +48,11 @@ class WaybackSourceAdapter:
         evidence_items: list[Evidence] = []
         discovered_tasks: list[SourceTask] = []
 
-        for rank, capture in enumerate(fetched.captures, start=1):
+        captures = sorted(
+            fetched.captures,
+            key=lambda item: (item.timestamp, item.original_url, item.capture_url),
+        )
+        for rank, capture in enumerate(captures, start=1):
             observation, evidence = await self._capture_observation(
                 capture,
                 collection_id,
@@ -89,7 +93,9 @@ class WaybackSourceAdapter:
         return result
 
     async def health(self) -> dict[str, object]:
-        return await self.provider.health()
+        payload = dict(await self.provider.health())
+        payload["capture_task_order"] = "oldest_first"
+        return payload
 
     async def _capture_observation(
         self,
