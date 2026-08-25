@@ -52,20 +52,38 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
             return None
         goals = self._research_goals(task)
         goal_text = ", ".join(goals)
-        agent_result = await self.agent.run(
-            AgentTask(
-                url=task.url,
-                goal=goal_text,
-                instruction=(
-                    f"Find the public page or view needed for goals '{goal_text}'. Use public site "
-                    "navigation, search, filters and expandable sections when needed."
-                ),
-                context={
-                    "allowed_domains": task.metadata.get("allowed_domains", []),
-                    "research_goals": goals,
-                },
+        try:
+            agent_result = await self.agent.run(
+                AgentTask(
+                    url=task.url,
+                    goal=goal_text,
+                    instruction=(
+                        f"Find the public page or view needed for goals '{goal_text}'. Use public site "
+                        "navigation, search, filters and expandable sections when needed."
+                    ),
+                    context={
+                        "allowed_domains": task.metadata.get("allowed_domains", []),
+                        "research_goals": goals,
+                    },
+                )
             )
-        )
+        except UnsafeUrlError:
+            raise
+        except Exception as exc:
+            # AGENT is a last-resort capability. Missing optional packages, an unavailable
+            # local LLM, or an agent-runtime failure must not turn a successfully bounded
+            # FAST/BROWSER research path into an unhandled collection failure. Keep only
+            # the exception class in metadata so secrets/endpoints are not copied to output.
+            task.metadata["agent_error"] = "agent runtime unavailable"
+            task.metadata["agent_execution"] = {
+                "status": "failed",
+                "code": "AGENT_RUNTIME_UNAVAILABLE",
+                "backend": getattr(self.agent, "name", "unknown"),
+                "error_type": type(exc).__name__,
+                "retryable": True,
+            }
+            return None
+
         task.metadata["agent_execution"] = dict(agent_result.metadata)
         if agent_result.error:
             task.metadata["agent_error"] = agent_result.error
