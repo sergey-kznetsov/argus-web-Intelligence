@@ -20,6 +20,7 @@ def test_extracts_explicit_microdata_values_and_date():
     assert result.items_seen == 1
     assert result.items_skipped == 0
     assert result.truncated is False
+    assert result.extractor_version == "html-microdata-explicit/2"
     item = result.items[0]
     assert item.item_types == ["https://schema.org/NewsArticle"]
     assert item.item_id == "https://example.com/news/1"
@@ -31,7 +32,7 @@ def test_extracts_explicit_microdata_values_and_date():
     assert item.published_at.isoformat() == "2026-08-20T10:00:00+04:00"
 
 
-def test_nested_items_are_references_for_parent_and_separate_items():
+def test_nested_items_preserve_bounded_properties_and_remain_separate_items():
     html = """
     <article itemscope itemtype="https://schema.org/Article" itemid="https://example.com/a">
       <span itemprop="headline">Материал</span>
@@ -53,12 +54,69 @@ def test_nested_items_are_references_for_parent_and_separate_items():
         {
             "itemid": "https://example.com/people/1",
             "itemtype": ["https://schema.org/Person"],
+            "properties": {"name": ["Иван Иванов"]},
         }
     ]
     assert "name" not in article.properties
     assert person.item_id == "https://example.com/people/1"
     assert person.properties["name"] == ["Иван Иванов"]
     assert person.title == "Иван Иванов"
+
+
+def test_nested_review_rating_properties_are_preserved_without_inference():
+    html = """
+    <article itemscope itemtype="https://schema.org/Review">
+      <span itemprop="name">Отзыв</span>
+      <div itemprop="reviewRating" itemscope itemtype="https://schema.org/Rating">
+        <meta itemprop="ratingValue" content="4.8" />
+        <meta itemprop="bestRating" content="5" />
+        <meta itemprop="worstRating" content="1" />
+      </div>
+    </article>
+    """
+
+    result = extract_microdata(
+        html,
+        content_type="text/html",
+        base_url="https://example.com/review",
+    )
+
+    review = result.items[0]
+    rating = review.properties["reviewRating"][0]
+    assert rating == {
+        "itemid": None,
+        "itemtype": ["https://schema.org/Rating"],
+        "properties": {
+            "ratingValue": ["4.8"],
+            "bestRating": ["5"],
+            "worstRating": ["1"],
+        },
+    }
+    assert result.truncated is False
+
+
+def test_nested_depth_limit_is_explicitly_reported():
+    html = """
+    <div itemscope itemtype="https://schema.org/Thing">
+      <div itemprop="child" itemscope itemtype="https://schema.org/Thing">
+        <div itemprop="grandchild" itemscope itemtype="https://schema.org/Thing">
+          <div itemprop="greatGrandchild" itemscope itemtype="https://schema.org/Thing">
+            <span itemprop="name">Too deep</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+
+    result = extract_microdata(
+        html,
+        content_type="text/html",
+        base_url="https://example.com/",
+        max_nested_depth=1,
+    )
+
+    assert result.truncated is True
+    assert result.items[0].truncated is True
 
 
 def test_itemref_item_is_skipped_instead_of_partial_extraction():
