@@ -194,7 +194,7 @@ async def test_tracking_fragment_and_default_port_collapse_to_one_destination():
     )
     service = DiscoveryService(
         providers=[CanonicalProvider()],
-        url_guard=UrlGuard.from_strings([]),
+        url_guard=UrlGuard.from_strings(["example.com"]),
     )
 
     outcome = await service.discover(["query"], request)
@@ -221,7 +221,7 @@ async def test_allowed_domain_order_is_explicit_priority_before_provider_rank():
     )
     service = DiscoveryService(
         providers=[RankingProvider()],
-        url_guard=UrlGuard.from_strings([]),
+        url_guard=UrlGuard.from_strings(["priority.test", "secondary.test"]),
     )
 
     outcome = await service.discover(["query"], request)
@@ -247,7 +247,7 @@ async def test_locality_and_https_break_equal_rank_ties_deterministically():
     )
     service = DiscoveryService(
         providers=[RankingProvider()],
-        url_guard=UrlGuard.from_strings([]),
+        url_guard=UrlGuard.from_strings(["secondary.test"]),
     )
 
     outcome = await service.discover(["query"], request)
@@ -273,7 +273,7 @@ async def test_destination_count_is_bounded_by_request_max_pages():
     )
     service = DiscoveryService(
         providers=[CanonicalProvider()],
-        url_guard=UrlGuard.from_strings([]),
+        url_guard=UrlGuard.from_strings(["example.com"]),
     )
 
     outcome = await service.discover(["query"], request)
