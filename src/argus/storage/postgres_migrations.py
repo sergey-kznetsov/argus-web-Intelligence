@@ -210,6 +210,21 @@ MIGRATIONS: tuple[PostgresMigration, ...] = (
             """,
         ),
     ),
+    PostgresMigration(
+        version=8,
+        name="observation_content_identity_index",
+        statements=(
+            f"""
+            CREATE INDEX IF NOT EXISTS ix_argus_observations_content_identity
+            ON {_SCHEMA}.observations(
+              collection_id,
+              (body ->> 'content_hash'),
+              (body ->> 'source_kind'),
+              observation_id
+            )
+            """,
+        ),
+    ),
 )
 
 
