@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Protocol
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from argus.contracts.models import CollectionRequest, StructuredError
+from argus.research.url_identity import canonicalize_discovery_url
 from argus.security.redaction import safe_error_message
 from argus.security.urls import UnsafeUrlError, UrlGuard
 from argus.sources.base import SourceTask
@@ -47,13 +49,24 @@ class DiscoveryOutcome:
     blocked: bool = False
 
 
-class DiscoveryService:
-    """Turn research queries into factual-source crawl tasks.
+@dataclass(slots=True)
+class _PreparedHit:
+    hit: DiscoveryHit
+    canonical_url: str
+    domain_priority: int
+    locality_matches: int
+    https: bool
 
-    Discovery hits are not evidence. Providers are ordered fallbacks: once one
-    provider yields at least one valid destination URL, later providers are not
-    called. This keeps search traffic small and avoids unnecessary anti-bot load.
+
+class DiscoveryService:
+    """Turn research queries into bounded, ranked factual-source crawl tasks.
+
+    Discovery hits are navigation only, never Evidence. Providers remain ordered
+    fallbacks: ARGUS uses the first provider that yields valid destinations and does
+    not generate extra search traffic once factual crawl candidates exist.
     """
+
+    ranking_version = "discovery-ranking/1"
 
     def __init__(
         self,
@@ -77,9 +90,12 @@ class DiscoveryService:
         if not selected_queries:
             return outcome
 
-        allowed = {domain.lower().strip(".") for domain in request.constraints.allowed_domains}
-        denied = {domain.lower().strip(".") for domain in request.constraints.denied_domains}
+        allowed_order = self._normalized_domains(request.constraints.allowed_domains)
+        allowed = set(allowed_order)
+        denied = set(self._normalized_domains(request.constraints.denied_domains))
+        locality_tokens = self._locality_tokens(request)
         seen: set[str] = set()
+        destination_limit = max(1, int(request.constraints.max_pages))
 
         for provider in self.providers:
             outcome.providers_attempted.append(provider.name)
@@ -107,19 +123,33 @@ class DiscoveryService:
                 )
                 continue
 
-            before = len(outcome.tasks)
-            for hit in hits:
-                if hit.url in seen or not self._domain_allowed(hit.url, allowed, denied):
-                    continue
-                try:
-                    await self.url_guard.validate(hit.url)
-                except UnsafeUrlError:
-                    continue
-                seen.add(hit.url)
+            prepared = await self._prepare_hits(
+                hits,
+                allowed=allowed,
+                denied=denied,
+                allowed_order=allowed_order,
+                locality_tokens=locality_tokens,
+                seen=seen,
+            )
+            prepared.sort(key=self._ranking_key)
+
+            destinations_added = 0
+            for candidate in prepared:
+                if destinations_added >= destination_limit:
+                    break
+                hit = candidate.hit
+                canonical_url = candidate.canonical_url
+                seen.add(canonical_url)
                 common_metadata = {
                     "discovery_provider": hit.provider,
                     "discovery_engines": hit.engines,
                     "discovery_rank": hit.rank,
+                    "discovery_original_url": hit.url,
+                    "discovery_canonical_url": canonical_url,
+                    "discovery_domain_priority": candidate.domain_priority,
+                    "discovery_locality_matches": candidate.locality_matches,
+                    "discovery_https": candidate.https,
+                    "discovery_ranking_version": self.ranking_version,
                     "allowed_domains": list(request.constraints.allowed_domains),
                     "research_goals": list(request.intents),
                 }
@@ -127,29 +157,27 @@ class DiscoveryService:
                     SourceTask(
                         source_id="generic_web",
                         goal=request.intents[0],
-                        url=hit.url,
+                        url=canonical_url,
                         depth=0,
                         metadata=dict(common_metadata),
                     )
                 )
-                if (
-                    self.historical_archive_source_id
-                    and "historical_context" in request.intents
-                ):
+                destinations_added += 1
+                if self.historical_archive_source_id and "historical_context" in request.intents:
                     outcome.tasks.append(
                         SourceTask(
                             source_id=self.historical_archive_source_id,
                             goal="historical_context",
-                            url=hit.url,
+                            url=canonical_url,
                             depth=0,
-                            task_key=f"{self.historical_archive_source_id}:{hit.url}",
+                            task_key=f"{self.historical_archive_source_id}:{canonical_url}",
                             metadata={
                                 **common_metadata,
-                                "archive_target_url": hit.url,
+                                "archive_target_url": canonical_url,
                             },
                         )
                     )
-            if len(outcome.tasks) > before:
+            if destinations_added:
                 break
 
         if not outcome.tasks and outcome.providers_attempted and outcome.blocked:
@@ -178,9 +206,66 @@ class DiscoveryService:
             )
         return outcome
 
+    async def _prepare_hits(
+        self,
+        hits: list[DiscoveryHit],
+        *,
+        allowed: set[str],
+        denied: set[str],
+        allowed_order: list[str],
+        locality_tokens: tuple[str, ...],
+        seen: set[str],
+    ) -> list[_PreparedHit]:
+        prepared: list[_PreparedHit] = []
+        local_seen: set[str] = set()
+        for hit in hits:
+            canonical_url = canonicalize_discovery_url(hit.url)
+            if canonical_url is None or canonical_url in seen or canonical_url in local_seen:
+                continue
+            if not self._domain_allowed(canonical_url, allowed, denied):
+                continue
+            try:
+                await self.url_guard.validate(canonical_url)
+            except UnsafeUrlError:
+                continue
+            local_seen.add(canonical_url)
+            prepared.append(
+                _PreparedHit(
+                    hit=hit,
+                    canonical_url=canonical_url,
+                    domain_priority=self._domain_priority(canonical_url, allowed_order),
+                    locality_matches=self._locality_matches(hit, canonical_url, locality_tokens),
+                    https=canonical_url.casefold().startswith("https://"),
+                )
+            )
+        return prepared
+
+    @staticmethod
+    def _ranking_key(hit: _PreparedHit) -> tuple[int, int, int, int, str]:
+        rank = hit.hit.rank if hit.hit.rank is not None and hit.hit.rank >= 0 else 1_000_000_000
+        return (
+            hit.domain_priority,
+            rank,
+            -hit.locality_matches,
+            -int(hit.https),
+            hit.canonical_url,
+        )
+
+    @staticmethod
+    def _normalized_domains(values: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            domain = value.casefold().strip().strip(".")
+            if not domain or domain in seen:
+                continue
+            seen.add(domain)
+            result.append(domain)
+        return result
+
     @staticmethod
     def _domain_allowed(url: str, allowed: set[str], denied: set[str]) -> bool:
-        domain = (urlparse(url).hostname or "").lower().strip(".")
+        domain = (urlparse(url).hostname or "").casefold().strip(".")
         if not domain:
             return False
         if any(domain == item or domain.endswith("." + item) for item in denied):
@@ -188,3 +273,40 @@ class DiscoveryService:
         if allowed:
             return any(domain == item or domain.endswith("." + item) for item in allowed)
         return True
+
+    @staticmethod
+    def _domain_priority(url: str, allowed_order: list[str]) -> int:
+        if not allowed_order:
+            return 0
+        domain = (urlparse(url).hostname or "").casefold().strip(".")
+        for index, candidate in enumerate(allowed_order):
+            if domain == candidate or domain.endswith("." + candidate):
+                return index
+        return len(allowed_order)
+
+    @staticmethod
+    def _locality_tokens(request: CollectionRequest) -> tuple[str, ...]:
+        source = " ".join(
+            value.strip()
+            for value in (request.territory.city or "", request.territory.address or "")
+            if value.strip()
+        ).casefold()
+        tokens: list[str] = []
+        seen: set[str] = set()
+        for token in re.findall(r"[\w-]+", source, flags=re.UNICODE):
+            if len(token) < 3 or token in seen:
+                continue
+            seen.add(token)
+            tokens.append(token)
+        return tuple(tokens)
+
+    @staticmethod
+    def _locality_matches(
+        hit: DiscoveryHit,
+        canonical_url: str,
+        tokens: tuple[str, ...],
+    ) -> int:
+        if not tokens:
+            return 0
+        haystack = f"{hit.title or ''} {unquote(canonical_url)}".casefold()
+        return sum(1 for token in tokens if token in haystack)
