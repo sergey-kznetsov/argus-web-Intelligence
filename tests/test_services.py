@@ -5,6 +5,14 @@ import pytest
 from argus.services import ServiceContainer
 
 
+class _FakeRepository:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    async def close(self) -> None:
+        self.events.append("repository:stop")
+
+
 class _FakeOrchestrator:
     def __init__(self, events: list[str]) -> None:
         self.events = events
@@ -30,11 +38,13 @@ class _FakeRuntime:
 async def test_service_container_stops_jobs_before_crawlers():
     events: list[str] = []
     services = ServiceContainer(
-        repository=object(),
+        repository=_FakeRepository(events),
         registry=object(),
+        map_registry=object(),
         orchestrator=_FakeOrchestrator(events),
         fast=_FakeRuntime("fast", events),
         browser=_FakeRuntime("browser", events),
+        metrics=object(),
     )
 
     await services.start()
@@ -42,4 +52,5 @@ async def test_service_container_stops_jobs_before_crawlers():
 
     assert events[0] == "orchestrator:start"
     assert events[1] == "orchestrator:stop"
-    assert set(events[2:]) == {"fast:stop", "browser:stop"}
+    assert set(events[2:4]) == {"fast:stop", "browser:stop"}
+    assert events[4] == "repository:stop"
