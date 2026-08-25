@@ -15,6 +15,7 @@ class DuplicateAwareWebAdapter(CanonicalLinkWebAdapter):
     """
 
     duplicate_identity_version = "committed-content-hash/1"
+    min_web_text_chars = 256
     _PRIMARY_SOURCE_KINDS = {
         "web_page",
         "pdf_document",
@@ -39,7 +40,7 @@ class DuplicateAwareWebAdapter(CanonicalLinkWebAdapter):
             return result
 
         primary = self._primary_observation(result)
-        if primary is None or not primary.content_hash:
+        if primary is None or not self._eligible_primary(primary):
             return result
 
         collection_id = primary.collection_id
@@ -65,6 +66,14 @@ class DuplicateAwareWebAdapter(CanonicalLinkWebAdapter):
                 return observation
         return None
 
+    def _eligible_primary(self, observation: Observation) -> bool:
+        if not observation.content_hash.strip():
+            return False
+        if observation.source_kind != "web_page":
+            return True
+        text = observation.text or ""
+        return len(text.strip()) >= self.min_web_text_chars
+
     def _mark_duplicate(
         self,
         result: SourceResult,
@@ -79,16 +88,16 @@ class DuplicateAwareWebAdapter(CanonicalLinkWebAdapter):
             "identity_version": self.duplicate_identity_version,
             "collection_scoped": True,
         }
-        for observation in result.observations:
-            observation.provenance["duplicate_content"] = duplicate_metadata
-            observation.quality["duplicate_content"] = True
-            observation.quality["duplicate_of"] = duplicate_of.observation_id
-        for evidence in result.evidence:
-            evidence.metadata["duplicate_content"] = duplicate_metadata
-
+        primary.provenance["duplicate_content"] = duplicate_metadata
+        primary.quality["duplicate_content"] = True
+        primary.quality["duplicate_of"] = duplicate_of.observation_id
         primary.data["duplicate_of_observation_id"] = duplicate_of.observation_id
         primary.data["duplicate_of_url"] = duplicate_of.url
         primary.data["duplicate_navigation_suppressed"] = True
+
+        for evidence in result.evidence:
+            if evidence.observation_id == primary.observation_id:
+                evidence.metadata["duplicate_content"] = duplicate_metadata
 
     async def health(self) -> dict[str, object]:
         payload = dict(await super().health())
@@ -96,4 +105,5 @@ class DuplicateAwareWebAdapter(CanonicalLinkWebAdapter):
         payload["duplicate_content_collection_scoped"] = True
         payload["duplicate_content_evidence_preserved"] = True
         payload["duplicate_content_navigation_suppressed"] = True
+        payload["duplicate_content_min_web_text_chars"] = self.min_web_text_chars
         return payload
