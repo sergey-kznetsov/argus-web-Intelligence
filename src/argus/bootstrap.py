@@ -137,7 +137,11 @@ def build_ooxml_extractor(settings: Settings) -> BoundedOoxmlExtractor:
 def build_services(settings: Settings) -> ServiceContainer:
     settings.ensure_dirs()
     repository = build_repository(settings)
-    guard = UrlGuard.from_strings(settings.allow_internal_targets)
+    guard = UrlGuard.from_strings(
+        settings.allow_internal_targets,
+        deny_values=settings.deny_outbound_hosts,
+        public_ports=settings.outbound_public_ports,
+    )
     fast = FastCrawlerRuntime(settings, guard)
     browser = BrowserCrawlerRuntime(settings, guard)
     snapshots = SnapshotService(repository)
