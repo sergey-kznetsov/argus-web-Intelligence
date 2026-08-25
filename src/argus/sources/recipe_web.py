@@ -8,7 +8,9 @@ from argus.sources.duplicate_web import DuplicateAwareWebAdapter
 
 
 class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
-    """Apply bounded SiteRecipe lifecycle around the existing web factual stack."""
+    """Apply bounded SiteRecipe and AGENT lifecycle around the factual web stack."""
+
+    max_agent_direct_replay_urls = 2
 
     async def fetch(self, task: SourceTask) -> FetchResult:
         recipe_failed = False
@@ -64,6 +66,10 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
                 },
             )
         )
+        task.metadata["agent_execution"] = dict(agent_result.metadata)
+        if agent_result.error:
+            task.metadata["agent_error"] = agent_result.error
+
         if agent_result.blocked:
             return FetchResult(
                 url=task.url,
@@ -73,55 +79,75 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
                 text="",
                 blocked=True,
                 runtime=f"agent:{self.agent.name}",
-                metadata={"agent_error": agent_result.error},
+                metadata={
+                    "agent_backend": self.agent.name,
+                    "agent_error": agent_result.error,
+                    "agent_execution": dict(agent_result.metadata),
+                },
             )
         if not agent_result.success:
             return None
 
-        if self.recipes is not None and agent_result.actions:
+        if agent_result.actions:
+            # Any successful agent run that performed actions must become a verified
+            # deterministic recipe. Never replay arbitrary visited URLs as a fallback
+            # when the action path cannot be compiled or verified.
+            if self.recipes is None:
+                task.metadata["agent_path_rejected"] = "recipe_manager_unavailable"
+                return None
             steps = self.recipe_compiler.compile(agent_result.actions)
-            if steps:
-                candidate = await self.recipes.candidate(task.url, task.goal, steps)
-                try:
-                    replayed = await self.browser.fetch(task.url, recipe=candidate)
-                except UnsafeUrlError:
-                    raise
-                except Exception as exc:
-                    rejected = self.recipes.reject_candidate(
-                        candidate,
-                        reason=f"verification_failed:{type(exc).__name__}",
-                    )
-                    task.metadata["recipe_candidate_rejected"] = self.recipes.lifecycle(rejected)
-                else:
-                    if replayed.blocked:
-                        rejected = self.recipes.reject_candidate(
-                            candidate,
-                            reason="verification_blocked",
-                        )
-                        replayed.metadata.update(
-                            {
-                                "agent_backend": self.agent.name,
-                                "agent_compiled_recipe": False,
-                                "recipe_candidate_rejected": self.recipes.lifecycle(rejected),
-                            }
-                        )
-                        # Do not try alternate URLs to sidestep a challenge encountered
-                        # while verifying the deterministic recipe.
-                        return replayed
+            if not steps:
+                task.metadata["agent_path_rejected"] = "actions_not_deterministically_compilable"
+                return None
 
-                    await self.recipes.mark_success(candidate)
-                    replayed.metadata.update(
-                        {
-                            "agent_backend": self.agent.name,
-                            "agent_compiled_recipe": True,
-                            "recipe_lifecycle": self.recipes.lifecycle(candidate),
-                        }
-                    )
-                    return replayed
+            candidate = await self.recipes.candidate(task.url, task.goal, steps)
+            try:
+                replayed = await self.browser.fetch(task.url, recipe=candidate)
+            except UnsafeUrlError:
+                raise
+            except Exception as exc:
+                rejected = self.recipes.reject_candidate(
+                    candidate,
+                    reason=f"verification_failed:{type(exc).__name__}",
+                )
+                task.metadata["recipe_candidate_rejected"] = self.recipes.lifecycle(rejected)
+                return None
 
-        for visited in reversed(agent_result.visited_urls):
-            if visited == task.url:
-                continue
+            if replayed.blocked:
+                rejected = self.recipes.reject_candidate(
+                    candidate,
+                    reason="verification_blocked",
+                )
+                replayed.metadata.update(
+                    {
+                        "agent_backend": self.agent.name,
+                        "agent_compiled_recipe": False,
+                        "agent_execution": dict(agent_result.metadata),
+                        "recipe_candidate_rejected": self.recipes.lifecycle(rejected),
+                    }
+                )
+                # Do not try alternate URLs to sidestep a challenge encountered while
+                # verifying the deterministic recipe.
+                return replayed
+
+            await self.recipes.mark_success(candidate)
+            replayed.metadata.update(
+                {
+                    "agent_backend": self.agent.name,
+                    "agent_compiled_recipe": True,
+                    "agent_execution": dict(agent_result.metadata),
+                    "recipe_lifecycle": self.recipes.lifecycle(candidate),
+                }
+            )
+            return replayed
+
+        # A successful action-free agent run may have discovered a direct public URL.
+        # Re-fetch at most a tiny bounded number with the normal BROWSER runtime so the
+        # agent's own final text never becomes factual Evidence.
+        replay_candidates = [
+            url for url in reversed(agent_result.visited_urls) if url and url != task.url
+        ][: self.max_agent_direct_replay_urls]
+        for visited in replay_candidates:
             try:
                 fetched = await self.browser.fetch(visited)
             except UnsafeUrlError:
@@ -133,6 +159,8 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
                     "agent_backend": self.agent.name,
                     "agent_guided": True,
                     "agent_origin_url": task.url,
+                    "agent_execution": dict(agent_result.metadata),
+                    "agent_direct_replay_bounded": True,
                 }
             )
             return fetched
@@ -152,5 +180,17 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
                 "max_age_days": self.recipes.max_age_days,
                 "keep_versions": self.recipes.keep_versions,
                 "blocked_verification_fallback": False,
+            }
+        if self.agent is not None:
+            payload["agent_execution"] = {
+                "backend": self.agent.name,
+                "last_resort": True,
+                "agent_output_is_evidence": False,
+                "successful_action_paths_require_verified_recipe": True,
+                "max_direct_replay_urls": self.max_agent_direct_replay_urls,
+                "max_steps": getattr(self.agent, "max_steps", None),
+                "timeout_seconds": getattr(self.agent, "timeout_seconds", None),
+                "max_actions": getattr(self.agent, "max_actions", None),
+                "max_visited_urls": getattr(self.agent, "max_visited_urls", None),
             }
         return payload
