@@ -33,7 +33,21 @@ class KmlAwareWebAdapter(GeoJsonAwareWebAdapter):
         result = await super().extract(task, fetched, request)
         if fetched.blocked:
             return result
+        return self._normalize_kml_result(
+            result,
+            task=task,
+            request=request,
+            source_url=fetched.final_url,
+        )
 
+    def _normalize_kml_result(
+        self,
+        result: SourceResult,
+        *,
+        task: SourceTask,
+        request: CollectionRequest,
+        source_url: str,
+    ) -> SourceResult:
         dataset = self._kml_dataset(result)
         if dataset is None:
             return result
@@ -76,7 +90,7 @@ class KmlAwareWebAdapter(GeoJsonAwareWebAdapter):
                 coordinates=coordinates,
                 collection_id=str(task.metadata.get("collection_id", "")),
                 request=request,
-                source_url=fetched.final_url,
+                source_url=source_url,
                 snapshot_id=snapshot_id,
                 dataset_observation_id=dataset.observation_id,
                 research_goals=self._research_goals(task),
@@ -295,8 +309,6 @@ class KmlAwareWebAdapter(GeoJsonAwareWebAdapter):
     def _point(raw: str | None) -> tuple[Point, list[float]] | None:
         if not raw:
             return None
-        # Point/coordinates must contain one coordinate tuple. Whitespace-separated
-        # multiple tuples belong to non-Point semantics and are rejected.
         tuples = raw.split()
         if len(tuples) != 1:
             return None
