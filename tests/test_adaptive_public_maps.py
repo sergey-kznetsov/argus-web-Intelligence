@@ -82,6 +82,7 @@ def organization() -> Observation:
         entity_id="cafe-1",
         title="Кофейня Север",
         data={"name": "Кофейня Север"},
+        content_hash="b" * 64,
         provenance={},
         quality={},
     )
