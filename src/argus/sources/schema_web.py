@@ -65,6 +65,14 @@ class SchemaAwareSemanticWebAdapter(SemanticWebAdapter):
                     entity_type=entity_type,
                     value_getter=lambda name, data=entity.data: self._json_ld_string(data, name),
                 )
+                if entity_type == "review":
+                    self._apply_review_normalization(
+                        observation,
+                        evidence,
+                        rating=self._json_ld_rating(entity.data.get("reviewRating")),
+                        author=self._json_ld_label_value(entity.data.get("author")),
+                        item_reviewed=self._json_ld_reference(entity.data.get("itemReviewed")),
+                    )
                 self._apply_json_ld_geo(
                     observation,
                     evidence,
@@ -110,6 +118,14 @@ class SchemaAwareSemanticWebAdapter(SemanticWebAdapter):
                         props, name
                     ),
                 )
+                if entity_type == "review":
+                    self._apply_review_normalization(
+                        observation,
+                        evidence,
+                        rating=self._microdata_rating(item.properties),
+                        author=self._microdata_label_value(item.properties, "author"),
+                        item_reviewed=self._microdata_reference(item.properties, "itemReviewed"),
+                    )
                 self._apply_microdata_geo(
                     observation,
                     evidence,
@@ -197,6 +213,32 @@ class SchemaAwareSemanticWebAdapter(SemanticWebAdapter):
             if evidence.observation_id == observation.observation_id:
                 evidence.metadata["schema_field_normalization"] = field_normalization
 
+    def _apply_review_normalization(
+        self,
+        observation: Observation,
+        evidence_items: list[Evidence],
+        *,
+        rating: dict[str, object] | None,
+        author: str | None,
+        item_reviewed: dict[str, str] | None,
+    ) -> None:
+        if rating is None and author is None and item_reviewed is None:
+            return
+        normalization: dict[str, object] = {
+            "source_declared_only": True,
+            "rating": rating,
+            "author": author,
+            "item_reviewed": item_reviewed,
+        }
+        observation.provenance["schema_review_normalization"] = normalization
+        observation.quality["schema_review_facts"] = True
+        observation.quality["schema_review_rating_valid"] = bool(
+            rating is not None and rating.get("valid") is True
+        )
+        for evidence in evidence_items:
+            if evidence.observation_id == observation.observation_id:
+                evidence.metadata["schema_review_normalization"] = normalization
+
     def _apply_json_ld_geo(
         self,
         observation: Observation,
@@ -272,6 +314,118 @@ class SchemaAwareSemanticWebAdapter(SemanticWebAdapter):
             if evidence.observation_id == observation.observation_id:
                 evidence.metadata["schema_geo_normalization"] = normalization
 
+    @classmethod
+    def _json_ld_rating(cls, value: object) -> dict[str, object] | None:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            value = value[0] if value else None
+        if isinstance(value, dict):
+            rating_value = cls._number(value.get("ratingValue"))
+            best = cls._number(value.get("bestRating"))
+            worst = cls._number(value.get("worstRating"))
+        else:
+            rating_value = cls._number(value)
+            best = None
+            worst = None
+        return cls._rating_payload(rating_value, best, worst)
+
+    @classmethod
+    def _microdata_rating(cls, properties: dict[str, list[object]]) -> dict[str, object] | None:
+        rating_value = cls._number(cls._first_property(properties, "ratingValue"))
+        best = cls._number(cls._first_property(properties, "bestRating"))
+        worst = cls._number(cls._first_property(properties, "worstRating"))
+        return cls._rating_payload(rating_value, best, worst)
+
+    @staticmethod
+    def _rating_payload(
+        value: float | None,
+        best: float | None,
+        worst: float | None,
+    ) -> dict[str, object] | None:
+        if value is None and best is None and worst is None:
+            return None
+        valid = value is not None
+        if best is not None and worst is not None:
+            valid = valid and best > worst and worst <= value <= best
+        elif best is not None:
+            valid = valid and value <= best
+        elif worst is not None:
+            valid = valid and value >= worst
+        return {
+            "value": value,
+            "best": best,
+            "worst": worst,
+            "valid": bool(valid),
+        }
+
+    @classmethod
+    def _json_ld_label_value(cls, value: object) -> str | None:
+        if isinstance(value, list):
+            for item in value:
+                label = cls._json_ld_label_value(item)
+                if label:
+                    return label
+            return None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            for key in ("name", "alternateName"):
+                label = value.get(key)
+                if isinstance(label, str) and label.strip():
+                    return label.strip()
+        return None
+
+    @classmethod
+    def _json_ld_reference(cls, value: object) -> dict[str, str] | None:
+        if isinstance(value, list):
+            for item in value:
+                reference = cls._json_ld_reference(item)
+                if reference:
+                    return reference
+            return None
+        if isinstance(value, str) and value.strip():
+            return {"value": value.strip()}
+        if not isinstance(value, dict):
+            return None
+        result: dict[str, str] = {}
+        for output_key, source_key in (("name", "name"), ("id", "@id"), ("url", "url")):
+            candidate = value.get(source_key)
+            if isinstance(candidate, str) and candidate.strip():
+                result[output_key] = candidate.strip()
+        return result or None
+
+    @classmethod
+    def _microdata_label_value(
+        cls,
+        properties: dict[str, list[object]],
+        name: str,
+    ) -> str | None:
+        value = cls._first_property(properties, name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+
+    @classmethod
+    def _microdata_reference(
+        cls,
+        properties: dict[str, list[object]],
+        name: str,
+    ) -> dict[str, str] | None:
+        value = cls._first_property(properties, name)
+        if isinstance(value, str) and value.strip():
+            return {"value": value.strip()}
+        if not isinstance(value, dict):
+            return None
+        result: dict[str, str] = {}
+        item_id = value.get("itemid")
+        if isinstance(item_id, str) and item_id.strip():
+            result["id"] = item_id.strip()
+        item_types = value.get("itemtype")
+        if isinstance(item_types, list) and item_types:
+            result["type"] = str(item_types[0])
+        return result or None
+
     @staticmethod
     def _json_ld_string(data: dict[str, object], name: str) -> str | None:
         value = data.get(name)
@@ -330,5 +484,6 @@ class SchemaAwareSemanticWebAdapter(SemanticWebAdapter):
         payload = dict(await super().health())
         payload["schema_org_type_normalization"] = True
         payload["schema_org_field_normalization"] = True
+        payload["schema_org_review_normalization"] = True
         payload["schema_org_geo_normalization"] = True
         return payload
