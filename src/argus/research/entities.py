@@ -64,7 +64,11 @@ class AreaEntityResearchPlanner:
         territory = self._territory_text(request)
         language = self._language(request, territory)
         queries: list[str] = []
-        local_seen = set(seen_queries)
+        local_seen = {
+            " ".join(query.split())[:512].rstrip().casefold()
+            for query in seen_queries
+            if query.strip()
+        }
         entities = self._entities(observations)[: self.max_entities_per_expansion]
         for entity in entities:
             entity_queries = self._queries(entity, territory, requested, language)
