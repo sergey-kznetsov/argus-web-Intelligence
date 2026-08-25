@@ -58,7 +58,11 @@ class FastCrawlerRuntime:
                 return
             try:
                 from crawlee import ConcurrencySettings
-                from crawlee.crawlers import BasicCrawlingContext, HttpCrawler, HttpCrawlingContext
+                from crawlee.crawlers import (
+                    BasicCrawlingContext,
+                    FileDownloadCrawler,
+                    FileDownloadCrawlingContext,
+                )
                 from crawlee.errors import HttpStatusCodeError, SessionError
                 from crawlee.http_clients import HttpxHttpClient
             except ImportError as exc:
@@ -78,7 +82,8 @@ class FastCrawlerRuntime:
                 max_redirects=self.settings.http_max_redirects,
                 trust_env=False,
             )
-            crawler = HttpCrawler(
+            crawler = FileDownloadCrawler(
+                stream=True,
                 request_manager=request_manager,
                 storage_client=storage_client,
                 http_client=http_client,
@@ -92,13 +97,14 @@ class FastCrawlerRuntime:
                     desired_concurrency=self.settings.max_concurrency,
                     max_tasks_per_minute=self.settings.fast_max_requests_per_minute,
                 ),
+                navigation_timeout=self._duration(self.settings.http_timeout_seconds),
                 request_handler_timeout=self._duration(self.settings.http_timeout_seconds),
                 respect_robots_txt_file=True,
                 configure_logging=False,
             )
 
             @crawler.router.default_handler
-            async def handler(context: HttpCrawlingContext) -> None:
+            async def handler(context: FileDownloadCrawlingContext) -> None:
                 response = context.http_response
                 requested_url = context.request.url
                 final_url = context.request.loaded_url or requested_url
@@ -106,9 +112,10 @@ class FastCrawlerRuntime:
                 content_length = self._content_length(response.headers.get("content-length"))
                 if content_length is not None and content_length > self.settings.max_response_bytes:
                     raise ValueError("response Content-Length exceeds configured limit")
-                body = await response.read()
-                if len(body) > self.settings.max_response_bytes:
-                    raise ValueError("response body exceeds configured limit")
+                body = await self._read_bounded_stream(
+                    response,
+                    max_bytes=self.settings.max_response_bytes,
+                )
                 content_type = response.headers.get("content-type")
                 text = self._decode_body(body, content_type)
                 blocked = response.status_code in {401, 403, 429} or self._looks_blocked(
@@ -153,6 +160,18 @@ class FastCrawlerRuntime:
         error = task.exception()
         if error is not None:
             self._broker.reject_all(error)
+
+    @staticmethod
+    async def _read_bounded_stream(response: Any, *, max_bytes: int) -> bytes:
+        """Read a response incrementally without ever retaining more than the configured limit."""
+        body = bytearray()
+        async for chunk in response.read_stream():
+            if not chunk:
+                continue
+            if len(body) + len(chunk) > max_bytes:
+                raise ValueError("response body exceeds configured limit")
+            body.extend(chunk)
+        return bytes(body)
 
     @staticmethod
     def _duration(seconds: float):
