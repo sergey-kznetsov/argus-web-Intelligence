@@ -67,3 +67,22 @@ async def test_agent_is_disabled_by_default(tmp_path: Path):
     assert adapter.agent is None
     health = await adapter.health()
     assert "agent_execution" not in health
+
+
+def test_unavailable_stagehand_backend_fails_fast(tmp_path: Path):
+    settings = Settings(
+        execution_role="embedded",
+        storage_backend="sqlite",
+        db_path=tmp_path / "argus.sqlite",
+        token_file=tmp_path / "token",
+        agent_enabled=True,
+        agent_backend="stagehand",
+        browser_serp_enabled=False,
+        searxng_url=None,
+        overpass_url=None,
+        nominatim_url=None,
+        wayback_cdx_url=None,
+    )
+
+    with pytest.raises(RuntimeError, match="stagehand.*not operational"):
+        build_services(settings)
