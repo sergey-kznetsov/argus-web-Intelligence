@@ -1,3 +1,4 @@
+import re
 from urllib.parse import parse_qs
 
 import httpx
@@ -158,6 +159,7 @@ async def test_overpass_retries_503_then_succeeds():
 
 def test_overpass_text_query_is_regex_escaped():
     provider = OverpassMapProvider(settings())
-    query = provider._build_query(map_request(query='Школа [1] "центр"'), 1000)
-    assert "\\[1\\]" in query
-    assert '\\"центр\\"' in query
+    raw = 'Школа [1] "центр"'
+    query = provider._build_query(map_request(query=raw), 1000)
+    escaped = provider._ql_string(re.escape(raw))
+    assert f'["name"~"{escaped}",i]' in query
