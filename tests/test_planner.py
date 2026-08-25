@@ -120,8 +120,7 @@ async def test_query_length_is_bounded_without_losing_nonempty_plan():
     plan = await HeuristicResearchPlanner(max_queries=2, max_query_chars=128).plan(request)
 
     assert plan.queries
-    assert all(len(query) <= 512 for query in plan.queries)
-    assert len(plan.queries[0]) <= 128
+    assert all(len(query) <= 128 for query in plan.queries)
 
 
 @pytest.mark.asyncio
