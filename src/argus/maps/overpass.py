@@ -19,8 +19,8 @@ from argus.network.rate_gate import AsyncRateGate
 from argus.network.retry import RETRYABLE_PROVIDER_STATUSES, retry_delay_seconds
 from argus.security.redaction import safe_error_message
 
-
-_CATEGORY_TAGS: dict[str, tuple[str, str]] = {
+_CATEGORY_TAGS: dict[str, tuple[str, str | None]] = {
+    "named_feature": ("name", None),
     "school": ("amenity", "school"),
     "kindergarten": ("amenity", "kindergarten"),
     "college": ("amenity", "college"),
@@ -109,12 +109,18 @@ class OverpassMapProvider:
             )
 
         places: list[MapPlace] = []
+        seen: set[str] = set()
         for element in elements:
             if not isinstance(element, dict):
                 continue
             place = self._place_from_element(element)
-            if place is not None:
-                places.append(place)
+            if place is None:
+                continue
+            identity = place.provider_place_id or place.source_url
+            if identity in seen:
+                continue
+            seen.add(identity)
+            places.append(place)
             if len(places) >= request.limit:
                 break
         return MapSearchResult(provider=self.provider_id, places=places)
@@ -124,13 +130,14 @@ class OverpassMapProvider:
             "provider": self.provider_id,
             "status": "configured",
             "min_interval_seconds": self.settings.overpass_min_interval_seconds,
+            "supports_named_feature_inventory": True,
         }
 
     def _build_query(self, request: MapSearchRequest, radius: int) -> str:
         point = request.territory.point
         if point is None:
             raise ValueError("territory.point is required")
-        filters: list[tuple[str, str] | None]
+        filters: list[tuple[str, str | None] | None]
         if request.categories:
             filters = [_CATEGORY_TAGS[item] for item in request.categories]
         else:
@@ -146,14 +153,18 @@ class OverpassMapProvider:
             tag_filter = ""
             if tag is not None:
                 key, value = tag
-                tag_filter = f'["{self._ql_string(key)}"="{self._ql_string(value)}"]'
+                if value is None:
+                    tag_filter = f'["{self._ql_string(key)}"]'
+                else:
+                    tag_filter = f'["{self._ql_string(key)}"="{self._ql_string(value)}"]'
             for element_type in ("node", "way", "relation"):
                 selectors.append(
                     f"{element_type}(around:{radius},{point.latitude},{point.longitude})"
                     f"{tag_filter}{name_filter};"
                 )
         body = "".join(selectors)
-        return f"[out:json][timeout:25];({body});out center tags;"
+        output_limit = max(1, min(int(request.limit), 100))
+        return f"[out:json][timeout:25];({body});out center tags qt {output_limit};"
 
     async def _request_json(self, query: str) -> tuple[dict[str, Any], int]:
         timeout = httpx.Timeout(self.settings.overpass_timeout_seconds)
