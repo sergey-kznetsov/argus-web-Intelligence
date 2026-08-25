@@ -8,6 +8,7 @@ import httpx
 
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest
+from argus.research.historical_sources import HistoricalSourceResearchPlanner
 from argus.sources.base import SourceTask
 
 
@@ -54,9 +55,16 @@ class HeuristicResearchPlanner:
         ),
     }
 
-    def __init__(self, *, max_queries: int = 8, max_query_chars: int = 512) -> None:
+    def __init__(
+        self,
+        *,
+        max_queries: int = 8,
+        max_query_chars: int = 512,
+        historical_sources: HistoricalSourceResearchPlanner | None = None,
+    ) -> None:
         self.max_queries = max(1, int(max_queries))
         self.max_query_chars = max(32, int(max_query_chars))
+        self.historical_sources = historical_sources or HistoricalSourceResearchPlanner()
 
     async def plan(self, request: CollectionRequest) -> ResearchPlan:
         territory = self._territory_text(request)
@@ -86,10 +94,39 @@ class HeuristicResearchPlanner:
             if len(queries) >= self.max_queries:
                 break
 
-        return ResearchPlan(
-            queries=queries,
-            notes=[f"heuristic_language={language}"],
-        )
+        queries, historical_count = self._merge_curated_historical(request, queries)
+        notes = [f"heuristic_language={language}"]
+        if historical_count:
+            notes.append(
+                f"curated_historical_sources={historical_count};"
+                f"version={self.historical_sources.version}"
+            )
+        return ResearchPlan(queries=queries, notes=notes)
+
+    def _merge_curated_historical(
+        self,
+        request: CollectionRequest,
+        queries: list[str],
+    ) -> tuple[list[str], int]:
+        if "historical_context" not in request.intents:
+            return queries[: self.max_queries], 0
+        reserve = min(4, max(1, self.max_queries // 2))
+        curated = self.historical_sources.queries(request, limit=reserve)
+        if not curated:
+            return queries[: self.max_queries], 0
+        keep = max(0, self.max_queries - len(curated))
+        result = list(queries[:keep])
+        seen = {query.casefold() for query in result}
+        added = 0
+        for query in curated:
+            if query.casefold() in seen:
+                continue
+            seen.add(query.casefold())
+            result.append(query)
+            added += 1
+            if len(result) >= self.max_queries:
+                break
+        return result, added
 
     def _bounded_query(self, value: str) -> str:
         normalized = " ".join(value.split()).strip()
@@ -131,7 +168,11 @@ class OllamaResearchPlanner:
         self.settings = settings
         self.max_queries = max(1, int(settings.discovery_max_queries))
         self.max_query_chars = 512
-        self.fallback = fallback or HeuristicResearchPlanner(max_queries=self.max_queries)
+        self.historical_sources = HistoricalSourceResearchPlanner()
+        self.fallback = fallback or HeuristicResearchPlanner(
+            max_queries=self.max_queries,
+            historical_sources=self.historical_sources,
+        )
 
     async def plan(self, request: CollectionRequest) -> ResearchPlan:
         prompt = (
@@ -161,12 +202,40 @@ class OllamaResearchPlanner:
                 queries = self._bounded_queries(data.get("queries", []))
                 if not queries:
                     return await self.fallback.plan(request)
-                return ResearchPlan(
-                    queries=queries,
-                    notes=self._bounded_notes(data.get("notes", [])),
-                )
+                queries, historical_count = self._merge_curated_historical(request, queries)
+                notes = self._bounded_notes(data.get("notes", []))
+                if historical_count:
+                    notes.append(
+                        f"curated_historical_sources={historical_count};"
+                        f"version={self.historical_sources.version}"
+                    )
+                return ResearchPlan(queries=queries, notes=notes)
         except (httpx.HTTPError, ValueError, json.JSONDecodeError, TypeError):
             return await self.fallback.plan(request)
+
+    def _merge_curated_historical(
+        self,
+        request: CollectionRequest,
+        queries: list[str],
+    ) -> tuple[list[str], int]:
+        if "historical_context" not in request.intents:
+            return queries[: self.max_queries], 0
+        reserve = min(4, max(1, self.max_queries // 2))
+        curated = self.historical_sources.queries(request, limit=reserve)
+        keep = max(0, self.max_queries - len(curated))
+        result = list(queries[:keep])
+        seen = {query.casefold() for query in result}
+        added = 0
+        for query in curated:
+            key = query.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(query)
+            added += 1
+            if len(result) >= self.max_queries:
+                break
+        return result, added
 
     def _bounded_queries(self, values: object) -> list[str]:
         if not isinstance(values, list):
