@@ -27,7 +27,7 @@ class MicrodataExtraction:
     items_skipped: int = 0
     itemref_skipped: int = 0
     truncated: bool = False
-    extractor_version: str = "html-microdata-explicit/1"
+    extractor_version: str = "html-microdata-explicit/2"
 
 
 def extract_microdata(
@@ -40,13 +40,15 @@ def extract_microdata(
     max_properties_per_item: int = 100,
     max_values_per_property: int = 20,
     max_value_chars: int = 10_000,
+    max_nested_depth: int = 2,
 ) -> MicrodataExtraction:
     """Extract a bounded explicit subset of HTML Microdata.
 
     The extractor follows source-declared ``itemscope``/``itemprop`` values only.
-    ``itemref`` items are skipped rather than partially represented. Any clipping or
-    unsupported URL value marks the affected item/extraction as truncated so partial
-    normalization is never silent.
+    ``itemref`` top-level items are skipped rather than partially represented.
+    Nested item properties are retained with explicit depth/property/value bounds so
+    relationships such as Review -> Rating remain factual without DOM inference.
+    Any clipping or unsupported value marks the affected item/extraction as truncated.
     """
 
     extraction = MicrodataExtraction()
@@ -58,6 +60,7 @@ def extract_microdata(
     property_limit = max(1, int(max_properties_per_item))
     value_limit = max(1, int(max_values_per_property))
     text_limit = max(1, int(max_value_chars))
+    nested_depth_limit = max(0, min(int(max_nested_depth), 8))
     source = html[:scan_limit]
     extraction.truncated = len(html) > scan_limit
     soup = BeautifulSoup(source, "html.parser")
@@ -86,58 +89,19 @@ def extract_microdata(
             scope.get("itemid"),
             text_limit,
         )
-        properties: dict[str, list[object]] = {}
-        item_truncated = item_types_truncated or item_id_truncated
-        property_names_seen = 0
-
-        for element in scope.find_all(attrs={"itemprop": True}):
-            if not isinstance(element, Tag) or not _belongs_to_scope(element, scope):
-                continue
-            names, names_truncated = _tokens(
-                element.get("itemprop"),
-                max_tokens=20,
-                max_chars=128,
-            )
-            if names_truncated:
-                item_truncated = True
-                extraction.truncated = True
-            if not names:
-                continue
-            value, value_truncated = _property_value(
-                element,
-                owner_scope=scope,
-                base_url=base_url,
-                max_value_chars=text_limit,
-            )
-            if value_truncated:
-                item_truncated = True
-                extraction.truncated = True
-            if value is None:
-                continue
-            for name in names:
-                if name not in properties:
-                    if property_names_seen >= property_limit:
-                        item_truncated = True
-                        extraction.truncated = True
-                        break
-                    properties[name] = []
-                    property_names_seen += 1
-                values = properties[name]
-                if value in values:
-                    continue
-                if len(values) >= value_limit:
-                    item_truncated = True
-                    extraction.truncated = True
-                    continue
-                values.append(value)
-            if property_names_seen >= property_limit and any(
-                name not in properties for name in names
-            ):
-                break
-
-        if item_types_truncated or item_id_truncated:
+        properties, properties_truncated = _scope_properties(
+            scope,
+            base_url=base_url,
+            max_properties=property_limit,
+            max_values_per_property=value_limit,
+            max_value_chars=text_limit,
+            nested_depth=0,
+            max_nested_depth=nested_depth_limit,
+        )
+        item_truncated = item_types_truncated or item_id_truncated or properties_truncated
+        if item_truncated:
             extraction.truncated = True
-        properties = {name: values for name, values in properties.items() if values}
+
         if not item_types and item_id is None and not properties:
             extraction.items_skipped += 1
             continue
@@ -160,6 +124,66 @@ def extract_microdata(
             )
         )
     return extraction
+
+
+def _scope_properties(
+    scope: Tag,
+    *,
+    base_url: str,
+    max_properties: int,
+    max_values_per_property: int,
+    max_value_chars: int,
+    nested_depth: int,
+    max_nested_depth: int,
+) -> tuple[dict[str, list[object]], bool]:
+    properties: dict[str, list[object]] = {}
+    truncated = False
+    property_names_seen = 0
+
+    for element in scope.find_all(attrs={"itemprop": True}):
+        if not isinstance(element, Tag) or not _belongs_to_scope(element, scope):
+            continue
+        names, names_truncated = _tokens(
+            element.get("itemprop"),
+            max_tokens=20,
+            max_chars=128,
+        )
+        truncated = truncated or names_truncated
+        if not names:
+            continue
+        value, value_truncated = _property_value(
+            element,
+            owner_scope=scope,
+            base_url=base_url,
+            max_value_chars=max_value_chars,
+            max_nested_properties=max_properties,
+            max_nested_values=max_values_per_property,
+            nested_depth=nested_depth,
+            max_nested_depth=max_nested_depth,
+        )
+        truncated = truncated or value_truncated
+        if value is None:
+            continue
+        for name in names:
+            if name not in properties:
+                if property_names_seen >= max_properties:
+                    truncated = True
+                    break
+                properties[name] = []
+                property_names_seen += 1
+            values = properties[name]
+            if value in values:
+                continue
+            if len(values) >= max_values_per_property:
+                truncated = True
+                continue
+            values.append(value)
+        if property_names_seen >= max_properties and any(
+            name not in properties for name in names
+        ):
+            break
+
+    return {name: values for name, values in properties.items() if values}, truncated
 
 
 def _belongs_to_scope(element: Tag, scope: Tag) -> bool:
@@ -204,9 +228,21 @@ def _property_value(
     owner_scope: Tag,
     base_url: str,
     max_value_chars: int,
+    max_nested_properties: int,
+    max_nested_values: int,
+    nested_depth: int,
+    max_nested_depth: int,
 ) -> tuple[object | None, bool]:
     if element.has_attr("itemscope"):
-        return _item_reference(element, base_url, max_value_chars)
+        return _item_reference(
+            element,
+            base_url,
+            max_value_chars,
+            max_properties=max_nested_properties,
+            max_values_per_property=max_nested_values,
+            nested_depth=nested_depth + 1,
+            max_nested_depth=max_nested_depth,
+        )
 
     name = element.name.casefold()
     if name == "meta":
@@ -230,6 +266,11 @@ def _item_reference(
     element: Tag,
     base_url: str,
     limit: int,
+    *,
+    max_properties: int,
+    max_values_per_property: int,
+    nested_depth: int,
+    max_nested_depth: int,
 ) -> tuple[dict[str, object] | None, bool]:
     item_types, item_types_truncated = _tokens(
         element.get("itemtype"),
@@ -238,12 +279,31 @@ def _item_reference(
     )
     item_id, item_id_truncated = _identifier_value(base_url, element.get("itemid"), limit)
     truncated = item_types_truncated or item_id_truncated
-    if not item_types and item_id is None:
-        return None, truncated
-    return {
+    result: dict[str, object] = {
         "itemid": item_id,
         "itemtype": item_types,
-    }, truncated
+    }
+
+    if str(element.get("itemref", "")).strip():
+        return (result if item_types or item_id is not None else None), True
+    if nested_depth > max_nested_depth:
+        return (result if item_types or item_id is not None else None), True
+
+    properties, properties_truncated = _scope_properties(
+        element,
+        base_url=base_url,
+        max_properties=max_properties,
+        max_values_per_property=max_values_per_property,
+        max_value_chars=limit,
+        nested_depth=nested_depth,
+        max_nested_depth=max_nested_depth,
+    )
+    truncated = truncated or properties_truncated
+    if properties:
+        result["properties"] = properties
+    if not item_types and item_id is None and not properties:
+        return None, truncated
+    return result, truncated
 
 
 def _owned_text(
