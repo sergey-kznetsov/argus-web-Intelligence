@@ -24,7 +24,7 @@ from argus.research.planner import OllamaResearchPlanner
 from argus.research.searxng import SearxngDiscoveryProvider
 from argus.security.urls import UrlGuard
 from argus.services import ServiceContainer
-from argus.sources.canonical_web import CanonicalLinkWebAdapter
+from argus.sources.duplicate_web import DuplicateAwareWebAdapter
 from argus.sources.json_feed import JSONFeedAdapter
 from argus.sources.overpass_map import OverpassSourceAdapter
 from argus.sources.registry import SourceRegistry
@@ -148,7 +148,8 @@ def build_services(settings: Settings) -> ServiceContainer:
     structured_extractor = build_structured_data_extractor(settings)
     registry = SourceRegistry()
     registry.register(
-        CanonicalLinkWebAdapter(
+        DuplicateAwareWebAdapter(
+            repository=repository,
             fast=fast,
             browser=browser,
             snapshots=snapshots,
