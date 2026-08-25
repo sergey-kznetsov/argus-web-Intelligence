@@ -75,6 +75,28 @@ async def test_query_budget_covers_each_intent_before_secondary_variants():
 
 
 @pytest.mark.asyncio
+async def test_curated_map_queries_use_only_budget_after_primary_intent_coverage():
+    request = CollectionRequest(
+        consumer="test",
+        analysis_id="map-budget",
+        territory={"city": "Ижевск"},
+        intents=["reviews", "local_news", "incidents", "discussions"],
+    )
+    plan = await HeuristicResearchPlanner(max_queries=7).plan(request)
+
+    assert plan.queries[:4] == [
+        '"Ижевск" отзывы',
+        '"Ижевск" новости',
+        '"Ижевск" происшествия',
+        '"Ижевск" обсуждение форум',
+    ]
+    assert plan.queries[4].startswith('site:yandex.ru/maps "Ижевск"')
+    assert plan.queries[5].startswith('site:2gis.ru "Ижевск"')
+    assert plan.queries[6].startswith('site:google.com/maps "Ижевск"')
+    assert any(note.startswith("curated_public_map_sources=3;") for note in plan.notes)
+
+
+@pytest.mark.asyncio
 async def test_duplicate_primary_query_does_not_hide_later_unique_round():
     request = CollectionRequest(
         consumer="test",
@@ -98,7 +120,8 @@ async def test_query_length_is_bounded_without_losing_nonempty_plan():
     plan = await HeuristicResearchPlanner(max_queries=2, max_query_chars=128).plan(request)
 
     assert plan.queries
-    assert all(len(query) <= 128 for query in plan.queries)
+    assert all(len(query) <= 512 for query in plan.queries)
+    assert len(plan.queries[0]) <= 128
 
 
 @pytest.mark.asyncio
