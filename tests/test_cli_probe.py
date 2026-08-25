@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from click.utils import strip_ansi
 from typer.testing import CliRunner
 
 from argus.cli.main import app
@@ -60,10 +61,11 @@ def _server():
 def test_probe_command_is_exposed_by_console_app() -> None:
     result = CliRunner().invoke(app, ["probe", "--help"])
     assert result.exit_code == 0, result.output
-    assert "--address" in result.output
-    assert "--seed-url" in result.output
-    assert "--no-discovery" in result.output
-    assert "--output" in result.output
+    help_text = strip_ansi(result.output)
+    assert "--address" in help_text
+    assert "--seed-url" in help_text
+    assert "--no-discovery" in help_text
+    assert "--output" in help_text
 
 
 @pytest.mark.asyncio
