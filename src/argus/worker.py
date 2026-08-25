@@ -38,6 +38,7 @@ class CollectionWorker:
             raise TypeError("CollectionWorker requires PostgresRepository")
         self.repository = self.services.repository
         self.orchestrator = self.services.orchestrator
+        self.metrics = self.services.metrics
         self.worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:12]}"
         self.probe_host = probe_host
         self.probe_port = probe_port
@@ -78,6 +79,7 @@ class CollectionWorker:
             )
             self._started = True
         except BaseException:
+            self.metrics.inc("worker_start_errors_total")
             for task in (self._heartbeat_task, self._maintenance_task):
                 if task is not None:
                     task.cancel()
@@ -101,6 +103,17 @@ class CollectionWorker:
             await self.services.shutdown()
             raise
 
+        self.metrics.inc("worker_starts_total")
+        self.metrics.gauge(
+            "worker_active_collections",
+            0.0,
+            scope="process",
+        )
+        self.metrics.gauge(
+            "worker_concurrency_limit",
+            float(self.settings.worker_concurrency),
+            scope="process",
+        )
         logger.info(
             "worker started",
             extra={
@@ -131,6 +144,12 @@ class CollectionWorker:
                     )
                     self._active[collection_id] = task
                     claimed += 1
+                    self.metrics.inc("worker_claims_total")
+                    self.metrics.gauge(
+                        "worker_active_collections",
+                        float(len(self._active)),
+                        scope="process",
+                    )
                 if claimed == 0:
                     try:
                         await asyncio.wait_for(
@@ -155,6 +174,7 @@ class CollectionWorker:
         if active:
             await asyncio.gather(*active, return_exceptions=True)
         self._active.clear()
+        self.metrics.gauge("worker_active_collections", 0.0, scope="process")
 
         for attr in ("_heartbeat_task", "_maintenance_task"):
             task = getattr(self, attr)
@@ -173,6 +193,7 @@ class CollectionWorker:
             await self.repository.unregister_worker(self.worker_id)
         await self.services.shutdown()
         self._started = False
+        self.metrics.inc("worker_stops_total")
         logger.info(
             "worker stopped",
             extra={"event": "worker_stopped", "worker_id": self.worker_id},
@@ -183,10 +204,17 @@ class CollectionWorker:
             if not task.done():
                 continue
             self._active.pop(collection_id, None)
+            self.metrics.gauge(
+                "worker_active_collections",
+                float(len(self._active)),
+                scope="process",
+            )
             if task.cancelled():
+                self.metrics.inc("worker_collection_tasks_total", status="cancelled")
                 continue
             error = task.exception()
             if error is not None:
+                self.metrics.inc("worker_collection_tasks_total", status="error")
                 logger.error(
                     "worker collection task failed",
                     extra={
@@ -196,6 +224,8 @@ class CollectionWorker:
                         "error_type": type(error).__name__,
                     },
                 )
+            else:
+                self.metrics.inc("worker_collection_tasks_total", status="ok")
 
     async def _execute_owned_collection(self, collection_id: str) -> None:
         with lease_fence(collection_id, self.worker_id):
@@ -220,6 +250,7 @@ class CollectionWorker:
                 if not lease_task.cancelled():
                     lease_alive = bool(lease_task.result())
                 if not lease_alive and not execute_task.done():
+                    self.metrics.inc("worker_execution_cancelled_after_lease_loss_total")
                     execute_task.cancel()
             await execute_task
         finally:
@@ -243,6 +274,7 @@ class CollectionWorker:
                 lease_seconds=self.settings.worker_lease_seconds,
             )
             if not renewed:
+                self.metrics.inc("worker_lease_losses_total")
                 logger.error(
                     "collection lease lost",
                     extra={
@@ -252,6 +284,7 @@ class CollectionWorker:
                     },
                 )
                 return False
+            self.metrics.inc("worker_lease_renewals_total")
         return False
 
     async def _worker_heartbeat_loop(self) -> None:
@@ -260,6 +293,7 @@ class CollectionWorker:
                 await asyncio.sleep(self.settings.worker_heartbeat_seconds)
                 alive = await self.repository.heartbeat_worker(self.worker_id)
                 if not alive:
+                    self.metrics.inc("worker_registration_recoveries_total")
                     await self.repository.register_worker(
                         self.worker_id,
                         metadata={
@@ -268,9 +302,12 @@ class CollectionWorker:
                             "version": __version__,
                         },
                     )
+                else:
+                    self.metrics.inc("worker_heartbeats_total", status="ok")
             except asyncio.CancelledError:
                 raise
             except Exception:
+                self.metrics.inc("worker_heartbeats_total", status="error")
                 logger.exception(
                     "worker heartbeat failed",
                     extra={
@@ -294,6 +331,9 @@ class CollectionWorker:
                     ),
                     batch_size=self.settings.retention_batch_size,
                 )
+                self.metrics.inc("retention_passes_total", status="ok")
+                removed = sum(int(value) for value in result.as_dict().values())
+                self.metrics.inc("retention_rows_removed_total", removed)
                 if any(result.as_dict().values()):
                     logger.info(
                         "retention pass completed",
@@ -306,6 +346,7 @@ class CollectionWorker:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                self.metrics.inc("retention_passes_total", status="error")
                 logger.exception(
                     "retention pass failed",
                     extra={
