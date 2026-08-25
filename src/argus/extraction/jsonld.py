@@ -52,7 +52,7 @@ class EmbeddedJsonLdExtractor:
         self.max_items_per_container = max(1, max_items_per_container)
         self.max_string_chars = max(100, max_string_chars)
         self.max_context_hints = max(1, max_context_hints)
-        self.max_context_hint_chars = max(100, max_context_hint_chars)
+        self.max_context_hint_chars = max(1, max_context_hint_chars)
 
     def extract(self, html: str, content_type: str | None = None) -> JsonLdExtraction:
         if content_type and "html" not in content_type.casefold():
