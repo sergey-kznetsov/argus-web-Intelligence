@@ -53,6 +53,24 @@ class BrowserCrawlerRuntime:
         if run_task is not None:
             await asyncio.gather(run_task, return_exceptions=True)
 
+    @staticmethod
+    def security_options() -> dict[str, object]:
+        """Return the browser isolation contract passed to Crawlee/Playwright."""
+        return {
+            "browser_type": "chromium",
+            "use_incognito_pages": True,
+            "browser_launch_options": {
+                # Keep Chromium's process sandbox enabled. ARGUS never opts into
+                # --no-sandbox; host-level browser isolation is still a deployment duty.
+                "chromium_sandbox": True,
+            },
+            "browser_new_context_options": {
+                "accept_downloads": False,
+                "service_workers": "block",
+                "ignore_https_errors": False,
+            },
+        }
+
     async def _ensure_started(self) -> None:
         if self._crawler is not None and self._run_task is not None and not self._run_task.done():
             return
@@ -92,6 +110,7 @@ class BrowserCrawlerRuntime:
                 navigation_timeout=self._duration(self.settings.browser_timeout_seconds),
                 respect_robots_txt_file=True,
                 configure_logging=False,
+                **self.security_options(),
             )
 
             @crawler.pre_navigation_hook
