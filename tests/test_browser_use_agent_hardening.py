@@ -72,6 +72,11 @@ def install_browser_use(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "browser_use", module)
     FakeBrowser.instances.clear()
     FakeAgent.delay = 0.0
+    FakeAgent.history = FakeHistory(
+        success=True,
+        final="ok",
+        urls=["http://localhost/source"],
+    )
 
 
 def build_agent(tmp_path) -> BrowserUseAgent:
