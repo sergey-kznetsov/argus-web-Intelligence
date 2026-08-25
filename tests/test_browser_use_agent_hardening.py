@@ -39,9 +39,10 @@ class FakeHistory:
 class FakeAgent:
     history = FakeHistory(success=True, final="ok", urls=["http://localhost"])
     delay = 0.0
+    init_kwargs: dict[str, object] = {}
 
-    def __init__(self, *, task, llm, browser) -> None:
-        del task, llm, browser
+    def __init__(self, **kwargs) -> None:
+        self.__class__.init_kwargs = dict(kwargs)
 
     async def run(self, max_steps):
         assert max_steps > 0
@@ -67,11 +68,27 @@ class FakeChatOllama:
         self.kwargs = kwargs
 
 
+class FakeTools:
+    instances: list["FakeTools"] = []
+
+    def __init__(self, *, exclude_actions=None, **kwargs) -> None:
+        self.exclude_actions = list(exclude_actions or [])
+        self.kwargs = kwargs
+        self.__class__.instances.append(self)
+
+
 def install_browser_use(monkeypatch) -> None:
-    module = SimpleNamespace(Agent=FakeAgent, Browser=FakeBrowser, ChatOllama=FakeChatOllama)
+    module = SimpleNamespace(
+        Agent=FakeAgent,
+        Browser=FakeBrowser,
+        ChatOllama=FakeChatOllama,
+        Tools=FakeTools,
+    )
     monkeypatch.setitem(sys.modules, "browser_use", module)
     FakeBrowser.instances.clear()
+    FakeTools.instances.clear()
     FakeAgent.delay = 0.0
+    FakeAgent.init_kwargs = {}
     FakeAgent.history = FakeHistory(
         success=True,
         final="ok",
@@ -194,3 +211,42 @@ async def test_agent_bounds_and_deduplicates_visited_urls(tmp_path, monkeypatch)
     assert len(result.visited_urls) <= agent.max_visited_urls
     assert len(result.visited_urls) == len(set(result.visited_urls))
     assert result.metadata["visited_urls_truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_agent_removes_file_and_external_search_tools(tmp_path, monkeypatch):
+    install_browser_use(monkeypatch)
+    agent = build_agent(tmp_path)
+
+    result = await agent.run(task())
+
+    assert result.success is True
+    assert FakeTools.instances
+    excluded = set(FakeTools.instances[0].exclude_actions)
+    assert {"search", "read_file", "write_file", "replace_file", "upload_file"} <= excluded
+    assert FakeAgent.init_kwargs["use_vision"] is False
+    assert FakeAgent.init_kwargs["max_actions_per_step"] == agent.max_actions_per_step
+    assert FakeAgent.init_kwargs["max_failures"] == agent.max_failures
+
+
+@pytest.mark.asyncio
+async def test_argus_parent_domain_boundary_maps_to_browser_use_subdomain_pattern(
+    tmp_path, monkeypatch
+):
+    install_browser_use(monkeypatch)
+    settings = Settings(token_file=tmp_path / "token")
+    agent = BrowserUseAgent(settings, UrlGuard.from_strings(["news.example.com"]))
+    task_value = AgentTask(
+        url="https://news.example.com/source",
+        goal="local_news",
+        instruction="Find public news",
+        context={"allowed_domains": ["example.com"]},
+    )
+
+    result = await agent.run(task_value)
+
+    assert result.success is True
+    assert FakeBrowser.instances
+    allowed = FakeBrowser.instances[0].kwargs["allowed_domains"]
+    assert "example.com" in allowed
+    assert "*.example.com" in allowed
