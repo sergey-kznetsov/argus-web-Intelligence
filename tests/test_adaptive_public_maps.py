@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from argus.contracts.models import CollectionRequest, Observation
+from argus.observability import OperationalMetrics
 from argus.orchestrator.adaptive_atomic import AdaptiveResearchAtomicCollectionOrchestrator
 from argus.research.discovery import DiscoveryOutcome
 from argus.sources.base import SourceTask
@@ -96,6 +97,7 @@ def build_orchestrator(repository: RepositoryStub, discovery: DiscoveryStub):
         discovery=discovery,
         max_concurrency=1,
         auto_execute=False,
+        metrics=OperationalMetrics(),
         max_followup_rounds=0,
         max_curated_historical_rounds=0,
         max_curated_public_map_rounds=2,
