@@ -29,7 +29,6 @@ class PublicMapSourceResearchPlanner:
             "reviews",
             "comments",
             "complaints",
-            "public_mentions",
             "discussions",
         }
     )
@@ -133,8 +132,6 @@ class PublicMapSourceResearchPlanner:
                 terms.append("жалобы")
             if "discussions" in requested:
                 terms.append("обсуждения")
-            if "public_mentions" in requested:
-                terms.append("рейтинг")
             return " ".join(terms[:3]) or "отзывы рейтинг"
         terms = []
         if "reviews" in requested:
@@ -145,8 +142,6 @@ class PublicMapSourceResearchPlanner:
             terms.append("complaints")
         if "discussions" in requested:
             terms.append("discussion")
-        if "public_mentions" in requested:
-            terms.append("rating")
         return " ".join(terms[:3]) or "reviews rating"
 
     @staticmethod
