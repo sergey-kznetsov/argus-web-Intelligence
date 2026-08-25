@@ -198,8 +198,12 @@ class OperationalMetrics:
 
     @classmethod
     def _labels(cls, labels: dict[str, object]) -> tuple[tuple[str, str], ...]:
+        if len(labels) > cls.max_labels:
+            raise ValueError(
+                f"metric label count exceeds maximum of {cls.max_labels}"
+            )
         normalized: list[tuple[str, str]] = []
-        for key, value in sorted(labels.items())[: cls.max_labels]:
+        for key, value in sorted(labels.items()):
             label = cls._metric_name(str(key))[:64]
             if label in cls.forbidden_labels:
                 raise ValueError(f"high-cardinality metric label is forbidden: {label}")
