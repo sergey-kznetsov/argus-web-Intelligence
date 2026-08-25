@@ -3,6 +3,7 @@ from pathlib import Path
 from argus.bootstrap import build_services
 from argus.config import Settings
 from argus.orchestrator.atomic import AtomicCollectionOrchestrator
+from argus.sources.canonical_web import CanonicalLinkWebAdapter
 from argus.sources.compressed_web import CompressedOfficeAwareGenericWebAdapter
 from argus.sources.document_web import DocumentAwareGenericWebAdapter
 from argus.sources.geojson_web import GeoJsonAwareWebAdapter
@@ -49,6 +50,7 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     assert isinstance(adapter, GeoJsonAwareWebAdapter)
     assert isinstance(adapter, KmlAwareWebAdapter)
     assert isinstance(adapter, KmzAwareWebAdapter)
+    assert isinstance(adapter, CanonicalLinkWebAdapter)
 
     extractor = adapter.structured_data_extractor
     assert extractor.max_bytes == 123_456
