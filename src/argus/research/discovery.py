@@ -50,6 +50,8 @@ class DiscoveryOutcome:
     candidates_seen: int = 0
     valid_destinations: int = 0
     destinations_selected: int = 0
+    destinations_skipped_budget: int = 0
+    archive_companions_skipped_budget: int = 0
     task_budget: int = 0
     stop_reason: str | None = None
 
@@ -72,7 +74,8 @@ class DiscoveryService:
     not generate extra search traffic once factual crawl candidates exist.
     """
 
-    ranking_version = "discovery-ranking/2"
+    ranking_version = "discovery-ranking/1"
+    telemetry_version = "discovery-telemetry/1"
     stop_policy = "first_provider_with_valid_destinations"
 
     def __init__(
@@ -145,8 +148,9 @@ class DiscoveryService:
             prepared.sort(key=self._ranking_key)
 
             destinations_added = 0
-            for candidate in prepared:
+            for index, candidate in enumerate(prepared):
                 if len(outcome.tasks) >= task_budget:
+                    outcome.destinations_skipped_budget += len(prepared) - index
                     outcome.stop_reason = "task_budget_reached"
                     break
                 hit = candidate.hit
@@ -170,6 +174,7 @@ class DiscoveryService:
                     "discovery_navigation_score": candidate.navigation_score,
                     "discovery_ranking_components": ranking_components,
                     "discovery_ranking_version": self.ranking_version,
+                    "discovery_telemetry_version": self.telemetry_version,
                     "discovery_stop_policy": self.stop_policy,
                     "discovery_task_budget": task_budget,
                     "allowed_domains": list(request.constraints.allowed_domains),
@@ -186,24 +191,30 @@ class DiscoveryService:
                 )
                 destinations_added += 1
                 outcome.destinations_selected += 1
-                if (
+
+                archive_requested = bool(
                     self.historical_archive_source_id
                     and "historical_context" in request.intents
-                    and len(outcome.tasks) < task_budget
-                ):
-                    outcome.tasks.append(
-                        SourceTask(
-                            source_id=self.historical_archive_source_id,
-                            goal="historical_context",
-                            url=canonical_url,
-                            depth=0,
-                            task_key=f"{self.historical_archive_source_id}:{canonical_url}",
-                            metadata={
-                                **common_metadata,
-                                "archive_target_url": canonical_url,
-                            },
+                )
+                if archive_requested:
+                    if len(outcome.tasks) < task_budget:
+                        outcome.tasks.append(
+                            SourceTask(
+                                source_id=str(self.historical_archive_source_id),
+                                goal="historical_context",
+                                url=canonical_url,
+                                depth=0,
+                                task_key=f"{self.historical_archive_source_id}:{canonical_url}",
+                                metadata={
+                                    **common_metadata,
+                                    "archive_target_url": canonical_url,
+                                },
+                            )
                         )
-                    )
+                    else:
+                        outcome.archive_companions_skipped_budget += 1
+                        outcome.stop_reason = "task_budget_reached"
+
             if destinations_added:
                 if outcome.stop_reason is None:
                     outcome.stop_reason = self.stop_policy
