@@ -65,21 +65,44 @@ async def _migrate() -> None:
 
 
 async def _check() -> None:
-    version = await current_postgres_schema_version(_dsn())
+    settings, dsn = _settings_and_dsn()
+    version = await current_postgres_schema_version(dsn)
     if version != EXPECTED_SCHEMA_VERSION:
         raise SystemExit(
             f"ARGUS PostgreSQL schema version {version}; expected {EXPECTED_SCHEMA_VERSION}"
         )
-    print(
-        json.dumps(
-            {
-                "status": "ok",
-                "schema": "argus",
-                "schema_version": version,
-            },
-            ensure_ascii=False,
+
+    repository = _repository(settings, dsn)
+    try:
+        try:
+            await repository.initialize()
+            health = await repository.health()
+        except Exception as exc:
+            raise SystemExit(
+                "ARGUS PostgreSQL deployment preflight failed: required schema objects "
+                f"or database connectivity are unavailable ({type(exc).__name__})"
+            ) from exc
+        if health.get("status") != "ok":
+            raise SystemExit(
+                "ARGUS PostgreSQL deployment preflight failed: repository health is not ok"
+            )
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "schema": "argus",
+                    "schema_version": version,
+                    "expected_schema_version": EXPECTED_SCHEMA_VERSION,
+                    "backend": health.get("backend"),
+                    "required_schema_objects": True,
+                    "database_connectivity": True,
+                    "postgres_pool": repository.pool_stats(),
+                },
+                ensure_ascii=False,
+            )
         )
-    )
+    finally:
+        await repository.close()
 
 
 async def _operations() -> None:
