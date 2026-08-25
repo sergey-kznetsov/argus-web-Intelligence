@@ -29,11 +29,16 @@ def _merge_curated_sources(
     queries: list[str],
     *,
     max_queries: int,
+    protected_count: int,
     historical_sources: HistoricalSourceResearchPlanner,
     public_map_sources: PublicMapSourceResearchPlanner,
 ) -> tuple[list[str], int, int]:
     if max_queries <= 0:
         return [], 0, 0
+
+    protected_count = min(max(0, int(protected_count)), len(queries), max_queries)
+    protected = list(queries[:protected_count])
+    secondary = list(queries[protected_count:max_queries])
 
     historical: list[str] = []
     if "historical_context" in request.intents:
@@ -52,7 +57,7 @@ def _merge_curated_sources(
     if not historical and not public_maps:
         return queries[:max_queries], 0, 0
 
-    curated_budget = max_queries if max_queries == 1 else max_queries - 1
+    curated_budget = max(0, max_queries - len(protected))
     curated: list[tuple[str, str]] = []
     indexes = {"historical": 0, "public_map": 0}
     groups = {"historical": historical, "public_map": public_maps}
@@ -71,9 +76,15 @@ def _merge_curated_sources(
         if not progressed:
             break
 
-    keep = max(0, max_queries - len(curated))
-    result = list(queries[:keep])
-    seen = {query.casefold() for query in result}
+    result: list[str] = []
+    seen: set[str] = set()
+    for query in protected:
+        key = query.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(query)
+
     historical_count = 0
     public_map_count = 0
     for category, query in curated:
@@ -86,6 +97,15 @@ def _merge_curated_sources(
             historical_count += 1
         else:
             public_map_count += 1
+        if len(result) >= max_queries:
+            return result, historical_count, public_map_count
+
+    for query in secondary:
+        key = query.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(query)
         if len(result) >= max_queries:
             break
     return result, historical_count, public_map_count
@@ -149,6 +169,7 @@ class HeuristicResearchPlanner:
 
         queries: list[str] = []
         seen: set[str] = set()
+        primary_count = 0
         max_rounds = max((len(terms) for terms in intent_terms), default=0)
         for round_index in range(max_rounds):
             for terms in intent_terms:
@@ -159,6 +180,8 @@ class HeuristicResearchPlanner:
                 if query and key not in seen:
                     seen.add(key)
                     queries.append(query)
+                    if round_index == 0:
+                        primary_count += 1
                     if len(queries) >= self.max_queries:
                         break
             if len(queries) >= self.max_queries:
@@ -168,6 +191,7 @@ class HeuristicResearchPlanner:
             request,
             queries,
             max_queries=self.max_queries,
+            protected_count=primary_count,
             historical_sources=self.historical_sources,
             public_map_sources=self.public_map_sources,
         )
@@ -262,10 +286,15 @@ class OllamaResearchPlanner:
                 queries = self._bounded_queries(data.get("queries", []))
                 if not queries:
                     return await self.fallback.plan(request)
+                protected_count = min(
+                    len(queries),
+                    len({intent.casefold() for intent in request.intents}),
+                )
                 queries, historical_count, public_map_count = _merge_curated_sources(
                     request,
                     queries,
                     max_queries=self.max_queries,
+                    protected_count=protected_count,
                     historical_sources=self.historical_sources,
                     public_map_sources=self.public_map_sources,
                 )
