@@ -67,9 +67,8 @@ class HeuristicResearchPlanner:
 
         queries: list[str] = []
         seen: set[str] = set()
-        round_index = 0
-        while len(queries) < self.max_queries:
-            added_this_round = False
+        max_rounds = max((len(terms) for terms in intent_terms), default=0)
+        for round_index in range(max_rounds):
             for terms in intent_terms:
                 if round_index >= len(terms):
                     continue
@@ -78,12 +77,10 @@ class HeuristicResearchPlanner:
                 if query and key not in seen:
                     seen.add(key)
                     queries.append(query)
-                    added_this_round = True
                     if len(queries) >= self.max_queries:
                         break
-            if not added_this_round:
+            if len(queries) >= self.max_queries:
                 break
-            round_index += 1
 
         return ResearchPlan(
             queries=queries,
@@ -160,7 +157,7 @@ class OllamaResearchPlanner:
                     return await self.fallback.plan(request)
                 return ResearchPlan(
                     queries=queries,
-                    notes=[str(item)[:500] for item in data.get("notes", [])[:20]],
+                    notes=self._bounded_notes(data.get("notes", [])),
                 )
         except (httpx.HTTPError, ValueError, json.JSONDecodeError, TypeError):
             return await self.fallback.plan(request)
@@ -180,3 +177,9 @@ class OllamaResearchPlanner:
             if len(result) >= self.max_queries:
                 break
         return result
+
+    @staticmethod
+    def _bounded_notes(values: object) -> list[str]:
+        if not isinstance(values, list):
+            return []
+        return [str(item)[:500] for item in values[:20]]
