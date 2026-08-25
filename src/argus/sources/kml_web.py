@@ -3,7 +3,14 @@ from __future__ import annotations
 import json
 import math
 
-from argus.contracts.models import CollectionRequest, Evidence, EvidenceSource, Observation, Point
+from argus.contracts.models import (
+    CollectionRequest,
+    Evidence,
+    EvidenceSource,
+    Observation,
+    Point,
+    StructuredError,
+)
 from argus.history.snapshots import sha256_text
 from argus.normalization.identity import stable_evidence_id, stable_observation_id
 from argus.sources.base import SourceResult, SourceTask
@@ -115,6 +122,15 @@ class KmlAwareWebAdapter(GeoJsonAwareWebAdapter):
         }
         if truncated:
             dataset.quality["partial"] = True
+            result.partial = True
+            result.errors.append(
+                StructuredError(
+                    code="KML_EXTRACTION_TRUNCATED",
+                    message="KML normalization reached the configured Placemark limit",
+                    retryable=False,
+                    source_id=self.source_id,
+                )
+            )
 
         result.observations.extend(observations)
         result.evidence.extend(evidence_items)
