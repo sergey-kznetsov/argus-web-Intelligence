@@ -98,6 +98,13 @@ class Repository(Protocol):
     async def latest_snapshot(self, source_url: str) -> Snapshot | None: ...
     async def save_recipe(self, recipe: SiteRecipe) -> None: ...
     async def get_recipe(self, domain: str, goal: str) -> SiteRecipe | None: ...
+    async def prune_recipe_versions(
+        self,
+        domain: str,
+        goal: str,
+        *,
+        keep_versions: int,
+    ) -> int: ...
 
 
 class AtomicTaskRepository(Repository, Protocol):
