@@ -19,6 +19,7 @@ from argus.observability import OperationalMetrics
 from argus.orchestrator.adaptive_atomic import AdaptiveResearchAtomicCollectionOrchestrator
 from argus.recipes.service import RecipeManager
 from argus.research.browser_serp import DuckDuckGoBrowserDiscoveryProvider
+from argus.research.coverage import EvidenceAwareHeuristicFollowupResearchPlanner
 from argus.research.discovery import DiscoveryService
 from argus.research.entities import AreaEntityResearchPlanner
 from argus.research.followup import OllamaFollowupResearchPlanner
@@ -215,7 +216,10 @@ def build_services(settings: Settings) -> ServiceContainer:
         discovery=discovery,
         historical_branch_planner=HistoricalBranchPlanner(),
         area_entity_planner=AreaEntityResearchPlanner(),
-        followup_planner=OllamaFollowupResearchPlanner(settings),
+        followup_planner=OllamaFollowupResearchPlanner(
+            settings,
+            fallback=EvidenceAwareHeuristicFollowupResearchPlanner(),
+        ),
         max_followup_rounds=3,
         auto_execute=settings.execution_role == "embedded",
         metrics=metrics,
