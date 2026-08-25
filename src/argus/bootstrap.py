@@ -15,7 +15,8 @@ from argus.history.snapshots import SnapshotService
 from argus.history.wayback import WaybackCDXProvider
 from argus.maps.overpass import OverpassMapProvider
 from argus.maps.registry import MapProviderRegistry
-from argus.orchestrator.quality_atomic import QualityAwareAtomicCollectionOrchestrator
+from argus.observability import OperationalMetrics
+from argus.orchestrator.observed_atomic import ObservedAtomicCollectionOrchestrator
 from argus.recipes.service import RecipeManager
 from argus.research.browser_serp import DuckDuckGoBrowserDiscoveryProvider
 from argus.research.discovery import DiscoveryService
@@ -141,12 +142,13 @@ def build_services(settings: Settings) -> ServiceContainer:
     browser = BrowserCrawlerRuntime(settings, guard)
     snapshots = SnapshotService(repository)
     recipes = RecipeManager(repository)
+    metrics = OperationalMetrics()
     agent = build_agent(settings, guard)
     discovery = build_discovery(settings, guard, browser)
     geocoder = build_geocoder(settings)
     map_registry = build_map_registry(settings)
     structured_extractor = build_structured_data_extractor(settings)
-    registry = SourceRegistry()
+    registry = SourceRegistry(metrics=metrics)
     registry.register(
         HistoricalTimelineWebAdapter(
             repository=repository,
@@ -195,7 +197,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     if settings.wayback_cdx_url:
         registry.register(WaybackSourceAdapter(WaybackCDXProvider(settings), snapshots))
     planner = OllamaResearchPlanner(settings)
-    orchestrator = QualityAwareAtomicCollectionOrchestrator(
+    orchestrator = ObservedAtomicCollectionOrchestrator(
         repository=repository,
         registry=registry,
         planner=planner,
@@ -203,6 +205,7 @@ def build_services(settings: Settings) -> ServiceContainer:
         discovery=discovery,
         historical_branch_planner=HistoricalBranchPlanner(),
         auto_execute=settings.execution_role == "embedded",
+        metrics=metrics,
     )
     return ServiceContainer(
         repository=repository,
@@ -211,4 +214,5 @@ def build_services(settings: Settings) -> ServiceContainer:
         orchestrator=orchestrator,
         fast=fast,
         browser=browser,
+        metrics=metrics,
     )
