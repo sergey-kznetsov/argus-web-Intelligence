@@ -9,12 +9,17 @@ class HistoricalBranchPlanner:
     """Create bounded follow-up research queries from already collected facts.
 
     The planner never turns inferred entities into facts. It only uses conservative
-    labels from Observation fields to seed another normal discovery/fetch/evidence
-    cycle. Query de-duplication is collection-scoped through the orchestrator.
+    labels from source observations to seed another normal discovery/fetch/evidence
+    cycle. Derived historical comparison rows are deliberately excluded so the
+    history layer cannot recursively research its own output.
     """
 
     _DATA_KEYS = ("name", "former_name", "old_name", "operator", "brand")
-    _NON_ENTITY_SOURCE_KINDS = {"archive_capture_index"}
+    _NON_ENTITY_SOURCE_KINDS = {
+        "archive_capture_index",
+        "historical_page_version",
+        "historical_entity_change",
+    }
 
     def __init__(
         self,
