@@ -9,6 +9,7 @@ import httpx
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest
 from argus.research.historical_sources import HistoricalSourceResearchPlanner
+from argus.research.public_map_sources import PublicMapSourceResearchPlanner
 from argus.sources.base import SourceTask
 
 
@@ -21,6 +22,73 @@ class ResearchPlan:
 
 class ResearchPlanner(Protocol):
     async def plan(self, request: CollectionRequest) -> ResearchPlan: ...
+
+
+def _merge_curated_sources(
+    request: CollectionRequest,
+    queries: list[str],
+    *,
+    max_queries: int,
+    historical_sources: HistoricalSourceResearchPlanner,
+    public_map_sources: PublicMapSourceResearchPlanner,
+) -> tuple[list[str], int, int]:
+    if max_queries <= 0:
+        return [], 0, 0
+
+    historical: list[str] = []
+    if "historical_context" in request.intents:
+        historical = historical_sources.queries(
+            request,
+            limit=min(4, max(1, max_queries // 2)),
+        )
+
+    public_maps: list[str] = []
+    if public_map_sources.supported_intents.intersection(request.intents):
+        public_maps = public_map_sources.queries(
+            request,
+            limit=min(3, max(1, max_queries // 2)),
+        )
+
+    if not historical and not public_maps:
+        return queries[:max_queries], 0, 0
+
+    curated_budget = max_queries if max_queries == 1 else max_queries - 1
+    curated: list[tuple[str, str]] = []
+    indexes = {"historical": 0, "public_map": 0}
+    groups = {"historical": historical, "public_map": public_maps}
+    while len(curated) < curated_budget:
+        progressed = False
+        for name in ("historical", "public_map"):
+            index = indexes[name]
+            values = groups[name]
+            if index >= len(values):
+                continue
+            curated.append((name, values[index]))
+            indexes[name] = index + 1
+            progressed = True
+            if len(curated) >= curated_budget:
+                break
+        if not progressed:
+            break
+
+    keep = max(0, max_queries - len(curated))
+    result = list(queries[:keep])
+    seen = {query.casefold() for query in result}
+    historical_count = 0
+    public_map_count = 0
+    for category, query in curated:
+        key = query.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(query)
+        if category == "historical":
+            historical_count += 1
+        else:
+            public_map_count += 1
+        if len(result) >= max_queries:
+            break
+    return result, historical_count, public_map_count
 
 
 class HeuristicResearchPlanner:
@@ -61,10 +129,12 @@ class HeuristicResearchPlanner:
         max_queries: int = 8,
         max_query_chars: int = 512,
         historical_sources: HistoricalSourceResearchPlanner | None = None,
+        public_map_sources: PublicMapSourceResearchPlanner | None = None,
     ) -> None:
         self.max_queries = max(1, int(max_queries))
         self.max_query_chars = max(32, int(max_query_chars))
         self.historical_sources = historical_sources or HistoricalSourceResearchPlanner()
+        self.public_map_sources = public_map_sources or PublicMapSourceResearchPlanner()
 
     async def plan(self, request: CollectionRequest) -> ResearchPlan:
         territory = self._territory_text(request)
@@ -94,39 +164,25 @@ class HeuristicResearchPlanner:
             if len(queries) >= self.max_queries:
                 break
 
-        queries, historical_count = self._merge_curated_historical(request, queries)
+        queries, historical_count, public_map_count = _merge_curated_sources(
+            request,
+            queries,
+            max_queries=self.max_queries,
+            historical_sources=self.historical_sources,
+            public_map_sources=self.public_map_sources,
+        )
         notes = [f"heuristic_language={language}"]
         if historical_count:
             notes.append(
                 f"curated_historical_sources={historical_count};"
                 f"version={self.historical_sources.version}"
             )
+        if public_map_count:
+            notes.append(
+                f"curated_public_map_sources={public_map_count};"
+                f"version={self.public_map_sources.version}"
+            )
         return ResearchPlan(queries=queries, notes=notes)
-
-    def _merge_curated_historical(
-        self,
-        request: CollectionRequest,
-        queries: list[str],
-    ) -> tuple[list[str], int]:
-        if "historical_context" not in request.intents:
-            return queries[: self.max_queries], 0
-        reserve = min(4, max(1, self.max_queries // 2))
-        curated = self.historical_sources.queries(request, limit=reserve)
-        if not curated:
-            return queries[: self.max_queries], 0
-        keep = max(0, self.max_queries - len(curated))
-        result = list(queries[:keep])
-        seen = {query.casefold() for query in result}
-        added = 0
-        for query in curated:
-            if query.casefold() in seen:
-                continue
-            seen.add(query.casefold())
-            result.append(query)
-            added += 1
-            if len(result) >= self.max_queries:
-                break
-        return result, added
 
     def _bounded_query(self, value: str) -> str:
         normalized = " ".join(value.split()).strip()
@@ -169,9 +225,11 @@ class OllamaResearchPlanner:
         self.max_queries = max(1, int(settings.discovery_max_queries))
         self.max_query_chars = 512
         self.historical_sources = HistoricalSourceResearchPlanner()
+        self.public_map_sources = PublicMapSourceResearchPlanner()
         self.fallback = fallback or HeuristicResearchPlanner(
             max_queries=self.max_queries,
             historical_sources=self.historical_sources,
+            public_map_sources=self.public_map_sources,
         )
 
     async def plan(self, request: CollectionRequest) -> ResearchPlan:
@@ -180,9 +238,11 @@ class OllamaResearchPlanner:
             "and notes (array). Do not invent facts. Plan only how to research public sources. "
             "Cover the requested intents fairly within a small query budget. For area research include "
             "nearby organizations/places and, when requested, reviews, comments, complaints, resident "
-            "discussions, local media, incidents and historical records. For historical context expand "
-            "current place, former buildings/organizations, construction, demolition, reconstruction, "
-            "old addresses, documents, publications and newly discovered entities.\n"
+            "discussions, local media, incidents and historical records. Public map/card pages are "
+            "ordinary public web sources: do not assume paid map APIs or access-control bypass. For "
+            "historical context expand current place, former buildings/organizations, construction, "
+            "demolition, reconstruction, old addresses, documents, publications and newly discovered "
+            "entities.\n"
             f"Input: {request.model_dump_json()}"
         )
         try:
@@ -202,40 +262,27 @@ class OllamaResearchPlanner:
                 queries = self._bounded_queries(data.get("queries", []))
                 if not queries:
                     return await self.fallback.plan(request)
-                queries, historical_count = self._merge_curated_historical(request, queries)
+                queries, historical_count, public_map_count = _merge_curated_sources(
+                    request,
+                    queries,
+                    max_queries=self.max_queries,
+                    historical_sources=self.historical_sources,
+                    public_map_sources=self.public_map_sources,
+                )
                 notes = self._bounded_notes(data.get("notes", []))
                 if historical_count:
                     notes.append(
                         f"curated_historical_sources={historical_count};"
                         f"version={self.historical_sources.version}"
                     )
+                if public_map_count:
+                    notes.append(
+                        f"curated_public_map_sources={public_map_count};"
+                        f"version={self.public_map_sources.version}"
+                    )
                 return ResearchPlan(queries=queries, notes=notes)
         except (httpx.HTTPError, ValueError, json.JSONDecodeError, TypeError):
             return await self.fallback.plan(request)
-
-    def _merge_curated_historical(
-        self,
-        request: CollectionRequest,
-        queries: list[str],
-    ) -> tuple[list[str], int]:
-        if "historical_context" not in request.intents:
-            return queries[: self.max_queries], 0
-        reserve = min(4, max(1, self.max_queries // 2))
-        curated = self.historical_sources.queries(request, limit=reserve)
-        keep = max(0, self.max_queries - len(curated))
-        result = list(queries[:keep])
-        seen = {query.casefold() for query in result}
-        added = 0
-        for query in curated:
-            key = query.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            result.append(query)
-            added += 1
-            if len(result) >= self.max_queries:
-                break
-        return result, added
 
     def _bounded_queries(self, values: object) -> list[str]:
         if not isinstance(values, list):
