@@ -24,8 +24,8 @@ from argus.research.planner import OllamaResearchPlanner
 from argus.research.searxng import SearxngDiscoveryProvider
 from argus.security.urls import UrlGuard
 from argus.services import ServiceContainer
-from argus.sources.geojson_web import GeoJsonAwareWebAdapter
 from argus.sources.json_feed import JSONFeedAdapter
+from argus.sources.kml_web import KmlAwareWebAdapter
 from argus.sources.overpass_map import OverpassSourceAdapter
 from argus.sources.registry import SourceRegistry
 from argus.sources.rss import RSSAdapter
@@ -148,7 +148,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     structured_extractor = build_structured_data_extractor(settings)
     registry = SourceRegistry()
     registry.register(
-        GeoJsonAwareWebAdapter(
+        KmlAwareWebAdapter(
             fast=fast,
             browser=browser,
             snapshots=snapshots,
@@ -167,6 +167,7 @@ def build_services(settings: Settings) -> ServiceContainer:
             microdata_max_items=min(settings.structured_data_max_records, 100),
             microdata_max_properties_per_item=min(settings.structured_data_max_columns, 100),
             microdata_max_value_chars=settings.structured_data_max_cell_chars,
+            kml_max_placemarks=settings.structured_data_max_records,
         )
     )
     registry.register(
