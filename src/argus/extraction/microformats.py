@@ -98,7 +98,11 @@ def extract_microformats(
         properties: dict[str, list[object]] = {}
         for property_class in _KIND_PROPERTIES[kind]:
             values: list[object] = []
-            for element in root.find_all(class_=lambda value: _has_class(value, property_class)):
+
+            def has_property_class(value: object, expected: str = property_class) -> bool:
+                return _has_class(value, expected)
+
+            for element in root.find_all(class_=has_property_class):
                 if not isinstance(element, Tag) or not _belongs_to_root(element, root):
                     continue
                 value = _property_value(
