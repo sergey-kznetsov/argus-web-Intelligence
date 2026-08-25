@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import Depends, FastAPI
 
 from argus.config import Settings
+from argus.security.http_hardening import ClientRateLimitMiddleware, SecurityHeadersMiddleware
 from argus.services import ServiceContainer
 
 
@@ -18,7 +19,19 @@ def register_operational_metrics_endpoint(
     repository: Any,
     require_bearer: Callable[..., Any],
 ) -> None:
-    """Register a bounded, authenticated operational snapshot endpoint."""
+    """Apply API hardening and register the operational snapshot endpoint.
+
+    This helper is invoked once during app construction, before the application starts.
+    SecurityHeadersMiddleware is added last so it remains outermost and also hardens
+    rate-limit and request-size error responses.
+    """
+
+    app.add_middleware(
+        ClientRateLimitMiddleware,
+        requests_per_minute=settings.api_rate_limit_requests_per_minute,
+        burst=settings.api_rate_limit_burst,
+    )
+    app.add_middleware(SecurityHeadersMiddleware)
 
     @app.get("/v1/operations/metrics", dependencies=[Depends(require_bearer)])
     async def operational_metrics() -> dict[str, object]:
@@ -48,6 +61,15 @@ def register_operational_metrics_endpoint(
             "queue": queue_payload,
             "execution_role": settings.execution_role,
             "storage_backend": settings.storage_backend,
+            "security": {
+                "security_headers": True,
+                "direct_peer_rate_limit": True,
+                "forwarded_client_ip_trusted": False,
+                "rate_limit_requests_per_minute": settings.api_rate_limit_requests_per_minute,
+                "rate_limit_burst": settings.api_rate_limit_burst,
+                "public_outbound_ports": settings.outbound_public_ports,
+                "denied_outbound_host_count": len(settings.deny_outbound_hosts),
+            },
             "exporters": {
                 "prometheus": False,
                 "opentelemetry": False,
