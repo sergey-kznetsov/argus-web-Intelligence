@@ -34,6 +34,7 @@ dev = [
 
 [project.scripts]
 argus = "argus.cli.main:app"
+argus-web = "argus.web.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/argus"]
