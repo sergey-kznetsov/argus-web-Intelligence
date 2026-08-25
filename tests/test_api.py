@@ -3,6 +3,12 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from argus.api.app import create_app
+from argus.capabilities import (
+    DOCUMENT_EXTRACTORS,
+    GEOSPATIAL_EXTRACTORS,
+    STRUCTURED_EXTRACTORS,
+    VISUAL_EXTRACTORS,
+)
 from argus.config import Settings
 from argus.module_protocol import MODULE_ID
 
@@ -46,6 +52,11 @@ def test_health_and_auth(tmp_path: Path):
         assert payload["queue_backend"] == "embedded"
         assert payload["idempotent_submission"] is False
         assert payload["worker_required_for_readiness"] is False
+        assert payload["runtimes"] == ["fast", "browser"]
+        assert payload["agent_enabled"] is False
+        assert payload["agent_backend"] is None
+        assert payload["agent_backends"] == ["browser-use"]
+        assert payload["unavailable_agent_backends"]["stagehand"]["status"] == "unavailable"
         assert payload["result_delivery"] == {
             "full_result_max_items": 100,
             "full_result_max_bytes": 4 * 1024 * 1024,
@@ -59,7 +70,12 @@ def test_health_and_auth(tmp_path: Path):
         assert payload["geocoding_providers"] == []
         assert payload["archive_providers"] == []
         assert payload["sitemap_discovery"] is True
-        assert payload["structured_extractors"] == ["json_ld"]
+        assert payload["structured_extractors"] == list(STRUCTURED_EXTRACTORS)
+        assert payload["document_extractors"] == list(DOCUMENT_EXTRACTORS)
+        assert payload["visual_extractors"] == list(VISUAL_EXTRACTORS)
+        assert payload["geospatial_extractors"] == list(GEOSPATIAL_EXTRACTORS)
+        assert payload["historical_timeline"] is True
+        assert payload["historical_images"] is True
         assert "duckduckgo_browser" in payload["discovery_providers"]
 
         sources = client.get("/v1/sources", headers=auth_headers(settings)).json()
@@ -96,7 +112,7 @@ def test_capabilities_only_lists_configured_optional_providers(tmp_path: Path):
         assert payload["archive_providers"] == ["wayback_cdx"]
         assert payload["discovery_providers"] == []
         assert payload["sitemap_discovery"] is False
-        assert payload["structured_extractors"] == ["json_ld"]
+        assert payload["structured_extractors"] == list(STRUCTURED_EXTRACTORS)
 
         sources = client.get("/v1/sources", headers=auth_headers(settings)).json()
         source_ids = {item["source_id"] for item in sources}
