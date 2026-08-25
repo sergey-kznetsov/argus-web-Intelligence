@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import Header, HTTPException, status
 
 from argus.config import Settings, get_settings
+from argus.security.runtime_posture import harden_secret_file
 
 _MIN_TOKEN_LENGTH = 32
 
@@ -38,6 +39,7 @@ def _write_token_atomic(path: Path) -> str:
             path.chmod(0o600)
         except OSError:
             pass
+        harden_secret_file(path, require_exists=True)
     finally:
         try:
             temporary.unlink(missing_ok=True)
@@ -50,6 +52,7 @@ def ensure_token(settings: Settings) -> str:
     settings.ensure_dirs()
     existing = _read_valid_token(settings.token_file)
     if existing is not None:
+        harden_secret_file(settings.token_file, require_exists=True)
         return existing
     return _write_token_atomic(settings.token_file)
 
