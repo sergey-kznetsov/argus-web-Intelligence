@@ -4,12 +4,7 @@ from argus.crawler.agent.base import AgentResult, AgentTask
 
 
 class StagehandAgent:
-    """Stable boundary for Stagehand integration.
-
-    Crawlee provides StagehandCrawler, but local-model configuration can evolve independently.
-    Milestone 1 keeps the core independent and fails explicitly until a validated local LLM client
-    is configured.
-    """
+    """Stable disabled boundary for a future validated local Stagehand backend."""
 
     name = "stagehand"
 
@@ -20,5 +15,10 @@ class StagehandAgent:
             data={},
             visited_urls=[],
             actions=[],
-            error="Stagehand local-LLM backend is not enabled in milestone 1",
+            error="Stagehand local-LLM backend is not enabled",
+            metadata={
+                "backend": self.name,
+                "status": "disabled",
+                "reason_code": "AGENT_BACKEND_DISABLED",
+            },
         )
