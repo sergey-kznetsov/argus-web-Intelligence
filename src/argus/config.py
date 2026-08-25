@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     retention_batch_size: int = Field(default=500, ge=1, le=10_000)
 
     api_max_request_bytes: int = Field(default=1024 * 1024, ge=4096, le=16 * 1024 * 1024)
+    api_rate_limit_requests_per_minute: float = Field(default=600.0, gt=0, le=100_000)
+    api_rate_limit_burst: int = Field(default=120, ge=1, le=10_000)
     api_full_result_max_items: int = Field(default=100, ge=1, le=5000)
     api_full_result_max_bytes: int = Field(
         default=4 * 1024 * 1024,
@@ -104,6 +106,9 @@ class Settings(BaseSettings):
     throttle_base_delay_seconds: float = Field(default=2.0, gt=0, le=300)
     throttle_max_delay_seconds: float = Field(default=60.0, gt=0, le=3600)
 
+    outbound_public_ports: list[int] = Field(default_factory=lambda: [80, 443])
+    deny_outbound_hosts: list[str] = Field(default_factory=list)
+
     direct_provider_max_retries: int = Field(default=2, ge=0, le=5)
     direct_provider_retry_base_seconds: float = Field(default=1.0, ge=0, le=300)
     direct_provider_retry_max_seconds: float = Field(default=30.0, ge=0, le=3600)
@@ -139,17 +144,37 @@ class Settings(BaseSettings):
     agent_enabled: bool = False
     allow_internal_targets: list[str] = Field(default_factory=list)
 
-    @field_validator("allow_internal_targets", "throttled_domains", mode="before")
+    @field_validator(
+        "allow_internal_targets",
+        "deny_outbound_hosts",
+        "throttled_domains",
+        mode="before",
+    )
     @classmethod
     def split_csv_lists(cls, value: object) -> object:
         if isinstance(value, str):
             return [item.strip().lower() for item in value.split(",") if item.strip()]
         return value
 
-    @field_validator("allow_internal_targets", "throttled_domains")
+    @field_validator("allow_internal_targets", "deny_outbound_hosts", "throttled_domains")
     @classmethod
     def normalize_hosts(cls, value: list[str]) -> list[str]:
         return sorted({item.lower().strip().strip(".") for item in value if item.strip()})
+
+    @field_validator("outbound_public_ports", mode="before")
+    @classmethod
+    def split_public_ports(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("outbound_public_ports")
+    @classmethod
+    def normalize_public_ports(cls, value: list[int]) -> list[int]:
+        ports = sorted({int(item) for item in value})
+        if not ports or any(port < 1 or port > 65535 for port in ports):
+            raise ValueError("outbound_public_ports must contain valid TCP ports")
+        return ports
 
     @field_validator("log_level", mode="before")
     @classmethod
