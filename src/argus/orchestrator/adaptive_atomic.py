@@ -4,6 +4,7 @@ from argus.contracts.models import Observation
 from argus.orchestrator.area_atomic import AreaAwareAtomicCollectionOrchestrator
 from argus.research.followup import FollowupResearchPlanner
 from argus.research.historical_sources import HistoricalSourceResearchPlanner
+from argus.research.public_map_sources import PublicMapSourceResearchPlanner
 from argus.sources.base import SourceTask
 
 
@@ -15,8 +16,10 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
         *args,
         followup_planner: FollowupResearchPlanner | None = None,
         historical_source_planner: HistoricalSourceResearchPlanner | None = None,
+        public_map_source_planner: PublicMapSourceResearchPlanner | None = None,
         max_followup_rounds: int = 3,
         max_curated_historical_rounds: int = 3,
+        max_curated_public_map_rounds: int = 3,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -24,8 +27,10 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
         self.historical_source_planner = (
             historical_source_planner or HistoricalSourceResearchPlanner()
         )
+        self.public_map_source_planner = public_map_source_planner or PublicMapSourceResearchPlanner()
         self.max_followup_rounds = max(0, int(max_followup_rounds))
         self.max_curated_historical_rounds = max(0, int(max_curated_historical_rounds))
+        self.max_curated_public_map_rounds = max(0, int(max_curated_public_map_rounds))
 
     async def _expand_historical(
         self,
@@ -45,6 +50,13 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             seen_queries,
         )
         await self._expand_curated_historical_sources(
+            record,
+            task,
+            observations,
+            pending,
+            visited,
+        )
+        await self._expand_curated_public_map_sources(
             record,
             task,
             observations,
@@ -132,6 +144,97 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             "curated_historical_queries": sorted(seen),
             "curated_historical_last_candidates": len(additions),
             "curated_historical_source_version": self.historical_source_planner.version,
+        }
+
+    async def _expand_curated_public_map_sources(
+        self,
+        record,
+        task: SourceTask,
+        observations: list[Observation],
+        pending: list[SourceTask],
+        visited: set[str],
+    ) -> None:
+        requested_intents = [
+            intent
+            for intent in record.request.intents
+            if intent in self.public_map_source_planner.supported_intents
+        ]
+        if (
+            self.discovery is None
+            or not requested_intents
+            or self.max_curated_public_map_rounds <= 0
+        ):
+            return
+        round_count = int(record.checkpoint.get("curated_public_map_rounds", 0) or 0)
+        if round_count >= self.max_curated_public_map_rounds:
+            return
+        remaining_page_budget = max(
+            0,
+            int(record.request.constraints.max_pages) - len(visited) - len(pending) - 1,
+        )
+        if remaining_page_budget <= 0:
+            return
+
+        committed = await self.repository.list_observations(record.collection_id)
+        all_observations = [*committed, *observations]
+        seen = {
+            str(query)
+            for bucket in (
+                record.checkpoint.get("queries", []),
+                record.checkpoint.get("discovery_queries", []),
+                record.checkpoint.get("area_entity_queries", []),
+                record.checkpoint.get("adaptive_followup_queries", []),
+                record.checkpoint.get("curated_public_map_queries", []),
+            )
+            if isinstance(bucket, list)
+            for query in bucket
+            if isinstance(query, str) and query.strip()
+        }
+        query_limit = min(3, remaining_page_budget)
+        queries = self.public_map_source_planner.queries(
+            record.request,
+            observations=all_observations,
+            seen_queries=seen,
+            limit=query_limit,
+        )
+        if not queries:
+            record.checkpoint = {
+                **record.checkpoint,
+                "curated_public_map_complete": True,
+                "curated_public_map_source_version": self.public_map_source_planner.version,
+            }
+            return
+
+        seen.update(queries)
+        constraints = record.request.constraints.model_copy(
+            update={"max_pages": remaining_page_budget}
+        )
+        branch_request = record.request.model_copy(
+            update={
+                "intents": requested_intents,
+                "constraints": constraints,
+            }
+        )
+        outcome = await self.discovery.discover(queries, branch_request)
+        for error in outcome.errors:
+            if error.code != "DISCOVERY_NO_RESULTS":
+                record.errors.append(error)
+
+        additions: list[SourceTask] = []
+        for branch_task in outcome.tasks[:remaining_page_budget]:
+            if branch_task.dedupe_key in visited:
+                continue
+            branch_task.metadata["curated_public_map_round"] = round_count + 1
+            branch_task.metadata["curated_public_map_from"] = task.url
+            branch_task.metadata["curated_public_map_queries"] = list(queries)
+            additions.append(branch_task)
+        self._merge_tasks(pending, additions, record.collection_id)
+        record.checkpoint = {
+            **record.checkpoint,
+            "curated_public_map_rounds": round_count + 1,
+            "curated_public_map_queries": sorted(seen),
+            "curated_public_map_last_candidates": len(additions),
+            "curated_public_map_source_version": self.public_map_source_planner.version,
         }
 
     async def _expand_research_gaps(
