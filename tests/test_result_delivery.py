@@ -206,7 +206,9 @@ def test_paged_result_requires_terminal_collection(tmp_path: Path):
             headers=auth_headers(settings),
         )
         assert response.status_code == 409
-        assert response.json()["detail"] == {
-            "code": "RESULT_NOT_FINAL",
-            "status": "running",
-        }
+        detail = response.json()["detail"]
+        assert detail["code"] == "RESULT_NOT_FINAL"
+        # Startup recovery may move an interrupted RUNNING collection back to QUEUED
+        # before this read. Both states are deliberately non-terminal and must reject
+        # paged result delivery.
+        assert detail["status"] in {"queued", "running"}
