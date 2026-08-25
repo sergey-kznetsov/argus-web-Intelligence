@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+import contextlib
+import http.server
+import socketserver
+import threading
+from pathlib import Path
+
+import pytest
+
+from argus.cli.probe import render_probe_summary, run_embedded_probe
+from argus.config import Settings
+from argus.contracts.models import (
+    CollectionConstraints,
+    CollectionRequest,
+    CollectionStatus,
+    TerritoryContext,
+)
+
+
+class _ProbeHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802
+        body = b"""<!doctype html>
+<html>
+  <head>
+    <title>ARGUS Standalone Probe</title>
+    <meta name="description" content="Evidence-first standalone test page">
+  </head>
+  <body>
+    <main>
+      <h1>Public test fact</h1>
+      <p>The standalone collector reached the factual page.</p>
+    </main>
+  </body>
+</html>"""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+
+@contextlib.contextmanager
+def _server():
+    with socketserver.TCPServer(("127.0.0.1", 0), _ProbeHandler) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield httpd.server_address[1]
+        finally:
+            httpd.shutdown()
+            thread.join()
+
+
+@pytest.mark.asyncio
+async def test_embedded_probe_collects_observation_and_evidence_without_geo_analyzer(
+    tmp_path: Path,
+) -> None:
+    with _server() as port:
+        url = f"http://127.0.0.1:{port}/fact"
+        settings = Settings(
+            execution_role="embedded",
+            storage_backend="sqlite",
+            db_path=tmp_path / "probe.sqlite3",
+            allow_internal_targets=["127.0.0.1"],
+            browser_serp_enabled=False,
+            sitemap_discovery_enabled=False,
+            agent_enabled=False,
+            max_concurrency=1,
+            browser_max_concurrency=1,
+        )
+        request = CollectionRequest(
+            consumer="standalone-probe-test",
+            analysis_id="probe-integration",
+            territory=TerritoryContext(address="Local deterministic probe"),
+            intents=["public_mentions"],
+            constraints=CollectionConstraints(
+                max_pages=1,
+                max_depth=0,
+                seed_urls=[url],
+            ),
+        )
+
+        report = await run_embedded_probe(settings, request, timeout_seconds=30)
+
+    result = report["result"]
+    assert result["status"] == CollectionStatus.COMPLETED.value
+    assert len(result["observations"]) >= 1
+    assert len(result["evidence"]) >= 1
+    assert any(item["url"] == url for item in result["observations"])
+    assert any(item["source"]["url"] == url for item in result["evidence"])
+    assert any(
+        "standalone collector reached the factual page" in (item.get("text") or "").lower()
+        for item in result["observations"]
+    )
+    assert report["probe"]["mode"] == "embedded"
+    assert report["probe"]["storage_backend"] == "sqlite"
+    assert "generic_web" in report["source_health"]
+
+    summary = render_probe_summary(report, preview_items=2, preview_chars=120)
+    assert "Status: completed" in summary
+    assert "Observation preview:" in summary
+    assert "Evidence preview:" in summary
