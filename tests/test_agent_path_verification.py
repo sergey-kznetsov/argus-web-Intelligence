@@ -72,6 +72,14 @@ class ActionFreeAgent:
         )
 
 
+class FailingAgent:
+    name = "test-agent"
+
+    async def run(self, task) -> AgentResult:
+        del task
+        raise RuntimeError("local LLM unavailable")
+
+
 def source_task() -> SourceTask:
     return SourceTask(
         source_id="generic_web",
@@ -169,4 +177,26 @@ async def test_action_free_agent_result_is_refetched_before_becoming_factual_inp
     assert result.metadata["agent_guided"] is True
     assert result.metadata["agent_direct_replay_bounded"] is True
     assert result.metadata["agent_execution"]["reason_code"] == "AGENT_OK"
+    await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_failure_is_fail_open_and_secret_safe(tmp_path: Path):
+    repository = LifecycleAtomicSQLiteRepository(tmp_path / "argus.sqlite")
+    await repository.initialize()
+    web = build_adapter(repository, browser=BrowserSpy(), agent=FailingAgent())
+    task = source_task()
+
+    result = await web._agent_guided_fetch(task)
+
+    assert result is None
+    assert task.metadata["agent_error"] == "agent runtime unavailable"
+    assert task.metadata["agent_execution"] == {
+        "status": "failed",
+        "code": "AGENT_RUNTIME_UNAVAILABLE",
+        "backend": "test-agent",
+        "error_type": "RuntimeError",
+        "retryable": True,
+    }
+    assert "local LLM unavailable" not in str(task.metadata)
     await repository.close()
