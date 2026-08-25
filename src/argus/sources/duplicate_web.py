@@ -24,6 +24,22 @@ class DuplicateAwareWebAdapter(CanonicalLinkWebAdapter):
         "office_spreadsheet",
         "office_document_file",
     }
+    _DISCOVERY_METADATA_KEYS = (
+        "discovery_provider",
+        "discovery_engines",
+        "discovery_rank",
+        "discovery_original_url",
+        "discovery_canonical_url",
+        "discovery_domain_priority",
+        "discovery_locality_matches",
+        "discovery_https",
+        "discovery_navigation_score",
+        "discovery_ranking_components",
+        "discovery_ranking_version",
+        "discovery_telemetry_version",
+        "discovery_stop_policy",
+        "discovery_task_budget",
+    )
 
     def __init__(self, *args, repository: Repository, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -36,6 +52,7 @@ class DuplicateAwareWebAdapter(CanonicalLinkWebAdapter):
         request: CollectionRequest,
     ) -> SourceResult:
         result = await super().extract(task, fetched, request)
+        self._attach_discovery_navigation_provenance(result, task)
         if fetched.blocked or not result.observations:
             return result
 
@@ -74,6 +91,30 @@ class DuplicateAwareWebAdapter(CanonicalLinkWebAdapter):
         text = observation.text or ""
         return len(text.strip()) >= self.min_web_text_chars
 
+    @classmethod
+    def _attach_discovery_navigation_provenance(
+        cls,
+        result: SourceResult,
+        task: SourceTask,
+    ) -> None:
+        if not task.metadata.get("discovery_provider"):
+            return
+        navigation = {
+            key.removeprefix("discovery_"): task.metadata[key]
+            for key in cls._DISCOVERY_METADATA_KEYS
+            if key in task.metadata
+        }
+        navigation["navigation_only"] = True
+        navigation["is_evidence"] = False
+        for observation in result.observations:
+            existing = observation.provenance.get("discovery")
+            if isinstance(existing, dict):
+                existing.update(navigation)
+            else:
+                observation.provenance["discovery"] = dict(navigation)
+        for evidence in result.evidence:
+            evidence.metadata["discovery_navigation"] = dict(navigation)
+
     def _mark_duplicate(
         self,
         result: SourceResult,
@@ -106,4 +147,5 @@ class DuplicateAwareWebAdapter(CanonicalLinkWebAdapter):
         payload["duplicate_content_evidence_preserved"] = True
         payload["duplicate_content_navigation_suppressed"] = True
         payload["duplicate_content_min_web_text_chars"] = self.min_web_text_chars
+        payload["discovery_navigation_provenance"] = True
         return payload
