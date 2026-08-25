@@ -256,6 +256,22 @@ class SQLiteRepository:
         rows = await self._run(self._list_json_sync, "observations", collection_id)
         return [Observation.model_validate_json(row) for row in rows]
 
+    async def find_observation_by_content_hash(
+        self,
+        collection_id: str,
+        *,
+        content_hash: str,
+        source_kinds: list[str],
+    ) -> Observation | None:
+        kinds = set(source_kinds)
+        if not content_hash or not kinds:
+            return None
+        observations = await self.list_observations(collection_id)
+        for observation in observations:
+            if observation.content_hash == content_hash and observation.source_kind in kinds:
+                return observation
+        return None
+
     async def add_evidence(self, evidence: Evidence, collection_id: str) -> None:
         await self._run(
             self._insert_json_sync,
