@@ -125,6 +125,31 @@ class BrowserCrawlerRuntime:
                     except UnsafeUrlError:
                         await route.abort("blockedbyclient")
                         return
+
+                    # Playwright may follow a navigation redirect before a normal route
+                    # handler gets a chance to reject the next hop. For document requests,
+                    # fetch exactly one hop ourselves, validate Location while the browser
+                    # has not seen the redirect yet, then fulfill the intercepted request.
+                    # This preserves the network boundary: an unsafe redirect target is
+                    # never contacted by Chromium.
+                    if route.request.resource_type == "document":
+                        response = await route.fetch(max_redirects=0)
+                        if 300 <= response.status < 400:
+                            location = response.headers.get("location")
+                            if location:
+                                redirect_url = urljoin(request_url, location)
+                                try:
+                                    await self.url_guard.validate_redirect(
+                                        request_url,
+                                        redirect_url,
+                                    )
+                                except UnsafeUrlError:
+                                    await response.dispose()
+                                    await route.abort("blockedbyclient")
+                                    return
+                        await route.fulfill(response=response)
+                        return
+
                     await route.continue_()
 
                 await context.page.route("**/*", route_handler)
