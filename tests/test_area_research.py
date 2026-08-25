@@ -96,7 +96,7 @@ async def test_overpass_area_inventory_runs_for_research_intents_without_hiding_
     assert isinstance(raw, dict)
     assert raw["limit"] == 100
     assert raw["radius_meters"] == 1000
-    assert len(raw["categories"]) > 5
+    assert raw["categories"] == ["named_feature"]
     assert "*" in adapter.intents
 
 
