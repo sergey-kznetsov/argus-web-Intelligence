@@ -3,15 +3,23 @@ from __future__ import annotations
 import hashlib
 import json
 
-from argus.contracts.models import CollectionRequest, Evidence, EvidenceSource, Observation
+from argus.contracts.models import (
+    CollectionRequest,
+    Evidence,
+    EvidenceSource,
+    Observation,
+    StructuredError,
+)
 from argus.extraction.images import extract_image_references
 from argus.normalization.identity import stable_evidence_id, stable_observation_id
 from argus.sources.base import SourceResult, SourceTask
 from argus.sources.recipe_web import LifecycleRecipeWebAdapter
 
+_IMAGE_RESEARCH_GOALS = {"historical_context", "historical_images", "images"}
+
 
 class ImageAwareRecipeWebAdapter(LifecycleRecipeWebAdapter):
-    """Add first-class source-declared image references to the factual web result."""
+    """Add first-class source-declared image references to visual research results."""
 
     image_max_scan_chars = 750_000
     image_max_items = 50
@@ -27,6 +35,9 @@ class ImageAwareRecipeWebAdapter(LifecycleRecipeWebAdapter):
         if result.blocked:
             return result
 
+        research_goals = self._research_goals(task)
+        if not set(research_goals) & _IMAGE_RESEARCH_GOALS:
+            return result
         extraction = extract_image_references(
             fetched.text,
             content_type=fetched.content_type,
@@ -40,7 +51,6 @@ class ImageAwareRecipeWebAdapter(LifecycleRecipeWebAdapter):
 
         collection_id = str(task.metadata.get("collection_id") or "")
         snapshot_id = self._snapshot_id(result)
-        research_goals = self._research_goals(task)
         for item in extraction.items:
             payload = {
                 "image_url": item.image_url,
@@ -129,6 +139,17 @@ class ImageAwareRecipeWebAdapter(LifecycleRecipeWebAdapter):
 
         if extraction.truncated:
             result.partial = True
+            result.errors.append(
+                StructuredError(
+                    code="IMAGE_REFERENCE_LIMIT_REACHED",
+                    message=(
+                        "Source-declared image references exceeded the bounded extraction limit "
+                        f"of {self.image_max_items} items or {self.image_max_scan_chars} HTML characters."
+                    ),
+                    retryable=False,
+                    source_id=self.source_id,
+                )
+            )
         return result
 
     @staticmethod
@@ -151,6 +172,7 @@ class ImageAwareRecipeWebAdapter(LifecycleRecipeWebAdapter):
             "version": "html-image-reference/1",
             "source_declared_only": True,
             "binary_download": False,
+            "research_goals": sorted(_IMAGE_RESEARCH_GOALS),
             "max_items": self.image_max_items,
             "max_scan_chars": self.image_max_scan_chars,
         }
