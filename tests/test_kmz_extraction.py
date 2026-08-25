@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import stat
 import zipfile
 
 from argus.extraction.kmz import BoundedKmzExtractor
@@ -61,6 +62,21 @@ def test_kmz_rejects_case_colliding_doc_member():
 
     assert result.kml_body is None
     assert result.error_code == "KMZ_DUPLICATE_MEMBER"
+
+
+def test_kmz_rejects_symlink_members():
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as package:
+        package.writestr("doc.kml", b"<kml/>")
+        link = zipfile.ZipInfo("images/icon.png")
+        link.create_system = 3
+        link.external_attr = (stat.S_IFLNK | 0o777) << 16
+        package.writestr(link, b"../secret")
+
+    result = BoundedKmzExtractor(max_bytes=100_000).extract(buffer.getvalue())
+
+    assert result.kml_body is None
+    assert result.error_code == "KMZ_SYMLINK_MEMBER"
 
 
 def test_kmz_rejects_declared_uncompressed_budget_overflow():
