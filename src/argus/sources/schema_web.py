@@ -332,6 +332,16 @@ class SchemaAwareSemanticWebAdapter(SemanticWebAdapter):
 
     @classmethod
     def _microdata_rating(cls, properties: dict[str, list[object]]) -> dict[str, object] | None:
+        nested = cls._microdata_nested_properties(
+            cls._first_property(properties, "reviewRating")
+        )
+        if nested is not None:
+            rating_value = cls._number(cls._first_property(nested, "ratingValue"))
+            best = cls._number(cls._first_property(nested, "bestRating"))
+            worst = cls._number(cls._first_property(nested, "worstRating"))
+            payload = cls._rating_payload(rating_value, best, worst)
+            if payload is not None:
+                return payload
         rating_value = cls._number(cls._first_property(properties, "ratingValue"))
         best = cls._number(cls._first_property(properties, "bestRating"))
         worst = cls._number(cls._first_property(properties, "worstRating"))
@@ -404,6 +414,13 @@ class SchemaAwareSemanticWebAdapter(SemanticWebAdapter):
         value = cls._first_property(properties, name)
         if isinstance(value, str) and value.strip():
             return value.strip()
+        nested = cls._microdata_nested_properties(value)
+        if nested is None:
+            return None
+        for candidate in ("name", "alternateName"):
+            label = cls._first_property(nested, candidate)
+            if isinstance(label, str) and label.strip():
+                return label.strip()
         return None
 
     @classmethod
@@ -424,6 +441,28 @@ class SchemaAwareSemanticWebAdapter(SemanticWebAdapter):
         item_types = value.get("itemtype")
         if isinstance(item_types, list) and item_types:
             result["type"] = str(item_types[0])
+        nested = cls._microdata_nested_properties(value)
+        if nested is not None:
+            nested_name = cls._first_property(nested, "name")
+            if isinstance(nested_name, str) and nested_name.strip():
+                result["name"] = nested_name.strip()
+            nested_url = cls._first_property(nested, "url")
+            if isinstance(nested_url, str) and nested_url.strip():
+                result["url"] = nested_url.strip()
+        return result or None
+
+    @staticmethod
+    def _microdata_nested_properties(value: object) -> dict[str, list[object]] | None:
+        if not isinstance(value, dict):
+            return None
+        nested = value.get("properties")
+        if not isinstance(nested, dict):
+            return None
+        result: dict[str, list[object]] = {}
+        for key, values in nested.items():
+            if not isinstance(key, str) or not isinstance(values, list):
+                continue
+            result[key] = list(values)
         return result or None
 
     @staticmethod
