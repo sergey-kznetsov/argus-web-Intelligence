@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from argus.contracts.models import CollectionRequest, Observation
+from argus.contracts.models import Observation
 from argus.orchestrator.observed_atomic import ObservedAtomicCollectionOrchestrator
 from argus.research.entities import AreaEntityResearchPlanner
 from argus.sources.base import SourceTask
@@ -59,7 +59,7 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
         seen_queries = set(record.checkpoint.get("area_entity_queries", []))
         remaining_page_budget = max(
             0,
-            int(record.request.constraints.max_pages) - len(visited) - len(pending),
+            int(record.request.constraints.max_pages) - len(visited) - len(pending) - 1,
         )
         if remaining_page_budget <= 0:
             return
@@ -84,14 +84,22 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
         ]
         if not requested_intents:
             return
-        branch_request = record.request.model_copy(update={"intents": requested_intents})
+        branch_constraints = record.request.constraints.model_copy(
+            update={"max_pages": remaining_page_budget}
+        )
+        branch_request = record.request.model_copy(
+            update={
+                "intents": requested_intents,
+                "constraints": branch_constraints,
+            }
+        )
         outcome = await self.discovery.discover(queries, branch_request)
         for error in outcome.errors:
             if error.code != "DISCOVERY_NO_RESULTS":
                 record.errors.append(error)
 
         additions: list[SourceTask] = []
-        for branch_task in outcome.tasks:
+        for branch_task in outcome.tasks[:remaining_page_budget]:
             if branch_task.dedupe_key in visited:
                 continue
             branch_task.metadata["area_branch_depth"] = branch_depth + 1
