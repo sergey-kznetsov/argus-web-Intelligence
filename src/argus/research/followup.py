@@ -105,7 +105,7 @@ class HeuristicFollowupResearchPlanner:
 
     @staticmethod
     def _intent_counts(observations: list[Observation]) -> dict[str, int]:
-        counts: dict[str, int] = {}
+        urls_by_goal: dict[str, set[str]] = {}
         for observation in observations:
             goals: list[str] = []
             raw_data = observation.data.get("research_goals")
@@ -114,9 +114,12 @@ class HeuristicFollowupResearchPlanner:
             raw_provenance = observation.provenance.get("research_goals")
             if isinstance(raw_provenance, list):
                 goals.extend(str(item) for item in raw_provenance)
+            if observation.source_kind in {"historical_page_version", "historical_entity_change"}:
+                goals.append("historical_context")
+            source_identity = observation.url or observation.observation_id
             for goal in set(goals):
-                counts[goal] = counts.get(goal, 0) + 1
-        return counts
+                urls_by_goal.setdefault(goal, set()).add(source_identity)
+        return {goal: len(urls) for goal, urls in urls_by_goal.items()}
 
     @staticmethod
     def _territory_text(request: CollectionRequest) -> str:
@@ -232,6 +235,9 @@ class OllamaFollowupResearchPlanner:
         used_chars = 0
         for observation in observations[-self.max_observations :]:
             host = urlsplit(observation.url).hostname or ""
+            goals = observation.data.get("research_goals", [])
+            if not isinstance(goals, list):
+                goals = observation.provenance.get("research_goals", [])
             item: dict[str, object] = {
                 "source": observation.source,
                 "source_kind": observation.source_kind,
@@ -241,7 +247,7 @@ class OllamaFollowupResearchPlanner:
                 "published_at": (
                     observation.published_at.isoformat() if observation.published_at else None
                 ),
-                "research_goals": observation.data.get("research_goals", []),
+                "research_goals": goals if isinstance(goals, list) else [],
             }
             encoded = json.dumps(item, ensure_ascii=False)
             if used_chars + len(encoded) > self.max_summary_chars:
