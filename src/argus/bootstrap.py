@@ -16,11 +16,12 @@ from argus.history.wayback import WaybackCDXProvider
 from argus.maps.overpass import OverpassMapProvider
 from argus.maps.registry import MapProviderRegistry
 from argus.observability import OperationalMetrics
-from argus.orchestrator.area_atomic import AreaAwareAtomicCollectionOrchestrator
+from argus.orchestrator.adaptive_atomic import AdaptiveResearchAtomicCollectionOrchestrator
 from argus.recipes.service import RecipeManager
 from argus.research.browser_serp import DuckDuckGoBrowserDiscoveryProvider
 from argus.research.discovery import DiscoveryService
 from argus.research.entities import AreaEntityResearchPlanner
+from argus.research.followup import OllamaFollowupResearchPlanner
 from argus.research.historical import HistoricalBranchPlanner
 from argus.research.planner import OllamaResearchPlanner
 from argus.research.searxng import SearxngDiscoveryProvider
@@ -204,7 +205,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     if settings.wayback_cdx_url:
         registry.register(WaybackSourceAdapter(WaybackCDXProvider(settings), snapshots))
     planner = OllamaResearchPlanner(settings)
-    orchestrator = AreaAwareAtomicCollectionOrchestrator(
+    orchestrator = AdaptiveResearchAtomicCollectionOrchestrator(
         repository=repository,
         registry=registry,
         planner=planner,
@@ -212,6 +213,8 @@ def build_services(settings: Settings) -> ServiceContainer:
         discovery=discovery,
         historical_branch_planner=HistoricalBranchPlanner(),
         area_entity_planner=AreaEntityResearchPlanner(),
+        followup_planner=OllamaFollowupResearchPlanner(settings),
+        max_followup_rounds=3,
         auto_execute=settings.execution_role == "embedded",
         metrics=metrics,
     )
