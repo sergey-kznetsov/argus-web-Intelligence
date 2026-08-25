@@ -67,7 +67,12 @@ def test_seed_urls_use_same_canonical_identity(tmp_path: Path):
 
     assert len(tasks) == 1
     assert tasks[0].url == "https://example.com/a?id=1"
-    assert tasks[0].metadata["navigation_original_url"].startswith("https://Example.com:443/")
+    # CollectionRequest validates seed URLs as HttpUrl, so Pydantic normalizes the
+    # authority before discovery. The pre-canonical navigation URL still preserves
+    # tracking parameters and fragments for provenance/debugging.
+    assert tasks[0].metadata["navigation_original_url"] == (
+        "https://example.com/a?utm_source=x&id=1#one"
+    )
     assert tasks[0].metadata["navigation_identity_version"] == "discovery-url-identity/1"
 
 
