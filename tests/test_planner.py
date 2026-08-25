@@ -5,7 +5,7 @@ from argus.research.planner import HeuristicResearchPlanner
 
 
 @pytest.mark.asyncio
-async def test_historical_context_expands_queries():
+async def test_historical_context_expands_queries_and_reserves_archive_sources():
     request = CollectionRequest(
         consumer="historical",
         analysis_id="1",
@@ -16,7 +16,12 @@ async def test_historical_context_expands_queries():
     joined = " ".join(plan.queries)
     assert "что было раньше" in joined
     assert "снос" in joined
-    assert plan.notes == ["heuristic_language=ru"]
+    assert "site:pastvu.com" in joined
+    assert "site:etomesto.ru" in joined
+    assert "site:retromap.ru" in joined
+    assert "site:photo.rgakfd.ru" in joined
+    assert plan.notes[0] == "heuristic_language=ru"
+    assert any(note.startswith("curated_historical_sources=") for note in plan.notes)
 
 
 @pytest.mark.asyncio
