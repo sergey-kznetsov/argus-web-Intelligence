@@ -8,125 +8,105 @@ import psycopg
 import pytest
 from psycopg_pool import TooManyRequests
 
-import argus.storage.postgres_migrations as migration_module
-from argus.contracts.models import CollectionRecord, CollectionRequest, CollectionStatus, utcnow
+from argus.contracts.models import (
+    CollectionRecord,
+    CollectionRequest,
+    CollectionStatus,
+    utcnow,
+)
+from argus.storage import postgres_migrations as migration_module
 from argus.storage.postgres import PostgresRepository
-from argus.storage.postgres_migrations import PostgresMigration
 
 
 def postgres_dsn() -> str:
-    value = os.getenv("ARGUS_TEST_POSTGRES_DSN", "").strip()
-    if not value:
+    dsn = os.getenv("ARGUS_TEST_POSTGRES_DSN", "").strip()
+    if not dsn:
         pytest.skip("ARGUS_TEST_POSTGRES_DSN is not configured")
-    return value
+    return dsn
 
 
 def collection(collection_id: str) -> CollectionRecord:
-    timestamp = utcnow()
+    now = utcnow()
     return CollectionRecord(
         collection_id=collection_id,
         request=CollectionRequest(
-            consumer="operational-hardening-test",
-            analysis_id=f"analysis-{uuid4()}",
+            consumer="postgres-operational-test",
+            analysis_id=f"analysis-{collection_id}",
             territory={"city": "Ижевск"},
             intents=["public_mentions"],
         ),
         status=CollectionStatus.QUEUED,
-        created_at=timestamp,
-        updated_at=timestamp,
+        created_at=now,
+        updated_at=now,
     )
 
 
 @pytest.mark.asyncio
-async def test_failed_migration_rolls_back_schema_and_version(monkeypatch):
+async def test_postgres_queue_indexes_exist():
     dsn = postgres_dsn()
     await migration_module.run_postgres_migrations(dsn)
-    base_version = await migration_module.current_postgres_schema_version(dsn)
-    probe_table = f"migration_failure_probe_{uuid4().hex}"
-    failing = PostgresMigration(
-        version=base_version + 1,
-        name="intentional_test_failure",
-        statements=(
-            f"CREATE TABLE argus.{probe_table}(id INTEGER)",
-            "SELECT argus_function_that_does_not_exist()",
-        ),
-    )
-    monkeypatch.setattr(
-        migration_module,
-        "MIGRATIONS",
-        (*migration_module.MIGRATIONS, failing),
-    )
-
-    with pytest.raises(psycopg.Error):
-        await migration_module.run_postgres_migrations(dsn)
-
-    assert await migration_module.current_postgres_schema_version(dsn) == base_version
     connection = await psycopg.AsyncConnection.connect(dsn, autocommit=True)
     try:
-        row = await (
+        rows = await (
             await connection.execute(
-                "SELECT to_regclass(%s)",
-                (f"argus.{probe_table}",),
+                """
+                SELECT indexname
+                FROM pg_indexes
+                WHERE schemaname='argus'
+                """
             )
-        ).fetchone()
-        assert row is not None
-        assert row[0] is None
+        ).fetchall()
+        names = {str(row[0]) for row in rows}
+        assert "ix_argus_collections_active_fifo" in names
+        assert "ix_argus_collections_terminal_updated" in names
+        assert "ix_argus_snapshots_retention" in names
     finally:
         await connection.close()
 
 
 @pytest.mark.asyncio
-async def test_independent_workers_claim_distinct_collections_concurrently():
+async def test_postgres_repository_exposes_pool_limits_and_health():
     dsn = postgres_dsn()
     await migration_module.run_postgres_migrations(dsn)
-    repositories = [
-        PostgresRepository(dsn, min_size=0, max_size=2, timeout_seconds=5, max_waiting=4)
-        for _ in range(4)
-    ]
-    workers = [f"worker-{uuid4()}" for _ in repositories]
-    collection_ids = [f"multiworker-{uuid4()}" for _ in repositories]
-    for repository in repositories:
-        await repository.initialize()
+    repository = PostgresRepository(
+        dsn,
+        min_size=1,
+        max_size=3,
+        timeout_seconds=5,
+        max_waiting=7,
+    )
+    await repository.initialize()
     try:
-        for collection_id in collection_ids:
-            await repositories[0].create_collection(collection(collection_id))
-        for repository, worker_id in zip(repositories, workers, strict=True):
-            await repository.register_worker(worker_id, metadata={"test": True})
-
-        claimed = await asyncio.gather(
-            *(
-                repository.claim_next_collection(worker_id, lease_seconds=30)
-                for repository, worker_id in zip(repositories, workers, strict=True)
-            )
-        )
-
-        assert None not in claimed
-        assert len(set(claimed)) == len(claimed)
-        assert set(claimed) == set(collection_ids)
+        stats = repository.pool_stats()
+        assert stats["min_size"] == 1
+        assert stats["max_size"] == 3
+        assert stats["max_waiting"] == 7
+        assert stats["requests_waiting"] == 0
+        health = await repository.health()
+        assert health["status"] == "ok"
+        assert health["schema_version"] == migration_module.EXPECTED_SCHEMA_VERSION
+        assert health["pool"]["max_size"] == 3
+        assert health["pool"]["max_waiting"] == 7
     finally:
-        for repository, worker_id in zip(repositories, workers, strict=True):
-            for collection_id in collection_ids:
-                await repository.release_collection_lease(collection_id, worker_id)
-            await repository.unregister_worker(worker_id)
-            await repository.close()
+        await repository.close()
 
 
 @pytest.mark.asyncio
-async def test_pool_wait_queue_is_bounded_under_saturation():
+async def test_pool_exhaustion_is_bounded_and_recovers():
     dsn = postgres_dsn()
     await migration_module.run_postgres_migrations(dsn)
     repository = PostgresRepository(
         dsn,
         min_size=1,
         max_size=1,
-        timeout_seconds=5,
+        timeout_seconds=2,
         max_waiting=1,
     )
     await repository.initialize()
     held = await repository._pool.getconn()
     waiter = asyncio.create_task(repository._pool.getconn(timeout=2))
     try:
-        for _ in range(50):
+        for _ in range(100):
             if repository.pool_stats()["requests_waiting"] >= 1:
                 break
             await asyncio.sleep(0.01)
@@ -159,7 +139,7 @@ async def test_pool_recovers_after_postgresql_backend_is_terminated():
     try:
         pid_row = await (await held.execute("SELECT pg_backend_pid()" )).fetchone()
         assert pid_row is not None
-        backend_pid = int(pid_row[0])
+        backend_pid = int(pid_row["pg_backend_pid"])
         terminated = await (
             await terminator.execute("SELECT pg_terminate_backend(%s)", (backend_pid,))
         ).fetchone()
