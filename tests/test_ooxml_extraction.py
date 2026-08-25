@@ -65,7 +65,7 @@ def extractor(**overrides) -> BoundedOoxmlExtractor:
 
 
 def test_docx_extracts_top_level_paragraphs_and_tables_without_format_inference():
-    document = b"""<?xml version="1.0" encoding="UTF-8"?>
+    document = """<?xml version="1.0" encoding="UTF-8"?>
     <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
       <w:body>
         <w:p><w:r><w:t>Первый абзац</w:t></w:r></w:p>
@@ -77,7 +77,7 @@ def test_docx_extracts_top_level_paragraphs_and_tables_without_format_inference(
         </w:tbl>
       </w:body>
     </w:document>
-    """
+    """.encode("utf-8")
 
     result = extractor().extract(docx(document), document_type="docx")
 
@@ -96,11 +96,11 @@ def test_docx_extracts_top_level_paragraphs_and_tables_without_format_inference(
 
 
 def test_xlsx_extracts_shared_strings_raw_numbers_and_formula_without_evaluation():
-    shared = b"""<?xml version="1.0" encoding="UTF-8"?>
+    shared = """<?xml version="1.0" encoding="UTF-8"?>
     <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
       <si><t>Школа</t></si>
     </sst>
-    """
+    """.encode("utf-8")
     sheet = b"""<?xml version="1.0" encoding="UTF-8"?>
     <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
       <sheetData>
