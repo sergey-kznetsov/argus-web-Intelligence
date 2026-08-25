@@ -3,10 +3,10 @@ from __future__ import annotations
 from argus.contracts.models import CollectionRequest, StructuredError
 from argus.history.timeline import HistoricalTimelineBuilder
 from argus.sources.base import SourceResult, SourceTask
-from argus.sources.recipe_web import LifecycleRecipeWebAdapter
+from argus.sources.image_web import ImageAwareRecipeWebAdapter
 
 
-class HistoricalTimelineWebAdapter(LifecycleRecipeWebAdapter):
+class HistoricalTimelineWebAdapter(ImageAwareRecipeWebAdapter):
     """Attach archive identity and derive bounded changes across committed captures."""
 
     def __init__(self, *args, historical_timeline=None, **kwargs) -> None:
@@ -136,5 +136,6 @@ class HistoricalTimelineWebAdapter(LifecycleRecipeWebAdapter):
             "max_diff_chars": self.historical_timeline.max_diff_chars,
             "archive_in_page_navigation": False,
             "semantic_inference": False,
+            "image_references": True,
         }
         return payload
