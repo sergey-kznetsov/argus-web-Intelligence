@@ -45,6 +45,8 @@ class RecipeManager:
         )
 
     async def save(self, recipe: SiteRecipe) -> None:
+        if recipe.status == "candidate":
+            raise ValueError("candidate SiteRecipe must pass verified replay before persistence")
         await self.repository.save_recipe(recipe)
         await self._cleanup(recipe)
 
@@ -125,9 +127,11 @@ class RecipeManager:
         return reference <= utcnow() - timedelta(days=self.max_age_days)
 
     async def _cleanup(self, recipe: SiteRecipe) -> None:
-        prune = getattr(self.repository, "prune_recipe_versions", None)
-        if callable(prune):
-            await prune(recipe.domain, recipe.goal, keep_versions=self.keep_versions)
+        await self.repository.prune_recipe_versions(
+            recipe.domain,
+            recipe.goal,
+            keep_versions=self.keep_versions,
+        )
 
     @staticmethod
     def _domain(url: str) -> str:
