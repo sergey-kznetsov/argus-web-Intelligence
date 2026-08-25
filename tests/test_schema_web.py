@@ -81,7 +81,20 @@ async def test_jsonld_and_microdata_receive_conservative_schema_entity_types(tmp
               "name":"Отзыв",
               "description":"Короткое описание",
               "reviewBody":"Полный текст отзыва",
-              "datePublished":"2026-08-19T12:30:00+04:00"
+              "datePublished":"2026-08-19T12:30:00+04:00",
+              "reviewRating":{
+                "@type":"Rating",
+                "ratingValue":"4.7",
+                "bestRating":"5",
+                "worstRating":"1"
+              },
+              "author":{"@type":"Person","name":"Иван"},
+              "itemReviewed":{
+                "@type":"CafeOrCoffeeShop",
+                "@id":"https://example.com/place/1",
+                "name":"Кофейня Север",
+                "url":"https://example.com/place/1"
+              }
             },
             {
               "@id":"https://example.com/news/1",
@@ -130,7 +143,19 @@ async def test_jsonld_and_microdata_receive_conservative_schema_entity_types(tmp
         "published_at_field": "datePublished",
         "source_declared_only": True,
     }
+    assert review.provenance["schema_review_normalization"] == {
+        "source_declared_only": True,
+        "rating": {"value": 4.7, "best": 5.0, "worst": 1.0, "valid": True},
+        "author": "Иван",
+        "item_reviewed": {
+            "name": "Кофейня Север",
+            "id": "https://example.com/place/1",
+            "url": "https://example.com/place/1",
+        },
+    }
     assert review.quality["schema_org_typed"] is True
+    assert review.quality["schema_review_facts"] is True
+    assert review.quality["schema_review_rating_valid"] is True
 
     assert article.entity_type == "publication"
     assert article.data["@type"] == "NewsArticle"
@@ -158,7 +183,55 @@ async def test_jsonld_and_microdata_receive_conservative_schema_entity_types(tmp
         assert evidence.metadata["schema_field_normalization"] == observation.provenance[
             "schema_field_normalization"
         ]
+    review_evidence = next(
+        item for item in result.evidence if item.observation_id == review.observation_id
+    )
+    assert review_evidence.metadata["schema_review_normalization"] == review.provenance[
+        "schema_review_normalization"
+    ]
 
+    await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_schema_review_rating_is_retained_raw_but_not_marked_valid(tmp_path: Path):
+    repository = SQLiteRepository(tmp_path / "argus.sqlite")
+    await repository.initialize()
+    adapter = SchemaAwareSemanticWebAdapter(
+        fast=FastStub(),
+        browser=BrowserStub(),
+        snapshots=SnapshotService(repository),
+        pdf_extractor=pdf_extractor(),
+    )
+    task = SourceTask(
+        source_id="generic_web",
+        goal="reviews",
+        url="https://example.com/page",
+        metadata={"collection_id": "collection-schema-invalid-rating"},
+    )
+    html = """
+    <script type="application/ld+json">
+      {
+        "@context":"https://schema.org",
+        "@type":"Review",
+        "name":"Некорректная шкала",
+        "reviewBody":"Источник объявил рейтинг вне шкалы",
+        "reviewRating":{"ratingValue":"7","bestRating":"5","worstRating":"1"}
+      }
+    </script>
+    """
+
+    result = await adapter.extract(task, fetched(html), request())
+
+    review = next(item for item in result.observations if item.entity_type == "review")
+    assert review.data["reviewRating"]["ratingValue"] == "7"
+    assert review.provenance["schema_review_normalization"]["rating"] == {
+        "value": 7.0,
+        "best": 5.0,
+        "worst": 1.0,
+        "valid": False,
+    }
+    assert review.quality["schema_review_rating_valid"] is False
     await repository.close()
 
 
@@ -196,6 +269,7 @@ async def test_unknown_jsonld_vocabulary_remains_generic_structured_entity(tmp_p
     assert observation.entity_type == "structured_entity"
     assert observation.provenance["schema_type_normalization"]["recognized_types"] == []
     assert "schema_field_normalization" not in observation.provenance
+    assert "schema_review_normalization" not in observation.provenance
     assert observation.text is None
     assert observation.published_at is None
     assert observation.quality["schema_org_typed"] is False
@@ -217,4 +291,5 @@ async def test_schema_aware_health_capability_is_exposed(tmp_path: Path):
 
     assert health["schema_org_type_normalization"] is True
     assert health["schema_org_field_normalization"] is True
+    assert health["schema_org_review_normalization"] is True
     await repository.close()
