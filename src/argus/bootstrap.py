@@ -23,6 +23,7 @@ from argus.research.discovery import DiscoveryService
 from argus.research.historical import HistoricalBranchPlanner
 from argus.research.planner import OllamaResearchPlanner
 from argus.research.searxng import SearxngDiscoveryProvider
+from argus.security.runtime_posture import enforce_runtime_security
 from argus.security.urls import UrlGuard
 from argus.services import ServiceContainer
 from argus.sources.historical_web import HistoricalTimelineWebAdapter
@@ -136,6 +137,7 @@ def build_ooxml_extractor(settings: Settings) -> BoundedOoxmlExtractor:
 
 def build_services(settings: Settings) -> ServiceContainer:
     settings.ensure_dirs()
+    enforce_runtime_security(settings)
     repository = build_repository(settings)
     guard = UrlGuard.from_strings(
         settings.allow_internal_targets,
