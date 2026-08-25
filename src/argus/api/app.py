@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import time
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 
 from argus import __version__
+from argus.api.operational_metrics import register_operational_metrics_endpoint
 from argus.bootstrap import (
     build_services,
     configured_archive_provider_names,
@@ -102,9 +104,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="ARGUS Web Intelligence", version=__version__, lifespan=lifespan)
     app.add_middleware(RequestSizeLimitMiddleware, max_bytes=settings.api_max_request_bytes)
+    register_operational_metrics_endpoint(
+        app,
+        settings=settings,
+        services=services,
+        repository=repository,
+        require_bearer=require_bearer,
+    )
 
     async def readiness() -> tuple[bool, dict[str, object]]:
-        database = await repository.health()
+        started = time.perf_counter()
+        try:
+            database = await repository.health()
+        finally:
+            services.metrics.observe(
+                "db_operation_duration_seconds",
+                time.perf_counter() - started,
+                operation="health",
+            )
         ready = database.get("status") == "ok"
         checks: dict[str, object] = {"database": database}
         if settings.execution_role == "api":
@@ -200,12 +217,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "operations": (
                 {
                     "queue_metrics": True,
+                    "runtime_metrics": True,
                     "collection_listing": True,
                     "collection_page_max_size": 100,
                     "pagination": "keyset",
                 }
                 if settings.execution_role == "api"
-                else None
+                else {"runtime_metrics": True}
             ),
             "history": True,
             "site_recipes": True,
@@ -228,7 +246,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="queue operations are available only in server API mode",
             )
-        metrics = await metrics_reader(worker_max_age_seconds=settings.worker_health_max_age_seconds)
+        started = time.perf_counter()
+        try:
+            metrics = await metrics_reader(
+                worker_max_age_seconds=settings.worker_health_max_age_seconds
+            )
+        finally:
+            services.metrics.observe(
+                "db_operation_duration_seconds",
+                time.perf_counter() - started,
+                operation="queue_operations",
+            )
         payload = metrics.as_dict()
         payload.update(
             {
@@ -270,12 +298,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="invalid collection pagination cursor",
                 ) from exc
-        items, has_more = await operations_store.list_collections(
-            limit=limit,
-            status=status_filter,
-            consumer=consumer_filter,
-            cursor=decoded_cursor,
-        )
+        started = time.perf_counter()
+        try:
+            items, has_more = await operations_store.list_collections(
+                limit=limit,
+                status=status_filter,
+                consumer=consumer_filter,
+                cursor=decoded_cursor,
+            )
+        finally:
+            services.metrics.observe(
+                "db_operation_duration_seconds",
+                time.perf_counter() - started,
+                operation="list_collections",
+            )
         next_cursor = None
         if has_more and items:
             last = items[-1]
@@ -302,8 +338,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             updated_at=timestamp,
             stage="queued",
         )
+        started = time.perf_counter()
         try:
-            stored, _created = await repository.create_collection_idempotent(
+            stored, created = await repository.create_collection_idempotent(
                 record,
                 idempotency_key=idempotency_key,
                 request_hash=fingerprint,
@@ -312,11 +349,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 max_active_per_consumer=settings.queue_max_active_per_consumer,
             )
         except IdempotencyConflictError as exc:
+            services.metrics.inc(
+                "collection_submission_rejected_total",
+                reason="idempotency_conflict",
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="idempotency key is already used by a different collection request",
             ) from exc
         except QueueCapacityError as exc:
+            services.metrics.inc(
+                "collection_submission_rejected_total",
+                reason="queue_capacity",
+                scope=exc.scope,
+            )
             status_code = (
                 status.HTTP_429_TOO_MANY_REQUESTS
                 if exc.scope == "consumer"
@@ -332,6 +378,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 },
                 headers={"Retry-After": str(settings.queue_retry_after_seconds)},
             ) from exc
+        finally:
+            services.metrics.observe(
+                "db_operation_duration_seconds",
+                time.perf_counter() - started,
+                operation="collection_admission",
+            )
+        services.metrics.inc(
+            "collections_accepted_total",
+            mode="api",
+            outcome="created" if created else "idempotent_reuse",
+        )
         return CollectionAccepted(collection_id=stored.collection_id, status=stored.status)
 
     @app.get(
