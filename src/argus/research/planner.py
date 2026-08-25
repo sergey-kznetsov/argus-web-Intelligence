@@ -29,6 +29,7 @@ def _merge_curated_sources(
     queries: list[str],
     *,
     max_queries: int,
+    max_query_chars: int,
     protected_count: int,
     historical_sources: HistoricalSourceResearchPlanner,
     public_map_sources: PublicMapSourceResearchPlanner,
@@ -36,23 +37,30 @@ def _merge_curated_sources(
     if max_queries <= 0:
         return [], 0, 0
 
+    max_query_chars = max(32, int(max_query_chars))
     protected_count = min(max(0, int(protected_count)), len(queries), max_queries)
     protected = list(queries[:protected_count])
     secondary = list(queries[protected_count:max_queries])
 
     historical: list[str] = []
     if "historical_context" in request.intents:
-        historical = historical_sources.queries(
-            request,
-            limit=min(4, max(1, max_queries // 2)),
-        )
+        historical = [
+            query[:max_query_chars].rstrip()
+            for query in historical_sources.queries(
+                request,
+                limit=min(4, max(1, max_queries // 2)),
+            )
+        ]
 
     public_maps: list[str] = []
     if public_map_sources.supported_intents.intersection(request.intents):
-        public_maps = public_map_sources.queries(
-            request,
-            limit=min(3, max(1, max_queries // 2)),
-        )
+        public_maps = [
+            query[:max_query_chars].rstrip()
+            for query in public_map_sources.queries(
+                request,
+                limit=min(3, max(1, max_queries // 2)),
+            )
+        ]
 
     if not historical and not public_maps:
         return queries[:max_queries], 0, 0
@@ -191,6 +199,7 @@ class HeuristicResearchPlanner:
             request,
             queries,
             max_queries=self.max_queries,
+            max_query_chars=self.max_query_chars,
             protected_count=primary_count,
             historical_sources=self.historical_sources,
             public_map_sources=self.public_map_sources,
@@ -252,6 +261,7 @@ class OllamaResearchPlanner:
         self.public_map_sources = PublicMapSourceResearchPlanner()
         self.fallback = fallback or HeuristicResearchPlanner(
             max_queries=self.max_queries,
+            max_query_chars=self.max_query_chars,
             historical_sources=self.historical_sources,
             public_map_sources=self.public_map_sources,
         )
@@ -294,6 +304,7 @@ class OllamaResearchPlanner:
                     request,
                     queries,
                     max_queries=self.max_queries,
+                    max_query_chars=self.max_query_chars,
                     protected_count=protected_count,
                     historical_sources=self.historical_sources,
                     public_map_sources=self.public_map_sources,
