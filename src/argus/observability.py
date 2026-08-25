@@ -88,15 +88,29 @@ class OperationalMetrics:
     """Small in-process metric registry with deliberately bounded cardinality.
 
     Labels must describe stable operational dimensions such as source ID, runtime and
-    terminal status. URLs, collection IDs, consumer IDs and arbitrary errors must never
-    become labels. The registry is process-local; PostgreSQL queue state is merged by
-    the operations endpoint at read time.
+    terminal status. URLs, collection IDs, consumer IDs and arbitrary per-request IDs
+    are rejected at write time. The registry is process-local; PostgreSQL queue state
+    is merged by the operations endpoint at read time.
     """
 
     version = "argus-operational-metrics/1"
     max_series_per_metric = 128
     max_labels = 6
     max_label_chars = 80
+    forbidden_labels = frozenset(
+        {
+            "analysis_id",
+            "collection_id",
+            "consumer",
+            "entity_id",
+            "evidence_id",
+            "observation_id",
+            "request_id",
+            "source_url",
+            "url",
+            "worker_id",
+        }
+    )
 
     def __init__(self) -> None:
         self.started_at = datetime.now(UTC)
@@ -165,6 +179,7 @@ class OperationalMetrics:
                 "cardinality_policy": {
                     "max_series_per_metric": self.max_series_per_metric,
                     "max_labels": self.max_labels,
+                    "forbidden_labels": sorted(self.forbidden_labels),
                     "collection_id_labels": False,
                     "consumer_labels": False,
                     "url_labels": False,
@@ -186,6 +201,8 @@ class OperationalMetrics:
         normalized: list[tuple[str, str]] = []
         for key, value in sorted(labels.items())[: cls.max_labels]:
             label = cls._metric_name(str(key))[:64]
+            if label in cls.forbidden_labels:
+                raise ValueError(f"high-cardinality metric label is forbidden: {label}")
             text = str(value if value is not None else "none")
             text = " ".join(text.split())[: cls.max_label_chars]
             normalized.append((label, text or "none"))
