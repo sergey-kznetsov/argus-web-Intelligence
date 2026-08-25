@@ -39,6 +39,22 @@ def test_operational_metrics_reject_high_cardinality_labels():
     ]
 
 
+def test_operational_metrics_reject_excess_label_dimensions():
+    metrics = OperationalMetrics()
+
+    with pytest.raises(ValueError, match="label count"):
+        metrics.inc(
+            "requests_total",
+            a=1,
+            b=2,
+            c=3,
+            d=4,
+            e=5,
+            f=6,
+            g=7,
+        )
+
+
 def test_operational_metrics_drop_series_over_cardinality_budget():
     metrics = OperationalMetrics()
     metrics.max_series_per_metric = 2
@@ -106,7 +122,7 @@ class DummyBrowserAdapter:
 
     async def extract(self, task, fetched, request) -> SourceResult:
         del task, fetched, request
-        return SourceResult()
+        return SourceResult(observations=[])
 
     async def normalize(self, result: SourceResult) -> SourceResult:
         return result
