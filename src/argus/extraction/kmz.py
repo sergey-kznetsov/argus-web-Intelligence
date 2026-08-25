@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import stat
 import zipfile
 from dataclasses import dataclass
 from io import BytesIO
@@ -123,6 +124,9 @@ class BoundedKmzExtractor:
                 )
             if info.flag_bits & 0x1:
                 raise _KmzError("KMZ_ENCRYPTED_MEMBER", "Encrypted KMZ members are not supported")
+            unix_mode = (info.external_attr >> 16) & 0xFFFF
+            if unix_mode and stat.S_IFMT(unix_mode) == stat.S_IFLNK:
+                raise _KmzError("KMZ_SYMLINK_MEMBER", "KMZ symbolic-link members are not supported")
             if info.compress_type not in self._ALLOWED_COMPRESSION:
                 raise _KmzError(
                     "KMZ_COMPRESSION_UNSUPPORTED",
