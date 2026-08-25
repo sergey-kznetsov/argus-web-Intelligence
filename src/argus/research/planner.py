@@ -50,25 +50,49 @@ class HeuristicResearchPlanner:
         ),
     }
 
+    def __init__(self, *, max_queries: int = 8, max_query_chars: int = 512) -> None:
+        self.max_queries = max(1, int(max_queries))
+        self.max_query_chars = max(32, int(max_query_chars))
+
     async def plan(self, request: CollectionRequest) -> ResearchPlan:
         territory = self._territory_text(request)
         language = self._language(request, territory)
         dictionary = self._RU_TERMS if language == "ru" else self._EN_TERMS
-        queries: list[str] = []
-        seen: set[str] = set()
+        intent_terms: list[tuple[str, ...]] = []
         for intent in request.intents:
             terms = dictionary.get(intent)
             if terms is None:
                 terms = (intent.replace("_", " "),)
-            for term in terms:
-                query = f'"{territory}" {term}'.strip()
-                if query not in seen:
-                    seen.add(query)
+            intent_terms.append(terms)
+
+        queries: list[str] = []
+        seen: set[str] = set()
+        round_index = 0
+        while len(queries) < self.max_queries:
+            added_this_round = False
+            for terms in intent_terms:
+                if round_index >= len(terms):
+                    continue
+                query = self._bounded_query(f'"{territory}" {terms[round_index]}'.strip())
+                key = query.casefold()
+                if query and key not in seen:
+                    seen.add(key)
                     queries.append(query)
+                    added_this_round = True
+                    if len(queries) >= self.max_queries:
+                        break
+            if not added_this_round:
+                break
+            round_index += 1
+
         return ResearchPlan(
             queries=queries,
             notes=[f"heuristic_language={language}"],
         )
+
+    def _bounded_query(self, value: str) -> str:
+        normalized = " ".join(value.split()).strip()
+        return normalized[: self.max_query_chars].rstrip()
 
     @staticmethod
     def _territory_text(request: CollectionRequest) -> str:
@@ -104,12 +128,15 @@ class HeuristicResearchPlanner:
 class OllamaResearchPlanner:
     def __init__(self, settings: Settings, fallback: ResearchPlanner | None = None) -> None:
         self.settings = settings
-        self.fallback = fallback or HeuristicResearchPlanner()
+        self.max_queries = max(1, int(settings.discovery_max_queries))
+        self.max_query_chars = 512
+        self.fallback = fallback or HeuristicResearchPlanner(max_queries=self.max_queries)
 
     async def plan(self, request: CollectionRequest) -> ResearchPlan:
         prompt = (
             "You are ARGUS Research Planner. Return strict JSON with keys queries (array of search strings) "
             "and notes (array). Do not invent facts. Plan only how to research public sources. "
+            "Cover the requested intents fairly within a small query budget. "
             "For historical context expand current place, former buildings/organizations, construction, "
             "demolition, reconstruction, old addresses, documents, publications and newly discovered entities.\n"
             f"Input: {request.model_dump_json()}"
@@ -128,12 +155,28 @@ class OllamaResearchPlanner:
                 response.raise_for_status()
                 raw = response.json().get("response", "{}")
                 data: dict[str, Any] = json.loads(raw)
-                queries = [str(item) for item in data.get("queries", []) if str(item).strip()]
+                queries = self._bounded_queries(data.get("queries", []))
                 if not queries:
                     return await self.fallback.plan(request)
                 return ResearchPlan(
                     queries=queries,
-                    notes=[str(item) for item in data.get("notes", [])],
+                    notes=[str(item)[:500] for item in data.get("notes", [])[:20]],
                 )
-        except (httpx.HTTPError, ValueError, json.JSONDecodeError):
+        except (httpx.HTTPError, ValueError, json.JSONDecodeError, TypeError):
             return await self.fallback.plan(request)
+
+    def _bounded_queries(self, values: object) -> list[str]:
+        if not isinstance(values, list):
+            return []
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in values:
+            normalized = " ".join(str(item).split()).strip()[: self.max_query_chars].rstrip()
+            key = normalized.casefold()
+            if not normalized or key in seen:
+                continue
+            seen.add(key)
+            result.append(normalized)
+            if len(result) >= self.max_queries:
+                break
+        return result
