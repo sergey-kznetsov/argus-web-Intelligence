@@ -15,7 +15,7 @@ from argus.history.snapshots import SnapshotService
 from argus.history.wayback import WaybackCDXProvider
 from argus.maps.overpass import OverpassMapProvider
 from argus.maps.registry import MapProviderRegistry
-from argus.orchestrator.atomic import AtomicCollectionOrchestrator
+from argus.orchestrator.duplicate_atomic import DuplicateAwareAtomicCollectionOrchestrator
 from argus.recipes.service import RecipeManager
 from argus.research.browser_serp import DuckDuckGoBrowserDiscoveryProvider
 from argus.research.discovery import DiscoveryService
@@ -195,7 +195,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     if settings.wayback_cdx_url:
         registry.register(WaybackSourceAdapter(WaybackCDXProvider(settings), snapshots))
     planner = OllamaResearchPlanner(settings)
-    orchestrator = AtomicCollectionOrchestrator(
+    orchestrator = DuplicateAwareAtomicCollectionOrchestrator(
         repository=repository,
         registry=registry,
         planner=planner,
