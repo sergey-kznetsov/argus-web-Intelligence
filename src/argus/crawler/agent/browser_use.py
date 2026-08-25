@@ -23,6 +23,9 @@ class BrowserUseAgent:
 
     name = "browser-use"
     max_steps = 25
+    max_actions_per_step = 3
+    max_failures = 2
+    max_history_items = 6
     max_allowed_domains = 20
     max_visited_urls = 20
     max_actions = 40
@@ -31,6 +34,15 @@ class BrowserUseAgent:
     max_action_depth = 8
     max_action_nodes = 1_000
     max_action_string_chars = 4_000
+    excluded_tools = (
+        "search",
+        "read_file",
+        "write_file",
+        "replace_file",
+        "upload_file",
+        "download_file",
+        "open_file",
+    )
 
     def __init__(self, settings: Settings, url_guard: UrlGuard) -> None:
         self.settings = settings
@@ -40,11 +52,13 @@ class BrowserUseAgent:
             max(30.0, float(settings.browser_timeout_seconds) * 2.0),
             float(settings.fetch_wait_timeout_seconds),
         )
+        self.step_timeout_seconds = min(60.0, self.timeout_seconds)
+        self.llm_timeout_seconds = min(60.0, self.timeout_seconds)
 
     async def run(self, task: AgentTask) -> AgentResult:
         await self.url_guard.validate(task.url)
         try:
-            from browser_use import Agent, Browser, ChatOllama
+            from browser_use import Agent, Browser, ChatOllama, Tools
         except ImportError as exc:
             raise RuntimeError("install ARGUS with [agent-browser-use] to enable Browser Use") from exc
 
@@ -57,24 +71,40 @@ class BrowserUseAgent:
                 message="agent target is outside the configured public-domain boundary",
             )
 
-        os.environ.setdefault("OLLAMA_HOST", self.settings.ollama_url)
-        os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
+        # Browser Use ChatOllama reads OLLAMA_HOST. ARGUS owns this worker process and
+        # deliberately binds the agent to its configured Ollama endpoint instead of an
+        # unrelated inherited environment value.
+        os.environ["OLLAMA_HOST"] = self.settings.ollama_url
+        os.environ["ANONYMIZED_TELEMETRY"] = "false"
         llm = ChatOllama(model=self.settings.ollama_model)
         browser = Browser(
             allowed_domains=allowed_domains,
             block_ip_addresses=True,
             enable_default_extensions=False,
         )
+        tools = Tools(exclude_actions=list(self.excluded_tools))
         instruction = (
             f"Open {task.url}. {task.instruction}. "
             "Use only public, unauthenticated pages. Do not bypass CAPTCHAs, access controls, "
             "paywalls, rate limits or robots restrictions. Do not log in, create accounts, "
             "accept terms on behalf of a user, submit forms that create/update/delete data, "
             "make purchases, upload files, download executables, or enter personal, secret or "
-            "payment information. Stop when a CAPTCHA/access challenge is encountered. Return "
-            "only facts visibly available from public sources and retain source URLs."
+            "payment information. Do not use file, javascript, chrome, about or extension URLs. "
+            "Stop when a CAPTCHA/access challenge is encountered. Return only facts visibly "
+            "available from public sources and retain source URLs."
         )
-        agent = Agent(task=instruction, llm=llm, browser=browser)
+        agent = Agent(
+            task=instruction,
+            llm=llm,
+            browser=browser,
+            tools=tools,
+            use_vision=False,
+            max_actions_per_step=self.max_actions_per_step,
+            max_failures=self.max_failures,
+            max_history_items=self.max_history_items,
+            llm_timeout=self.llm_timeout_seconds,
+            step_timeout=self.step_timeout_seconds,
+        )
         try:
             try:
                 history = await asyncio.wait_for(
@@ -92,7 +122,12 @@ class BrowserUseAgent:
             final_raw = history.final_result() if hasattr(history, "final_result") else None
             success = history.is_successful() if hasattr(history, "is_successful") else bool(final_raw)
             visited_raw = history.urls() if hasattr(history, "urls") else [task.url]
-            raw_actions = history.model_actions() if hasattr(history, "model_actions") else []
+            raw_actions_value = history.model_actions() if hasattr(history, "model_actions") else []
+            raw_actions = (
+                list(raw_actions_value)
+                if isinstance(raw_actions_value, (list, tuple))
+                else []
+            )
             history_errors = history.errors() if hasattr(history, "errors") else []
 
             safe_urls, visited_truncated = await self._safe_visited_urls(visited_raw)
@@ -212,7 +247,9 @@ class BrowserUseAgent:
             if "://" in value:
                 value = (urlsplit(value).hostname or "").casefold()
             value = value.strip().strip(".")
-            if not value or len(value) > 253 or "/" in value:
+            if value.startswith("*."):
+                value = value[2:]
+            if not value or len(value) > 253 or "/" in value or "*" in value:
                 continue
             try:
                 ipaddress.ip_address(value)
@@ -228,7 +265,13 @@ class BrowserUseAgent:
             return [host] if host else []
         if not any(host == domain or host.endswith("." + domain) for domain in normalized):
             return []
-        return normalized
+
+        # ARGUS allowed-domain semantics include subdomains. Browser Use requires an
+        # explicit wildcard pattern for that behavior, so mirror the ARGUS boundary.
+        browser_patterns: list[str] = []
+        for domain in normalized:
+            browser_patterns.extend((domain, f"*.{domain}"))
+        return browser_patterns
 
     def _normalize_action(self, value: dict[str, Any]) -> dict[str, Any]:
         nodes = [0]
@@ -291,9 +334,15 @@ class BrowserUseAgent:
             "status": status,
             "reason_code": code,
             "max_steps": self.max_steps,
+            "max_actions_per_step": self.max_actions_per_step,
+            "max_failures": self.max_failures,
+            "max_history_items": self.max_history_items,
             "timeout_seconds": self.timeout_seconds,
+            "llm_timeout_seconds": self.llm_timeout_seconds,
+            "step_timeout_seconds": self.step_timeout_seconds,
             "max_actions": self.max_actions,
             "max_visited_urls": self.max_visited_urls,
+            "excluded_tools": list(self.excluded_tools),
             **extra,
         }
 
