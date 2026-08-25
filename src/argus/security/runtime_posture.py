@@ -49,7 +49,7 @@ def harden_secret_file(path: Path, *, require_exists: bool) -> str:
         path.stat()
     except FileNotFoundError:
         if require_exists:
-            raise RuntimeError("required ARGUS secret file does not exist")
+            raise RuntimeError("required ARGUS secret file does not exist") from None
         return "missing"
     except OSError as exc:
         raise RuntimeError("ARGUS secret file cannot be inspected") from exc
