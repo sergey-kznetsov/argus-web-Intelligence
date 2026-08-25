@@ -96,7 +96,7 @@ async def test_bounded_stream_stops_before_consuming_later_chunks():
 async def test_fast_runtime_rejects_unknown_length_body_over_limit():
     settings = Settings(
         allow_internal_targets=["127.0.0.1"],
-        max_response_bytes=128,
+        max_response_bytes=1024,
         max_concurrency=1,
     )
     runtime = FastCrawlerRuntime(
