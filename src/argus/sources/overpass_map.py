@@ -70,7 +70,7 @@ class OverpassSourceAdapter:
         if set(request.intents) & _AREA_RESEARCH_INTENTS:
             area_request = MapSearchRequest(
                 territory=request.territory,
-                categories=sorted(SUPPORTED_CATEGORIES),
+                categories=["named_feature"],
                 radius_meters=request.territory.radius_meters,
                 limit=100,
                 language=request.constraints.language,
