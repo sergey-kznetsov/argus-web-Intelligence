@@ -18,12 +18,23 @@ from argus.maps.overpass import SUPPORTED_CATEGORIES, OverpassMapProvider
 from argus.normalization.identity import stable_evidence_id, stable_observation_id
 from argus.sources.base import SourceResult, SourceTask
 
+_AREA_RESEARCH_INTENTS = {
+    "reviews",
+    "comments",
+    "complaints",
+    "discussions",
+    "public_mentions",
+    "local_news",
+    "incidents",
+    "historical_context",
+}
+
 
 class OverpassSourceAdapter:
     """Expose configured Overpass POI collection through the normal ARGUS source pipeline."""
 
     source_id = "openstreetmap_overpass"
-    intents = set(SUPPORTED_CATEGORIES)
+    intents = set(SUPPORTED_CATEGORIES) | {"*"}
 
     def __init__(
         self,
@@ -53,6 +64,30 @@ class OverpassSourceAdapter:
                     depth=0,
                     metadata={"map_request": map_request.model_dump(mode="json")},
                     task_key=f"{self.source_id}:{self.provider.endpoint}:{category}",
+                )
+            )
+
+        if set(request.intents) & _AREA_RESEARCH_INTENTS:
+            area_request = MapSearchRequest(
+                territory=request.territory,
+                categories=sorted(SUPPORTED_CATEGORIES),
+                radius_meters=request.territory.radius_meters,
+                limit=100,
+                language=request.constraints.language,
+                metadata={"purpose": "area_entity_inventory"},
+            )
+            tasks.append(
+                SourceTask(
+                    source_id=self.source_id,
+                    goal="area_entity_inventory",
+                    url=self.provider.endpoint,
+                    depth=0,
+                    metadata={
+                        "map_request": area_request.model_dump(mode="json"),
+                        "research_goals": list(request.intents),
+                        "area_entity_inventory": True,
+                    },
+                    task_key=f"{self.source_id}:{self.provider.endpoint}:area_entity_inventory",
                 )
             )
         return tasks
@@ -238,6 +273,8 @@ class OverpassSourceAdapter:
             text=place.address,
             data={
                 "provider_place_id": place.provider_place_id,
+                "name": place.name,
+                "address": place.address,
                 "categories": place.categories,
                 "attributes": place.attributes,
             },
