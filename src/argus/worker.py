@@ -378,7 +378,13 @@ class CollectionWorker:
             first_line = raw.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
             parts = first_line.split()
             path = parts[1] if len(parts) >= 2 else ""
-            if path not in {"/readyz", "/healthz"}:
+            if path == "/metricsz":
+                status_code = 200
+                payload = {
+                    "status": "ok",
+                    "metrics": self.metrics.snapshot(),
+                }
+            elif path not in {"/readyz", "/healthz"}:
                 status_code = 404
                 payload = {"status": "not_found"}
             else:
