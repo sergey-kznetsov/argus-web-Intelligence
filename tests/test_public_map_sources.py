@@ -45,6 +45,7 @@ def test_public_map_queries_expand_to_discovered_entity_names_and_dedupe_seen():
         entity_id="org1",
         title="Кофейня Север",
         data={"name": "Кофейня Север"},
+        content_hash="a" * 64,
         provenance={},
         quality={},
     )
