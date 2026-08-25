@@ -37,6 +37,11 @@ jobs:
       - run: pip check
       - run: pip-audit --local
       - run: playwright install --with-deps chromium
+      - name: Enable Chromium sandbox user namespaces
+        run: |
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - run: python -m compileall -q src tests
       - run: ruff check src tests
       - run: pytest -q --cov=argus --cov-report=term-missing
