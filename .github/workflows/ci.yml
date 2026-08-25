@@ -44,4 +44,6 @@ jobs:
           fi
       - run: python -m compileall -q src tests
       - run: ruff check src tests
-      - run: pytest -q --cov=argus --cov-report=term-missing
+      - name: Security lint production sources
+        run: ruff check src --select S
+      - run: pytest -q --cov=argus --cov-report=term-missing --cov-fail-under=80
