@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 import psycopg
 from psycopg.rows import dict_row
 
