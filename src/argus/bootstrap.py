@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from argus.capabilities import OPERATIONAL_AGENT_BACKENDS
 from argus.config import Settings
 from argus.crawler.agent.base import AgentBackend
 from argus.crawler.agent.browser_use import BrowserUseAgent
-from argus.crawler.agent.stagehand import StagehandAgent
 from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.extraction.ooxml import BoundedOoxmlExtractor
@@ -60,9 +60,11 @@ def build_agent(settings: Settings, guard: UrlGuard) -> AgentBackend | None:
         return None
     if settings.agent_backend == "browser-use":
         return BrowserUseAgent(settings, guard)
-    if settings.agent_backend == "stagehand":
-        return StagehandAgent()
-    raise ValueError(f"unsupported ARGUS agent backend: {settings.agent_backend}")
+    operational = ", ".join(OPERATIONAL_AGENT_BACKENDS)
+    raise RuntimeError(
+        f"ARGUS agent backend '{settings.agent_backend}' is not operational; "
+        f"available backends: {operational}"
+    )
 
 
 def build_discovery(
