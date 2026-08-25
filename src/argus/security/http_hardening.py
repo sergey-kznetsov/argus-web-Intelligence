@@ -5,7 +5,12 @@ import json
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+
+    from argus.config import Settings
 
 ASGIReceive = Callable[[], Awaitable[dict[str, Any]]]
 ASGISend = Callable[[dict[str, Any]], Awaitable[None]]
@@ -21,6 +26,19 @@ _SECURITY_HEADERS: tuple[tuple[bytes, bytes], ...] = (
     (b"x-content-type-options", b"nosniff"),
     (b"x-frame-options", b"DENY"),
 )
+
+
+def apply_http_hardening(app: "FastAPI", settings: "Settings") -> None:
+    """Attach the complete application-level HTTP hardening stack exactly once."""
+
+    app.add_middleware(
+        ClientRateLimitMiddleware,
+        requests_per_minute=settings.api_rate_limit_requests_per_minute,
+        burst=settings.api_rate_limit_burst,
+    )
+    # Add headers last so Starlette makes this middleware outermost. This ensures
+    # request-size and rate-limit error responses receive the same header policy.
+    app.add_middleware(SecurityHeadersMiddleware)
 
 
 class SecurityHeadersMiddleware:
