@@ -13,6 +13,7 @@ class ObservedAtomicCollectionOrchestrator(QualityAwareAtomicCollectionOrchestra
     def __init__(self, *args, metrics: OperationalMetrics, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.metrics = metrics
+        self._active_runs = 0
 
     async def submit(self, request):
         accepted = await super().submit(request)
@@ -33,19 +34,31 @@ class ObservedAtomicCollectionOrchestrator(QualityAwareAtomicCollectionOrchestra
             )
 
         started = time.perf_counter()
-        self.metrics.gauge("collections_running", 1.0, scope="process")
+        self._active_runs += 1
+        self.metrics.gauge("collections_running", float(self._active_runs), scope="process")
+        execution_failed = False
         try:
             await super()._run(collection_id)
         except BaseException:
+            execution_failed = True
             self.metrics.inc("collection_execution_errors_total")
             raise
         finally:
             duration = time.perf_counter() - started
-            terminal = await self.repository.get_collection(collection_id)
-            status = terminal.status.value if terminal is not None else "missing"
+            status = "execution_error" if execution_failed else "unknown"
+            try:
+                terminal = await self.repository.get_collection(collection_id)
+            except Exception:
+                self.metrics.inc("collection_terminal_read_errors_total")
+            else:
+                if terminal is not None:
+                    status = terminal.status.value
+                else:
+                    status = "missing"
             self.metrics.observe("collection_duration_seconds", duration, status=status)
             self.metrics.inc("collections_finished_total", status=status)
-            self.metrics.gauge("collections_running", 0.0, scope="process")
+            self._active_runs = max(0, self._active_runs - 1)
+            self.metrics.gauge("collections_running", float(self._active_runs), scope="process")
 
     async def _commit_task_success(
         self,
@@ -71,7 +84,10 @@ class ObservedAtomicCollectionOrchestrator(QualityAwareAtomicCollectionOrchestra
             self.metrics.inc("evidence_committed_total", len(evidence))
             self.metrics.inc("snapshots_committed_total", len(snapshots))
         finally:
+            duration = time.perf_counter() - started
+            self.metrics.observe("atomic_commit_duration_seconds", duration)
             self.metrics.observe(
-                "atomic_commit_duration_seconds",
-                time.perf_counter() - started,
+                "db_operation_duration_seconds",
+                duration,
+                operation="atomic_commit",
             )
