@@ -25,10 +25,12 @@ class ResearchPlanner(Protocol):
 class HeuristicResearchPlanner:
     _RU_TERMS: dict[str, tuple[str, ...]] = {
         "reviews": ("отзывы", "мнения"),
+        "comments": ("комментарии", "комментарии жителей"),
+        "complaints": ("жалобы обращения", "проблемы жителей"),
         "public_mentions": ("", "упоминания"),
         "local_news": ("новости",),
         "incidents": ("происшествия", "авария пожар"),
-        "discussions": ("обсуждение форум",),
+        "discussions": ("обсуждение форум", "жители обсуждают"),
         "historical_context": (
             "история",
             "что было раньше",
@@ -38,10 +40,12 @@ class HeuristicResearchPlanner:
     }
     _EN_TERMS: dict[str, tuple[str, ...]] = {
         "reviews": ("reviews", "opinions"),
+        "comments": ("comments", "resident comments"),
+        "complaints": ("complaints", "resident issues"),
         "public_mentions": ("", "mentions"),
         "local_news": ("news",),
         "incidents": ("incidents", "accident fire"),
-        "discussions": ("discussion forum",),
+        "discussions": ("discussion forum", "residents discuss"),
         "historical_context": (
             "history",
             "what was here before",
@@ -133,9 +137,11 @@ class OllamaResearchPlanner:
         prompt = (
             "You are ARGUS Research Planner. Return strict JSON with keys queries (array of search strings) "
             "and notes (array). Do not invent facts. Plan only how to research public sources. "
-            "Cover the requested intents fairly within a small query budget. "
-            "For historical context expand current place, former buildings/organizations, construction, "
-            "demolition, reconstruction, old addresses, documents, publications and newly discovered entities.\n"
+            "Cover the requested intents fairly within a small query budget. For area research include "
+            "nearby organizations/places and, when requested, reviews, comments, complaints, resident "
+            "discussions, local media, incidents and historical records. For historical context expand "
+            "current place, former buildings/organizations, construction, demolition, reconstruction, "
+            "old addresses, documents, publications and newly discovered entities.\n"
             f"Input: {request.model_dump_json()}"
         )
         try:
