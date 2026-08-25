@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from argus.contracts.models import CollectionRequest
+from argus.contracts.models import (
+    CollectionRecord,
+    CollectionRequest,
+    CollectionStatus,
+    utcnow,
+)
 from argus.crawler.models import FetchResult
 from argus.extraction.pdf import BoundedPdfExtractor
 from argus.history.snapshots import SnapshotService
@@ -26,6 +31,19 @@ def request() -> CollectionRequest:
         territory={"city": "Ижевск"},
         intents=["historical_context"],
         constraints={"max_depth": 2, "max_pages": 20},
+    )
+
+
+async def seed_collection(repository: LifecycleAtomicSQLiteRepository) -> None:
+    now = utcnow()
+    await repository.create_collection(
+        CollectionRecord(
+            collection_id="historical-web-collection",
+            request=request(),
+            status=CollectionStatus.RUNNING,
+            created_at=now,
+            updated_at=now,
+        )
     )
 
 
@@ -102,6 +120,7 @@ def fetched(timestamp: str, *, name: str, operator: str, brand: str) -> FetchRes
 async def test_second_capture_compares_only_against_committed_previous_capture(tmp_path: Path):
     repository = LifecycleAtomicSQLiteRepository(tmp_path / "argus.sqlite")
     await repository.initialize()
+    await seed_collection(repository)
     adapter = build_adapter(repository)
     first_timestamp = "20240101000000"
     second_timestamp = "20250101000000"
@@ -168,6 +187,7 @@ async def test_second_capture_compares_only_against_committed_previous_capture(t
 async def test_uncommitted_capture_does_not_become_previous_timeline_version(tmp_path: Path):
     repository = LifecycleAtomicSQLiteRepository(tmp_path / "argus.sqlite")
     await repository.initialize()
+    await seed_collection(repository)
     adapter = build_adapter(repository)
 
     # Extract an earlier capture but intentionally do not persist its observations,
