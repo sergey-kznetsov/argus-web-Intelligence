@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from argus.config import Settings
-from argus.storage.atomic_sqlite import AtomicSQLiteRepository
 from argus.storage.base import Repository
 from argus.storage.content_postgres import ContentAwareFencedPostgresRepository
+from argus.storage.lifecycle_sqlite import LifecycleAtomicSQLiteRepository
 
 
 def build_repository(settings: Settings) -> Repository:
     if settings.storage_backend == "sqlite":
-        return AtomicSQLiteRepository(settings.db_path)
+        return LifecycleAtomicSQLiteRepository(settings.db_path)
     if settings.storage_backend == "postgresql":
         dsn = settings.database_dsn_value()
         if not dsn:
