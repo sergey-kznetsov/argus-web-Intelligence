@@ -99,7 +99,7 @@ async def test_microdata_reuses_page_snapshot_and_adds_structured_evidence(tmp_p
         "items_skipped": 0,
         "itemref_skipped": 0,
         "truncated": False,
-        "extractor": "html-microdata-explicit/1",
+        "extractor": "html-microdata-explicit/2",
     }
     assert microdata.entity_type == "structured_entity"
     assert microdata.entity_id == "https://example.com/news/1"
