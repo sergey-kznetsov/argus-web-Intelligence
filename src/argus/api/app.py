@@ -14,6 +14,7 @@ from argus.bootstrap import (
     configured_discovery_provider_names,
     configured_geocoding_provider_names,
 )
+from argus.capabilities import runtime_capabilities
 from argus.config import Settings, get_settings
 from argus.contracts.models import (
     PROTOCOL_VERSION,
@@ -171,72 +172,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/v1/capabilities", dependencies=[Depends(require_bearer)])
     async def capabilities():
-        server_queue = settings.execution_role in {"api", "worker"}
-        return {
-            "protocol_version": PROTOCOL_VERSION,
-            "runtimes": ["fast", "browser", "agent"],
-            "storage": settings.storage_backend,
-            "execution_role": settings.execution_role,
-            "api_max_request_bytes": settings.api_max_request_bytes,
-            "result_delivery": {
-                "full_result_max_items": settings.api_full_result_max_items,
-                "full_result_max_bytes": settings.api_full_result_max_bytes,
-                "page_default_size": settings.api_result_page_default_size,
-                "page_max_size": settings.api_result_page_max_size,
-                "page_max_bytes": settings.api_result_page_max_bytes,
-                "pagination": "opaque_keyset",
-                "paged_results_require_terminal_status": True,
-            },
-            "queue_backend": "postgresql_leases" if server_queue else "embedded",
-            "idempotent_submission": settings.execution_role == "api",
-            "idempotency_window_seconds": (
-                settings.idempotency_window_seconds if settings.execution_role == "api" else None
-            ),
-            "worker_required_for_readiness": settings.execution_role == "api",
-            "queue_limits": (
-                {
-                    "max_active_collections": settings.queue_max_active_collections,
-                    "max_active_per_consumer": settings.queue_max_active_per_consumer,
-                    "retry_after_seconds": settings.queue_retry_after_seconds,
-                }
-                if settings.execution_role == "api"
-                else None
-            ),
-            "retention": (
-                {
-                    "collection_days": settings.retention_collection_days,
-                    "snapshot_days": settings.retention_snapshot_days,
-                    "worker_registration_days": settings.retention_worker_registration_days,
-                    "maintenance_interval_seconds": settings.retention_maintenance_interval_seconds,
-                    "batch_size": settings.retention_batch_size,
-                    "preserve_latest_snapshot_per_url": True,
-                }
-                if server_queue
-                else None
-            ),
-            "operations": (
-                {
-                    "queue_metrics": True,
-                    "runtime_metrics": True,
-                    "collection_listing": True,
-                    "collection_page_max_size": 100,
-                    "pagination": "keyset",
-                }
-                if settings.execution_role == "api"
-                else {"runtime_metrics": True}
-            ),
-            "history": True,
-            "site_recipes": True,
-            "sitemap_discovery": settings.sitemap_discovery_enabled,
-            "structured_extractors": ["json_ld"],
-            "discovery_providers": configured_discovery_provider_names(settings),
-            "geocoding_providers": configured_geocoding_provider_names(settings),
-            "archive_providers": configured_archive_provider_names(settings),
-            "map_providers": [provider.provider_id for provider in services.map_registry.all()],
-            "agent_enabled": settings.agent_enabled,
-            "agent_backend": settings.agent_backend if settings.agent_enabled else None,
-            "agent_backends": ["browser-use", "stagehand"],
-        }
+        return runtime_capabilities(
+            settings,
+            discovery_providers=configured_discovery_provider_names(settings),
+            geocoding_providers=configured_geocoding_provider_names(settings),
+            archive_providers=configured_archive_provider_names(settings),
+            map_providers=[provider.provider_id for provider in services.map_registry.all()],
+        )
 
     @app.get("/v1/operations/queue", dependencies=[Depends(require_bearer)])
     async def queue_operations():
