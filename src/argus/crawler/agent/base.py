@@ -20,6 +20,7 @@ class AgentResult:
     actions: list[dict[str, Any]]
     blocked: bool = False
     error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class AgentBackend(Protocol):
