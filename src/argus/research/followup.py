@@ -51,8 +51,14 @@ class HeuristicFollowupResearchPlanner:
         "historical_context": "history archive what was here before reconstruction demolition construction",
     }
 
-    def __init__(self, *, target_hits_per_intent: int = 2) -> None:
+    def __init__(
+        self,
+        *,
+        target_hits_per_intent: int = 2,
+        coverage: IntentCoverageEvaluator | None = None,
+    ) -> None:
         self.target_hits_per_intent = max(1, int(target_hits_per_intent))
+        self.coverage = coverage or IntentCoverageEvaluator()
 
     async def plan_followups(
         self,
@@ -104,23 +110,8 @@ class HeuristicFollowupResearchPlanner:
                 notes.append("coverage_gap:historical_timeline")
         return FollowupPlan(queries=queries, notes=notes)
 
-    @staticmethod
-    def _intent_counts(observations: list[Observation]) -> dict[str, int]:
-        urls_by_goal: dict[str, set[str]] = {}
-        for observation in observations:
-            goals: list[str] = []
-            raw_data = observation.data.get("research_goals")
-            if isinstance(raw_data, list):
-                goals.extend(str(item) for item in raw_data)
-            raw_provenance = observation.provenance.get("research_goals")
-            if isinstance(raw_provenance, list):
-                goals.extend(str(item) for item in raw_provenance)
-            if observation.source_kind in {"historical_page_version", "historical_entity_change"}:
-                goals.append("historical_context")
-            source_identity = observation.url or observation.observation_id
-            for goal in set(goals):
-                urls_by_goal.setdefault(goal, set()).add(source_identity)
-        return {goal: len(urls) for goal, urls in urls_by_goal.items()}
+    def _intent_counts(self, observations: list[Observation]) -> dict[str, int]:
+        return self.coverage.counts(observations)
 
     @staticmethod
     def _territory_text(request: CollectionRequest) -> str:
@@ -163,8 +154,8 @@ class OllamaFollowupResearchPlanner:
         coverage: IntentCoverageEvaluator | None = None,
     ) -> None:
         self.settings = settings
-        self.fallback = fallback or HeuristicFollowupResearchPlanner()
         self.coverage = coverage or IntentCoverageEvaluator()
+        self.fallback = fallback or HeuristicFollowupResearchPlanner(coverage=self.coverage)
         self.max_observations = 60
         self.max_summary_chars = 24_000
         self.max_query_chars = 512
