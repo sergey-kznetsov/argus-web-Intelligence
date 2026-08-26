@@ -87,6 +87,23 @@ def test_public_map_non_review_semantic_goal_uses_same_coverage_evaluator():
     assert adapter._should_semantically_escalate(task("complaints"), fetched(), result) is False
 
 
+def test_incidents_remain_generic_web_research_not_public_map_escalation():
+    adapter = adapter_with_agent()
+    result = SourceResult(observations=[observation("document")])
+
+    assert adapter._semantic_goals(task("incidents")) == []
+    assert adapter._should_semantically_escalate(task("incidents"), fetched(), result) is False
+
+
+def test_blocked_deterministic_review_view_suppresses_agent_bypass():
+    adapter = adapter_with_agent()
+    source_task = task("reviews")
+    source_task.metadata["semantic_agent_retry_suppressed"] = "review_view_blocked"
+    result = SourceResult(observations=[observation("document")])
+
+    assert adapter._should_semantically_escalate(source_task, fetched(), result) is False
+
+
 def test_public_map_semantic_escalation_is_not_used_for_unrelated_web_pages():
     adapter = adapter_with_agent()
     result = SourceResult(observations=[observation("document")])
@@ -123,6 +140,9 @@ def test_public_map_semantic_escalation_provenance_never_treats_agent_output_as_
             "semantic_agent_retry_accepted": True,
             "semantic_agent_retry_reason": "review_goal_without_review_fact",
             "semantic_agent_retry_goals": ["reviews"],
+            "public_map_review_view_attempted": True,
+            "public_map_review_view_accepted": False,
+            "public_map_review_view_basis": "provider_public_url_shape",
         }
     )
 
@@ -133,4 +153,5 @@ def test_public_map_semantic_escalation_provenance_never_treats_agent_output_as_
     assert metadata["accepted"] is True
     assert metadata["goals"] == ["reviews"]
     assert metadata["agent_output_is_evidence"] is False
+    assert item.provenance["public_map_review_view"]["attempted"] is True
     assert evidence.metadata["public_map_semantic_escalation"]["agent_output_is_evidence"] is False
