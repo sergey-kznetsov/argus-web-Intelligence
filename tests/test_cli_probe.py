@@ -66,6 +66,7 @@ def test_probe_command_is_exposed_by_console_app() -> None:
     assert "--seed-url" in help_text
     assert "--no-discovery" in help_text
     assert "--output" in help_text
+    assert "--require-covered-intents" in help_text
 
 
 @pytest.mark.asyncio
@@ -113,7 +114,73 @@ async def test_embedded_probe_collects_observation_and_evidence_without_geo_anal
     assert report["probe"]["storage_backend"] == "sqlite"
     assert "generic_web" in report["source_health"]
 
+    acceptance = report["acceptance"]
+    assert acceptance["fully_covered"] is True
+    assert acceptance["covered_intents"] == ["public_mentions"]
+    assert acceptance["uncovered_intents"] == []
+    assert acceptance["intent_source_counts"]["public_mentions"] >= 1
+    assert acceptance["model_output_is_evidence"] is False
+
     summary = render_probe_summary(report, preview_items=2, preview_chars=120)
     assert "Status: completed" in summary
+    assert "Intent coverage: 1/1" in summary
+    assert "public_mentions: covered" in summary
     assert "Observation preview:" in summary
     assert "Evidence preview:" in summary
+
+
+def test_probe_strict_coverage_exits_two_after_saving_report(monkeypatch, tmp_path: Path) -> None:
+    from argus.cli import main as cli_main
+
+    async def fake_probe(*args, **kwargs):
+        del args, kwargs
+        return {
+            "probe": {"elapsed_seconds": 0.1},
+            "acceptance": {
+                "requested_intents": ["reviews", "complaints"],
+                "covered_intents": ["reviews"],
+                "uncovered_intents": ["complaints"],
+                "intent_source_counts": {"reviews": 1, "complaints": 0},
+                "covered_count": 1,
+                "requested_count": 2,
+                "fully_covered": False,
+                "semantic_excerpt_evidence_count": 0,
+                "public_map_providers_with_facts": ["2gis_web"],
+                "model_output_is_evidence": False,
+            },
+            "collection": {"stage": "completed"},
+            "result": {
+                "collection_id": "strict-probe",
+                "status": "partial",
+                "observations": [],
+                "evidence": [],
+                "coverage": [],
+                "errors": [],
+            },
+            "source_health": {},
+            "metrics": {},
+        }
+
+    monkeypatch.setattr(cli_main, "run_embedded_probe", fake_probe)
+    report_path = tmp_path / "strict.json"
+    result = CliRunner().invoke(
+        app,
+        [
+            "probe",
+            "--address",
+            "Ижевск",
+            "--intent",
+            "reviews",
+            "--intent",
+            "complaints",
+            "--output",
+            str(report_path),
+            "--require-covered-intents",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert report_path.exists()
+    assert "Intent coverage: 1/2" in result.output
+    assert "complaints: uncovered" in result.output
+    assert "ARGUS probe acceptance failed; uncovered intents: complaints" in result.output
