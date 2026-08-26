@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from argus.contracts.models import CollectionRequest
 from argus.web.client import ArgusApiClient
 from argus.web.config import WebSettings
+from argus.web.profiles import web_test_profiles
 from argus.web.security import basic_auth_dependency
 from argus.web.ui_assets import APP_JS, INDEX_HTML, STYLE_CSS
 
@@ -100,6 +101,10 @@ def create_web_app(
             "service": "argus-web-ui",
             "api_url": settings.api_url,
         }
+
+    @app.get("/api/test-profiles", dependencies=[Depends(require_user)])
+    async def test_profiles() -> JSONResponse:
+        return JSONResponse(content=web_test_profiles(), headers=_JSON_HEADERS)
 
     @app.get("/api/health", dependencies=[Depends(require_user)])
     async def api_health() -> JSONResponse:
