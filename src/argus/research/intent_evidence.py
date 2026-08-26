@@ -9,7 +9,7 @@ import httpx
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest, Evidence, EvidenceSource, Observation
 from argus.normalization.identity import stable_evidence_id
-from argus.normalization.public_map_provenance import classify_public_map_url
+from argus.normalization.public_map_provenance import public_map_surface_kind
 from argus.research.territory_relevance import (
     TerritoryRelevanceEvaluator,
     TerritoryRelevanceResult,
@@ -30,12 +30,13 @@ class OllamaIntentEvidenceClassifier:
     The local model proposes a semantic label and a short verbatim excerpt. ARGUS never
     accepts model prose as Evidence: the excerpt must occur exactly in already extracted
     page text. Before the model is called, the page must deterministically match the requested
-    territory. Built-in intents may additionally require a compatible source shape; for
+    territory. Search-result surfaces are navigation only and cannot supply attributable
+    semantic facts. Built-in intents may additionally require a compatible source shape; for
     example, ordinary news text cannot become a review merely because a model labels it so.
     Consumer-defined intents remain consumer-neutral and source-backed.
     """
 
-    version = "exact-excerpt-intent-evidence/4"
+    version = "exact-excerpt-intent-evidence/5"
     builtin_intents = frozenset(
         {"reviews", "comments", "discussions", "complaints", "incidents"}
     )
@@ -118,6 +119,9 @@ class OllamaIntentEvidenceClassifier:
             relevance = self.territory_relevance.evaluate(request, observation)
             self._record_territory_relevance(observation, relevance)
             if not relevance.matched:
+                continue
+            if public_map_surface_kind(observation.url) == "search":
+                self._record_navigation_surface_rejection(observation, requested)
                 continue
 
             findings = await self._findings(observation.text or "", requested)
@@ -238,7 +242,7 @@ class OllamaIntentEvidenceClassifier:
             return True
         if observation.entity_type.casefold().strip() == "review":
             return True
-        if classify_public_map_url(observation.url) is not None:
+        if public_map_surface_kind(observation.url) == "entity":
             return True
         return "Review" in self._schema_types(observation)
 
@@ -268,6 +272,24 @@ class OllamaIntentEvidenceClassifier:
             payload["distance_meters"] = relevance.distance_meters
         observation.provenance["territory_relevance"] = payload
         observation.quality["territory_relevant"] = relevance.matched
+
+    def _record_navigation_surface_rejection(
+        self,
+        observation: Observation,
+        intents: Iterable[str],
+    ) -> None:
+        raw = observation.provenance.get("intent_evidence_rejections")
+        values = list(raw) if isinstance(raw, list) else []
+        for intent in intents:
+            values.append(
+                {
+                    "classifier_version": self.version,
+                    "intent": intent,
+                    "reason": "navigation_search_surface_not_factual_entity",
+                    "model_output_is_evidence": False,
+                }
+            )
+        observation.provenance["intent_evidence_rejections"] = values
 
     def _record_source_shape_rejection(self, observation: Observation, intent: str) -> None:
         raw = observation.provenance.get("intent_evidence_rejections")
