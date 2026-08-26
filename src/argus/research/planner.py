@@ -301,7 +301,9 @@ class OllamaResearchPlanner:
         self.settings = settings
         self.max_queries = max(1, int(settings.discovery_max_queries))
         self.max_query_chars = 512
-        self.historical_sources = HistoricalSourceResearchPlanner()
+        self.historical_sources = HistoricalSourceResearchPlanner(
+            catalog_file=settings.historical_source_catalog_file
+        )
         self.public_map_sources = PublicMapSourceResearchPlanner()
         self.fallback = fallback or HeuristicResearchPlanner(
             max_queries=self.max_queries,
