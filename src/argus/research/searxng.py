@@ -77,6 +77,7 @@ class SearxngDiscoveryProvider:
                             title=title,
                             engines=engines,
                             rank=position,
+                            query=query,
                         )
                     )
         return hits
