@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from argus.contracts.models import CollectionRequest
 from argus.crawler.agent.base import AgentTask
 from argus.crawler.models import FetchResult
+from argus.recipes.models import SiteRecipe
+from argus.research.intent_coverage import IntentCoverageEvaluator
 from argus.security.urls import UnsafeUrlError
-from argus.sources.base import SourceTask
+from argus.sources.base import SourceResult, SourceTask
 from argus.sources.duplicate_web import DuplicateAwareWebAdapter
 
 
@@ -12,6 +15,8 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
 
     max_agent_direct_replay_urls = 2
     max_agent_recipe_steps = 40
+    max_pending_recipe_candidates = 64
+    recipe_goal_coverage = IntentCoverageEvaluator()
 
     async def fetch(self, task: SourceTask) -> FetchResult:
         if self.recipes is not None:
@@ -19,8 +24,7 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
             if recipe is not None:
                 try:
                     result = await self.browser.fetch(task.url, recipe=recipe)
-                    if not result.blocked:
-                        await self.recipes.mark_success(recipe)
+                    self._track_active_recipe_replay(task, recipe, result)
                     self._attach_recipe_lifecycle(result, recipe)
                     return result
                 except UnsafeUrlError:
@@ -172,12 +176,13 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
                 )
                 return replayed
 
-            await self.recipes.mark_success(candidate)
+            self._remember_pending_candidate(task, candidate)
             replayed.metadata.update(
                 {
                     "agent_backend": self.agent.name,
                     "agent_compiled_recipe": True,
                     "agent_execution": dict(agent_result.metadata),
+                    "agent_recipe_goal_verification_pending": True,
                     "recipe_lifecycle": self.recipes.lifecycle(candidate),
                 }
             )
@@ -204,6 +209,131 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
             )
             return fetched
         return None
+
+    async def _finalize_recipe_goal_verification(
+        self,
+        task: SourceTask,
+        request: CollectionRequest,
+        result: SourceResult,
+    ) -> None:
+        if self.recipes is None:
+            return
+        goal = str(task.goal or "").strip().casefold()
+        if not goal:
+            return
+
+        evidence_observation_ids = {
+            item.observation_id for item in result.evidence if item.observation_id
+        }
+        supporting = [
+            observation
+            for observation in result.observations
+            if observation.observation_id in evidence_observation_ids
+            and self.recipe_goal_coverage.supports(observation, goal, request=request)
+        ]
+        supporting_recipe_ids = {
+            str(observation.provenance.get("recipe_id"))
+            for observation in supporting
+            if observation.provenance.get("recipe_id")
+        }
+        verification: dict[str, object] = {
+            "goal": goal,
+            "source_backed": bool(supporting),
+            "supporting_observations": len(supporting),
+            "model_output_is_evidence": False,
+        }
+
+        active_recipe_id = task.metadata.pop("active_recipe_replay_id", None)
+        if isinstance(active_recipe_id, str) and active_recipe_id:
+            active = await self.recipes.get(task.url, task.goal)
+            if active is not None and active.recipe_id == active_recipe_id:
+                if active_recipe_id in supporting_recipe_ids:
+                    await self.recipes.mark_success(active)
+                    verification["active_recipe"] = "verified"
+                else:
+                    invalidated = await self.recipes.mark_failure(
+                        active,
+                        reason="semantic_goal_not_satisfied",
+                    )
+                    verification["active_recipe"] = (
+                        "invalidated" if invalidated else "failed_goal_verification"
+                    )
+
+        candidate_ids_raw = task.metadata.pop("pending_recipe_candidate_ids", [])
+        candidate_ids = (
+            [str(item) for item in candidate_ids_raw]
+            if isinstance(candidate_ids_raw, list)
+            else []
+        )
+        candidate_store = self._pending_candidate_store()
+        candidate_results: list[dict[str, object]] = []
+        for index, candidate_id in enumerate(candidate_ids):
+            candidate = candidate_store.pop(candidate_id, None)
+            if candidate is None:
+                continue
+            is_latest = index == len(candidate_ids) - 1
+            if is_latest and candidate_id in supporting_recipe_ids:
+                await self.recipes.mark_success(candidate)
+                candidate_results.append(
+                    {
+                        "recipe_id": candidate_id,
+                        "version": candidate.version,
+                        "status": "active",
+                        "goal_verified": True,
+                    }
+                )
+            else:
+                reason = (
+                    "semantic_goal_not_satisfied"
+                    if is_latest
+                    else "superseded_before_goal_verification"
+                )
+                rejected = self.recipes.reject_candidate(candidate, reason=reason)
+                candidate_results.append(
+                    {
+                        "recipe_id": candidate_id,
+                        "version": candidate.version,
+                        "status": rejected.status,
+                        "goal_verified": False,
+                        "reason": reason,
+                    }
+                )
+        if candidate_results:
+            verification["candidates"] = candidate_results
+
+        task.metadata["recipe_goal_verification"] = verification
+        for observation in result.observations:
+            observation.provenance["site_recipe_goal_verification"] = dict(verification)
+
+    def _track_active_recipe_replay(
+        self,
+        task: SourceTask,
+        recipe: SiteRecipe,
+        result: FetchResult,
+    ) -> None:
+        task.metadata["active_recipe_replay_id"] = recipe.recipe_id
+        task.metadata["active_recipe_replay_version"] = recipe.version
+        result.metadata["recipe_goal_verification_pending"] = True
+
+    def _remember_pending_candidate(self, task: SourceTask, candidate: SiteRecipe) -> None:
+        store = self._pending_candidate_store()
+        if len(store) >= self.max_pending_recipe_candidates:
+            oldest = next(iter(store), None)
+            if oldest is not None:
+                store.pop(oldest, None)
+        store[candidate.recipe_id] = candidate
+        raw_ids = task.metadata.get("pending_recipe_candidate_ids")
+        ids = list(raw_ids) if isinstance(raw_ids, list) else []
+        if candidate.recipe_id not in ids:
+            ids.append(candidate.recipe_id)
+        task.metadata["pending_recipe_candidate_ids"] = ids[-self.max_pending_recipe_candidates :]
+
+    def _pending_candidate_store(self) -> dict[str, SiteRecipe]:
+        store = getattr(self, "_recipe_candidates_pending_goal_verification", None)
+        if not isinstance(store, dict):
+            store = {}
+            setattr(self, "_recipe_candidates_pending_goal_verification", store)
+        return store
 
     async def _recipe_steps_for_context(
         self,
@@ -255,6 +385,8 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
         if self.recipes is not None:
             payload["site_recipe_lifecycle"] = {
                 "verified_promotion": True,
+                "goal_evidence_verification": True,
+                "candidate_persistence_after_goal_evidence": True,
                 "failure_threshold": self.recipes.failure_threshold,
                 "max_age_days": self.recipes.max_age_days,
                 "keep_versions": self.recipes.keep_versions,
