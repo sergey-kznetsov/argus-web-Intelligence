@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 from pathlib import Path
@@ -66,63 +67,108 @@ def _acceptance_failures(overview: list[dict[str, object]]) -> list[str]:
     for item in overview:
         profile = str(item.get("profile") or "unknown")
         status = str(item.get("status") or "")
+        covered = {
+            str(value).strip().casefold()
+            for value in item.get("covered_intents", [])
+            if str(value).strip()
+        }
         if status not in ACCEPTABLE_STATUSES:
             failures.append(f"{profile}: terminal status is {status or 'missing'}")
         if int(item.get("observation_count") or 0) <= 0:
             failures.append(f"{profile}: no factual observations")
         if int(item.get("evidence_count") or 0) <= 0:
             failures.append(f"{profile}: no evidence")
+
+        if profile == "kraken":
+            if "reviews" not in covered:
+                failures.append("kraken: reviews are not factually covered")
+            secondary = {"public_mentions", "comments", "discussions", "local_news"}
+            if not covered.intersection(secondary):
+                failures.append("kraken: no secondary urban-information intent is covered")
+        elif profile == "janus":
+            if not any(intent.startswith("parking_") for intent in covered):
+                failures.append("janus: no parking intent is factually covered")
+        elif profile == "historical" and "historical_context" not in covered:
+            failures.append("historical: historical_context is not factually covered")
     return failures
 
 
-async def main() -> None:
+async def _run_profile(profile_id: str) -> tuple[dict[str, object], list[str]]:
     output_dir = Path(".argus/probes/perm-ai-acceptance")
     output_dir.mkdir(parents=True, exist_ok=True)
     profiles = web_test_profiles()
-    overview: list[dict[str, object]] = []
-
-    for profile_id in PROFILE_IDS:
-        profile = profiles[profile_id]
-        request = _request(profile_id, profile)
-        settings = Settings(
-            execution_role="embedded",
-            storage_backend="sqlite",
-            db_path=output_dir / f"{profile_id}.sqlite3",
-            agent_enabled=True,
-            llm_required=True,
-        )
-        report = await run_embedded_probe(
-            settings,
-            request,
-            timeout_seconds=600.0,
-            poll_interval_seconds=0.5,
-        )
-        (output_dir / f"{profile_id}.json").write_text(
-            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        (output_dir / f"{profile_id}.txt").write_text(
-            render_probe_summary(report, preview_items=20, preview_chars=1000) + "\n",
-            encoding="utf-8",
-        )
-        overview.append(_overview(profile_id, report))
-
-    failures = _acceptance_failures(overview)
+    profile = profiles[profile_id]
+    request = _request(profile_id, profile)
+    settings = Settings(
+        execution_role="embedded",
+        storage_backend="sqlite",
+        db_path=output_dir / f"{profile_id}.sqlite3",
+        agent_enabled=True,
+        llm_required=True,
+    )
+    report = await run_embedded_probe(
+        settings,
+        request,
+        timeout_seconds=900.0,
+        poll_interval_seconds=0.5,
+    )
+    (output_dir / f"{profile_id}.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / f"{profile_id}.txt").write_text(
+        render_probe_summary(report, preview_items=20, preview_chars=1000) + "\n",
+        encoding="utf-8",
+    )
+    overview = _overview(profile_id, report)
+    failures = _acceptance_failures([overview])
     summary = {
         "territory": {"city": CITY, "address": ADDRESS},
         "ai_required": True,
+        "profile": profile_id,
         "accepted": not failures,
         "failures": failures,
-        "profiles": overview,
+        "result": overview,
     }
-    (output_dir / "overview.json").write_text(
+    (output_dir / f"overview-{profile_id}.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
-    if failures:
+    return summary, failures
+
+
+async def main(profile_id: str | None = None) -> None:
+    selected = (profile_id,) if profile_id else PROFILE_IDS
+    summaries: list[dict[str, object]] = []
+    all_failures: list[str] = []
+    for current in selected:
+        summary, failures = await _run_profile(current)
+        summaries.append(summary)
+        all_failures.extend(failures)
+
+    payload = {
+        "territory": {"city": CITY, "address": ADDRESS},
+        "ai_required": True,
+        "accepted": not all_failures,
+        "failures": all_failures,
+        "profiles": summaries,
+    }
+    output_dir = Path(".argus/probes/perm-ai-acceptance")
+    (output_dir / "overview.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if all_failures:
         raise SystemExit("live Perm AI acceptance failed")
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run live ARGUS AI acceptance against a Perm address")
+    parser.add_argument("--profile", choices=PROFILE_IDS, help="Run one independent consumer profile")
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    args = _parse_args()
+    asyncio.run(main(args.profile))
