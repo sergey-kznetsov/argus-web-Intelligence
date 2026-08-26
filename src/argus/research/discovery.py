@@ -27,6 +27,7 @@ class DiscoveryHit:
     title: str | None = None
     engines: list[str] = field(default_factory=list)
     rank: int | None = None
+    query: str | None = None
 
 
 class DiscoveryProvider(Protocol):
@@ -75,7 +76,7 @@ class DiscoveryService:
     """
 
     ranking_version = "discovery-ranking/1"
-    telemetry_version = "discovery-telemetry/1"
+    telemetry_version = "discovery-telemetry/2"
     stop_policy = "first_provider_with_valid_destinations"
 
     def __init__(
@@ -166,6 +167,7 @@ class DiscoveryService:
                     "discovery_provider": hit.provider,
                     "discovery_engines": hit.engines,
                     "discovery_rank": hit.rank,
+                    "discovery_query": hit.query,
                     "discovery_original_url": hit.url,
                     "discovery_canonical_url": canonical_url,
                     "discovery_domain_priority": candidate.domain_priority,
@@ -261,21 +263,32 @@ class DiscoveryService:
         seen: set[str],
     ) -> list[_PreparedHit]:
         prepared: list[_PreparedHit] = []
-        local_seen: set[str] = set()
+        batch_seen: set[str] = set()
         for hit in hits:
             canonical_url = canonicalize_discovery_url(hit.url)
-            if canonical_url is None or canonical_url in seen or canonical_url in local_seen:
-                continue
-            if not self._domain_allowed(canonical_url, allowed, denied):
+            if canonical_url is None or canonical_url in seen or canonical_url in batch_seen:
                 continue
             try:
                 await self.url_guard.validate(canonical_url)
             except UnsafeUrlError:
                 continue
-            local_seen.add(canonical_url)
-            domain_priority = self._domain_priority(canonical_url, allowed_order)
-            locality_matches = self._locality_matches(hit, canonical_url, locality_tokens)
-            https = canonical_url.casefold().startswith("https://")
+            host = (urlparse(canonical_url).hostname or "").lower().strip(".")
+            if not host:
+                continue
+            if denied and any(self._host_matches(host, domain) for domain in denied):
+                continue
+            domain_priority = self._domain_priority(host, allowed_order)
+            if allowed and domain_priority >= len(allowed_order):
+                continue
+            locality_matches = self._locality_match_count(hit, canonical_url, locality_tokens)
+            https = canonical_url.startswith("https://")
+            navigation_score = self._navigation_score(
+                domain_priority=domain_priority,
+                provider_rank=hit.rank,
+                locality_matches=locality_matches,
+                https=https,
+            )
+            batch_seen.add(canonical_url)
             prepared.append(
                 _PreparedHit(
                     hit=hit,
@@ -283,54 +296,80 @@ class DiscoveryService:
                     domain_priority=domain_priority,
                     locality_matches=locality_matches,
                     https=https,
-                    navigation_score=self._navigation_score(
-                        hit,
-                        domain_priority=domain_priority,
-                        allowed_count=len(allowed_order),
-                        locality_matches=locality_matches,
-                        https=https,
-                    ),
+                    navigation_score=navigation_score,
                 )
             )
         return prepared
 
     @staticmethod
-    def _ranking_key(hit: _PreparedHit) -> tuple[int, int, int, int, str]:
-        rank = hit.hit.rank if hit.hit.rank is not None and hit.hit.rank >= 0 else 1_000_000_000
+    def _ranking_key(candidate: _PreparedHit) -> tuple[int, int, int, int, str]:
+        provider_rank = candidate.hit.rank if candidate.hit.rank is not None else 1_000_000
         return (
-            hit.domain_priority,
-            rank,
-            -hit.locality_matches,
-            -int(hit.https),
-            hit.canonical_url,
+            candidate.domain_priority,
+            provider_rank,
+            -candidate.locality_matches,
+            0 if candidate.https else 1,
+            candidate.canonical_url,
         )
 
     @staticmethod
     def _navigation_score(
-        hit: DiscoveryHit,
         *,
         domain_priority: int,
-        allowed_count: int,
+        provider_rank: int | None,
         locality_matches: int,
         https: bool,
     ) -> int:
-        """Return an explainable navigation score; never an Evidence confidence score."""
-        score = 0
-        if allowed_count and domain_priority < allowed_count:
-            score += max(10, 30 - (domain_priority * 5))
-        if hit.rank is not None and hit.rank >= 1:
-            score += max(0, 40 - min(hit.rank - 1, 40))
-        score += min(25, max(0, locality_matches) * 10)
-        if https:
-            score += 5
-        return min(100, score)
+        score = 100
+        score -= min(domain_priority, 20) * 5
+        score -= min(max((provider_rank or 1) - 1, 0), 50)
+        score += min(locality_matches, 5) * 4
+        score += 2 if https else 0
+        return max(0, min(100, score))
+
+    @classmethod
+    def _domain_priority(cls, host: str, allowed_order: list[str]) -> int:
+        if not allowed_order:
+            return 0
+        for index, domain in enumerate(allowed_order):
+            if cls._host_matches(host, domain):
+                return index
+        return len(allowed_order)
+
+    @classmethod
+    def _locality_match_count(
+        cls,
+        hit: DiscoveryHit,
+        canonical_url: str,
+        locality_tokens: tuple[str, ...],
+    ) -> int:
+        if not locality_tokens:
+            return 0
+        haystack = " ".join((hit.title or "", unquote(canonical_url))).casefold()
+        return sum(1 for token in locality_tokens if token in haystack)
+
+    @staticmethod
+    def _locality_tokens(request: CollectionRequest) -> tuple[str, ...]:
+        values: list[str] = []
+        for raw in (request.territory.city, request.territory.address):
+            if not raw:
+                continue
+            values.extend(re.findall(r"[\w\-]{3,}", raw.casefold(), flags=re.UNICODE))
+        seen: set[str] = set()
+        result: list[str] = []
+        for value in values:
+            if value in seen:
+                continue
+            seen.add(value)
+            result.append(value)
+        return tuple(result[:12])
 
     @staticmethod
     def _normalized_domains(values: list[str]) -> list[str]:
         result: list[str] = []
         seen: set[str] = set()
         for value in values:
-            domain = value.casefold().strip().strip(".")
+            domain = value.lower().strip().strip(".")
             if not domain or domain in seen:
                 continue
             seen.add(domain)
@@ -338,49 +377,5 @@ class DiscoveryService:
         return result
 
     @staticmethod
-    def _domain_allowed(url: str, allowed: set[str], denied: set[str]) -> bool:
-        domain = (urlparse(url).hostname or "").casefold().strip(".")
-        if not domain:
-            return False
-        if any(domain == item or domain.endswith("." + item) for item in denied):
-            return False
-        if allowed:
-            return any(domain == item or domain.endswith("." + item) for item in allowed)
-        return True
-
-    @staticmethod
-    def _domain_priority(url: str, allowed_order: list[str]) -> int:
-        if not allowed_order:
-            return 0
-        domain = (urlparse(url).hostname or "").casefold().strip(".")
-        for index, candidate in enumerate(allowed_order):
-            if domain == candidate or domain.endswith("." + candidate):
-                return index
-        return len(allowed_order)
-
-    @staticmethod
-    def _locality_tokens(request: CollectionRequest) -> tuple[str, ...]:
-        source = " ".join(
-            value.strip()
-            for value in (request.territory.city or "", request.territory.address or "")
-            if value.strip()
-        ).casefold()
-        tokens: list[str] = []
-        seen: set[str] = set()
-        for token in re.findall(r"[\w-]+", source, flags=re.UNICODE):
-            if len(token) < 3 or token in seen:
-                continue
-            seen.add(token)
-            tokens.append(token)
-        return tuple(tokens)
-
-    @staticmethod
-    def _locality_matches(
-        hit: DiscoveryHit,
-        canonical_url: str,
-        tokens: tuple[str, ...],
-    ) -> int:
-        if not tokens:
-            return 0
-        haystack = f"{hit.title or ''} {unquote(canonical_url)}".casefold()
-        return sum(1 for token in tokens if token in haystack)
+    def _host_matches(host: str, domain: str) -> bool:
+        return host == domain or host.endswith(f".{domain}")
