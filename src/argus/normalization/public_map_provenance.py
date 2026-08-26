@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 
 _PROVIDER_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
@@ -46,6 +46,62 @@ def classify_public_map_url(url: str) -> dict[str, object] | None:
             "content_claimed": False,
         }
     return None
+
+
+def preferred_public_map_review_url(url: str) -> str | None:
+    """Return a deterministic public review-view URL when the provider exposes one.
+
+    Only URL shapes observed/documented as public browser surfaces are rewritten. The
+    returned URL is still untrusted input and must pass the normal UrlGuard before use.
+    Google Maps is intentionally not rewritten because a review-specific URI cannot be
+    derived reliably from an arbitrary public place URL without additional place identity.
+    """
+
+    classification = classify_public_map_url(url)
+    if classification is None:
+        return None
+    parsed = urlsplit(str(url).strip())
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    provider = str(classification["provider"])
+
+    target_path: str | None = None
+    if provider == "yandex_maps_web":
+        target_path = _yandex_review_path(segments)
+    elif provider == "2gis_web":
+        target_path = _two_gis_review_path(segments)
+    if target_path is None:
+        return None
+
+    candidate = urlunsplit((parsed.scheme, parsed.netloc, target_path, "", ""))
+    current = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    return None if candidate.rstrip("/") == current.rstrip("/") else candidate
+
+
+def _yandex_review_path(segments: list[str]) -> str | None:
+    if len(segments) < 4 or segments[0] != "maps" or segments[1] != "org":
+        return None
+    organization_id_index = next(
+        (index for index in range(2, len(segments)) if segments[index].isdigit()),
+        None,
+    )
+    if organization_id_index is None:
+        return None
+    base = segments[: organization_id_index + 1]
+    return "/" + "/".join([*base, "reviews"]) + "/"
+
+
+def _two_gis_review_path(segments: list[str]) -> str | None:
+    try:
+        firm_index = segments.index("firm")
+    except ValueError:
+        return None
+    if firm_index == 0 or firm_index + 1 >= len(segments):
+        return None
+    firm_id = segments[firm_index + 1]
+    if not firm_id.isdigit():
+        return None
+    base = segments[: firm_index + 2]
+    return "/" + "/".join([*base, "tab", "reviews"])
 
 
 def _host_matches(host: str, root: str) -> bool:
