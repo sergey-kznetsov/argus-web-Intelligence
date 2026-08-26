@@ -13,7 +13,6 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
     max_agent_direct_replay_urls = 2
 
     async def fetch(self, task: SourceTask) -> FetchResult:
-        recipe_failed = False
         if self.recipes is not None:
             recipe = await self.recipes.get(task.url, task.goal)
             if recipe is not None:
@@ -26,32 +25,60 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
                 except UnsafeUrlError:
                     raise
                 except Exception as exc:
-                    recipe_failed = True
                     await self.recipes.mark_failure(
                         recipe,
                         reason=f"replay_failed:{type(exc).__name__}",
                     )
 
-        if recipe_failed and self.agent is not None:
-            guided = await self._agent_guided_fetch(task)
-            if guided is not None:
-                return guided
-
         try:
             result = await self.fast.fetch(task.url)
             if result.blocked or self._needs_browser(result.text):
-                return await self._browser_or_agent(task)
+                return await self._browser_or_agent(task, context_fetch=result)
             return result
         except UnsafeUrlError:
             raise
         except Exception:
             return await self._browser_or_agent(task)
 
-    async def _agent_guided_fetch(self, task: SourceTask) -> FetchResult | None:
+    async def _browser_or_agent(
+        self,
+        task: SourceTask,
+        *,
+        context_fetch: FetchResult | None = None,
+    ) -> FetchResult:
+        try:
+            return await self.browser.fetch(task.url)
+        except UnsafeUrlError:
+            raise
+        except Exception as browser_error:
+            if self.agent is not None:
+                guided = await self._agent_guided_fetch(task, context_fetch=context_fetch)
+                if guided is not None:
+                    return guided
+            raise browser_error
+
+    async def _agent_guided_fetch(
+        self,
+        task: SourceTask,
+        *,
+        context_fetch: FetchResult | None = None,
+    ) -> FetchResult | None:
         if self.agent is None:
             return None
         goals = self._research_goals(task)
         goal_text = ", ".join(goals)
+        context: dict[str, object] = {
+            "allowed_domains": task.metadata.get("allowed_domains", []),
+            "research_goals": goals,
+        }
+        if context_fetch is not None and not context_fetch.blocked:
+            context.update(
+                {
+                    "page_html": context_fetch.text,
+                    "page_url": context_fetch.final_url,
+                    "page_runtime": context_fetch.runtime,
+                }
+            )
         try:
             agent_result = await self.agent.run(
                 AgentTask(
@@ -61,19 +88,16 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
                         f"Find the public page or view needed for goals '{goal_text}'. Use public site "
                         "navigation, search, filters and expandable sections when needed."
                     ),
-                    context={
-                        "allowed_domains": task.metadata.get("allowed_domains", []),
-                        "research_goals": goals,
-                    },
+                    context=context,
                 )
             )
         except UnsafeUrlError:
             raise
         except Exception as exc:
-            # AGENT is a last-resort capability. Missing optional packages, an unavailable
-            # local LLM, or an agent-runtime failure must not turn a successfully bounded
-            # FAST/BROWSER research path into an unhandled collection failure. Keep only
-            # the exception class in metadata so secrets/endpoints are not copied to output.
+            # AGENT is a last-resort capability. Missing local LLM service or an
+            # agent-runtime failure must not turn a bounded FAST/BROWSER research path
+            # into an unhandled collection failure. Keep only the exception class in
+            # metadata so secrets/endpoints are not copied to output.
             task.metadata["agent_error"] = "agent runtime unavailable"
             task.metadata["agent_execution"] = {
                 "status": "failed",
