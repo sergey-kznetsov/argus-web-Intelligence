@@ -27,6 +27,10 @@ class PlaywrightRecipeExecutor:
                 await page.locator(self._selector(step)).click()
             elif step.action == "fill":
                 await page.locator(self._selector(step)).fill(step.value or "")
+            elif step.action == "select":
+                if step.value is None:
+                    raise RecipeExecutionError("select requires value")
+                await page.locator(self._selector(step)).select_option(value=step.value)
             elif step.action == "press":
                 await page.locator(self._selector(step)).press(step.value or "Enter")
             elif step.action == "wait":
