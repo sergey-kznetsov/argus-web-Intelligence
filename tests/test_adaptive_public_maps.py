@@ -36,7 +36,7 @@ class DiscoveryStub:
             tasks=[
                 SourceTask(
                     source_id="generic_web",
-                    goal="reviews",
+                    goal=request.intents[0],
                     url="https://2gis.ru/izhevsk/firm/example",
                     metadata={},
                 )
@@ -84,6 +84,25 @@ def organization() -> Observation:
         title="Кофейня Север",
         data={"name": "Кофейня Север"},
         content_hash="b" * 64,
+        provenance={},
+        quality={},
+    )
+
+
+def map_review(*, observation_id: str, url: str) -> Observation:
+    return Observation(
+        observation_id=observation_id,
+        collection_id="collection-map-1",
+        analysis_id="adaptive-map-analysis",
+        consumer="adaptive-map-test",
+        source="generic_web",
+        source_kind="microdata",
+        url=url,
+        entity_type="review",
+        title="Кофейня Север",
+        text="Публичный отзыв",
+        data={"name": "Кофейня Север"},
+        content_hash="c" * 64,
         provenance={},
         quality={},
     )
@@ -148,10 +167,18 @@ async def test_discovered_entity_gets_bounded_public_map_followup_queries():
     assert branch_request.intents == ["reviews"]
     assert len(pending) == 1
     assert pending[0].metadata["curated_public_map_round"] == 1
+    assert pending[0].metadata["curated_public_map_gap_intents"] == ["reviews"]
     assert pending[0].metadata["collection_id"] == "collection-map-1"
     assert record.checkpoint["curated_public_map_rounds"] == 1
     assert record.checkpoint["curated_public_map_last_candidates"] == 1
-    assert record.checkpoint["curated_public_map_source_version"] == "public-map-sources/1"
+    assert record.checkpoint["curated_public_map_source_version"] == "public-map-sources/2"
+    assert record.checkpoint["curated_public_map_coverage"] == {"reviews": 0}
+    assert record.checkpoint["curated_public_map_gap_intents"] == ["reviews"]
+    assert record.checkpoint["curated_public_map_target_sources_per_intent"] == 2
+    assert record.checkpoint["curated_public_map_coverage_version"] == (
+        "intent-evidence-coverage/2"
+    )
+    assert record.checkpoint["curated_public_map_complete"] is False
 
 
 @pytest.mark.asyncio
@@ -182,3 +209,93 @@ async def test_public_map_followup_does_not_run_for_unrelated_intents():
 
     assert discovery.calls == []
     assert record.checkpoint == {}
+
+
+@pytest.mark.asyncio
+async def test_two_public_map_review_sources_complete_curated_map_research():
+    reviews = [
+        map_review(
+            observation_id="review-yandex",
+            url="https://yandex.ru/maps/org/example/123/reviews/",
+        ),
+        map_review(
+            observation_id="review-2gis",
+            url="https://2gis.ru/izhevsk/firm/456/tab/reviews",
+        ),
+    ]
+    repository = RepositoryStub(reviews)
+    discovery = DiscoveryStub()
+    orchestrator = build_orchestrator(repository, discovery)
+    record = SimpleNamespace(
+        collection_id="collection-map-1",
+        request=request("reviews"),
+        checkpoint={},
+        errors=[],
+    )
+
+    await orchestrator._expand_curated_public_map_sources(
+        record,
+        SourceTask(
+            source_id="generic_web",
+            goal="reviews",
+            url="https://example.test/source",
+            metadata={},
+        ),
+        [],
+        [],
+        set(),
+    )
+
+    assert discovery.calls == []
+    assert record.checkpoint["curated_public_map_coverage"] == {"reviews": 2}
+    assert record.checkpoint["curated_public_map_gap_intents"] == []
+    assert record.checkpoint["curated_public_map_complete"] is True
+    assert record.checkpoint["curated_public_map_exhausted_for_current_anchors"] is False
+
+
+@pytest.mark.asyncio
+async def test_branch_request_contains_only_undercovered_map_intents():
+    reviews = [
+        map_review(
+            observation_id="review-yandex",
+            url="https://yandex.ru/maps/org/example/123/reviews/",
+        ),
+        map_review(
+            observation_id="review-2gis",
+            url="https://2gis.ru/izhevsk/firm/456/tab/reviews",
+        ),
+    ]
+    repository = RepositoryStub(reviews)
+    discovery = DiscoveryStub()
+    orchestrator = build_orchestrator(repository, discovery)
+    record = SimpleNamespace(
+        collection_id="collection-map-1",
+        request=request("reviews", "complaints"),
+        checkpoint={},
+        errors=[],
+    )
+
+    await orchestrator._expand_curated_public_map_sources(
+        record,
+        SourceTask(
+            source_id="generic_web",
+            goal="complaints",
+            url="https://example.test/source",
+            metadata={},
+        ),
+        [],
+        [],
+        set(),
+    )
+
+    assert len(discovery.calls) == 1
+    queries, branch_request = discovery.calls[0]
+    assert branch_request.intents == ["complaints"]
+    assert queries
+    assert all("жалобы" in query for query in queries)
+    assert all("отзывы" not in query for query in queries)
+    assert record.checkpoint["curated_public_map_coverage"] == {
+        "reviews": 2,
+        "complaints": 0,
+    }
+    assert record.checkpoint["curated_public_map_gap_intents"] == ["complaints"]
