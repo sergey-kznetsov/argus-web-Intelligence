@@ -13,6 +13,36 @@ def request(*intents: str) -> CollectionRequest:
     )
 
 
+def observation(
+    *,
+    url: str,
+    entity_type: str = "document",
+    source_kind: str = "web_page",
+    goals: list[str] | None = None,
+    quality: dict[str, object] | None = None,
+) -> Observation:
+    data: dict[str, object] = {"name": "Кофейня Север"}
+    if goals is not None:
+        data["research_goals"] = goals
+    return Observation(
+        observation_id=f"obs-{abs(hash(url))}",
+        collection_id="c1",
+        analysis_id="map-source-analysis",
+        consumer="map-source-test",
+        source="generic_web",
+        source_kind=source_kind,
+        url=url,
+        entity_type=entity_type,
+        entity_id="entity-1",
+        title="Кофейня Север",
+        data=data,
+        text="Public source-backed content",
+        content_hash="a" * 64,
+        provenance={},
+        quality=quality or {},
+    )
+
+
 def test_public_map_queries_cover_all_curated_platforms_for_reviews():
     planner = PublicMapSourceResearchPlanner()
 
@@ -33,30 +63,15 @@ def test_public_map_queries_do_not_run_for_unrelated_intents():
 
 def test_public_map_queries_expand_to_discovered_entity_names_and_dedupe_seen():
     planner = PublicMapSourceResearchPlanner()
-    observation = Observation(
-        observation_id="o1",
-        collection_id="c1",
-        analysis_id="map-source-analysis",
-        consumer="map-source-test",
-        source="generic_web",
-        source_kind="structured_entity",
-        url="https://example.test/place",
-        entity_type="organization",
-        entity_id="org1",
-        title="Кофейня Север",
-        data={"name": "Кофейня Север"},
-        content_hash="a" * 64,
-        provenance={},
-        quality={},
-    )
-    first = planner.queries(request("reviews"), observations=[observation], limit=4)
+    discovered = observation(url="https://example.test/place", source_kind="structured_entity")
+    first = planner.queries(request("reviews"), observations=[discovered], limit=4)
 
     assert len(first) == 4
     assert "Кофейня Север" in first[-1]
 
     second = planner.queries(
         request("reviews"),
-        observations=[observation],
+        observations=[discovered],
         seen_queries=set(first),
         limit=4,
     )
@@ -64,9 +79,92 @@ def test_public_map_queries_expand_to_discovered_entity_names_and_dedupe_seen():
     assert not set(first).intersection(second)
 
 
-def test_source_metadata_declares_public_web_not_paid_api():
-    metadata = PublicMapSourceResearchPlanner().source_metadata()
+def test_navigation_only_map_pages_do_not_satisfy_review_coverage():
+    planner = PublicMapSourceResearchPlanner(target_sources_per_intent=1)
+    shell = observation(
+        url="https://yandex.ru/maps/org/example/123/",
+        goals=["reviews"],
+    )
 
+    assert planner.coverage_counts(request("reviews"), [shell]) == {"reviews": 0}
+    assert planner.remaining_intents(request("reviews"), [shell]) == ["reviews"]
+    assert planner.queries(request("reviews"), observations=[shell], limit=1)
+
+
+def test_two_independent_map_review_sources_close_curated_review_gap():
+    planner = PublicMapSourceResearchPlanner(target_sources_per_intent=2)
+    observations = [
+        observation(
+            url="https://yandex.ru/maps/org/example/123/reviews/",
+            entity_type="review",
+            source_kind="microdata",
+        ),
+        observation(
+            url="https://2gis.ru/izhevsk/firm/456/tab/reviews",
+            entity_type="review",
+            source_kind="microdata",
+        ),
+    ]
+
+    assert planner.coverage_counts(request("reviews"), observations) == {"reviews": 2}
+    assert planner.remaining_intents(request("reviews"), observations) == []
+    assert planner.queries(request("reviews"), observations=observations, limit=3) == []
+
+
+def test_tracking_variants_of_same_map_page_do_not_fake_two_sources():
+    planner = PublicMapSourceResearchPlanner(target_sources_per_intent=2)
+    observations = [
+        observation(
+            url="https://2gis.ru/izhevsk/firm/456/tab/reviews?utm_source=one#reviews",
+            entity_type="review",
+            source_kind="microdata",
+        ),
+        observation(
+            url="https://2GIS.ru:443/izhevsk/firm/456/tab/reviews?gclid=two",
+            entity_type="review",
+            source_kind="microdata",
+        ),
+    ]
+
+    assert planner.coverage_counts(request("reviews"), observations) == {"reviews": 1}
+    assert planner.remaining_intents(request("reviews"), observations) == ["reviews"]
+    assert planner.queries(request("reviews"), observations=observations, limit=1)
+
+
+def test_query_suffix_contains_only_undercovered_map_intents():
+    planner = PublicMapSourceResearchPlanner(target_sources_per_intent=2)
+    observations = [
+        observation(
+            url="https://yandex.ru/maps/org/example/123/reviews/",
+            entity_type="review",
+            source_kind="microdata",
+        ),
+        observation(
+            url="https://2gis.ru/izhevsk/firm/456/tab/reviews",
+            entity_type="review",
+            source_kind="microdata",
+        ),
+    ]
+
+    queries = planner.queries(
+        request("reviews", "complaints"),
+        observations=observations,
+        limit=3,
+    )
+
+    assert planner.remaining_intents(request("reviews", "complaints"), observations) == [
+        "complaints"
+    ]
+    assert queries
+    assert all("жалобы" in query for query in queries)
+    assert all("отзывы" not in query for query in queries)
+
+
+def test_source_metadata_declares_public_web_not_paid_api():
+    planner = PublicMapSourceResearchPlanner()
+    metadata = planner.source_metadata()
+
+    assert planner.version == "public-map-sources/2"
     assert {item["source_id"] for item in metadata} == {
         "yandex_maps_web",
         "2gis_web",
