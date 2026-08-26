@@ -55,6 +55,7 @@ async def test_searxng_provider_uses_json_api_and_deduplicates_results(tmp_path)
     assert [hit.url for hit in hits] == ["https://example.com/a", "https://example.org/b"]
     assert hits[0].engines == ["google", "bing"]
     assert hits[1].engines == ["duckduckgo"]
+    assert all(hit.query == "Ижевск новости" for hit in hits)
     assert len(requests) == 1
     assert requests[0].method == "POST"
     assert requests[0].url.path == "/search"
