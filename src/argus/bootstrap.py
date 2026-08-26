@@ -26,6 +26,7 @@ from argus.research.entities import AreaEntityResearchPlanner
 from argus.research.entity_hypotheses import OllamaEntityHypothesisExtractor
 from argus.research.followup import OllamaFollowupResearchPlanner
 from argus.research.historical import HistoricalBranchPlanner
+from argus.research.historical_sources import HistoricalSourceResearchPlanner
 from argus.research.intent_coverage import IntentCoverageEvaluator
 from argus.research.intent_evidence import OllamaIntentEvidenceClassifier
 from argus.research.planner import OllamaResearchPlanner
@@ -167,6 +168,9 @@ def build_services(settings: Settings) -> ServiceContainer:
     map_registry = build_map_registry(settings)
     structured_extractor = build_structured_data_extractor(settings)
     intent_evidence_classifier = OllamaIntentEvidenceClassifier(settings)
+    historical_source_planner = HistoricalSourceResearchPlanner(
+        catalog_file=settings.historical_source_catalog_file
+    )
     coverage = IntentCoverageEvaluator()
     registry = SourceRegistry(metrics=metrics)
     registry.register(
@@ -230,6 +234,7 @@ def build_services(settings: Settings) -> ServiceContainer:
         max_concurrency=settings.max_concurrency,
         discovery=discovery,
         historical_branch_planner=HistoricalBranchPlanner(),
+        historical_source_planner=historical_source_planner,
         area_entity_planner=AreaEntityResearchPlanner(),
         followup_planner=OllamaFollowupResearchPlanner(
             settings,
