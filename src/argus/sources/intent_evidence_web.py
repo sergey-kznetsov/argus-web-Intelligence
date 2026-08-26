@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from argus.contracts.models import CollectionRequest
 from argus.research.intent_evidence import OllamaIntentEvidenceClassifier
-from argus.sources.base import SourceResult
+from argus.sources.base import SourceResult, SourceTask
 from argus.sources.public_map_web import PublicMapProvenanceWebAdapter
 
 
@@ -17,6 +17,16 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
     ) -> None:
         super().__init__(*args, **kwargs)
         self.intent_evidence_classifier = intent_evidence_classifier
+
+    async def extract(
+        self,
+        task: SourceTask,
+        fetched,
+        request: CollectionRequest,
+    ) -> SourceResult:
+        result = await super().extract(task, fetched, request)
+        await self._finalize_recipe_goal_verification(task, request, result)
+        return result
 
     async def _annotate_semantic_evidence(
         self,
