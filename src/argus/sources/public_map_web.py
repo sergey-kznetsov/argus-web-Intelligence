@@ -1,27 +1,31 @@
 from __future__ import annotations
 
 from argus.contracts.models import CollectionRequest
-from argus.normalization.public_map_provenance import classify_public_map_url
+from argus.normalization.public_map_provenance import (
+    classify_public_map_url,
+    preferred_public_map_review_url,
+)
 from argus.research.coverage import IntentCoverageEvaluator
+from argus.security.urls import UnsafeUrlError
 from argus.sources.base import SourceResult, SourceTask
 from argus.sources.historical_web import HistoricalTimelineWebAdapter
 
 
 class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
-    """Attach public-map provenance and escalate unresolved semantic goals once.
+    """Attach public-map provenance and resolve semantic goals without paid APIs.
 
     Public map pages are frequently interactive applications. A technically successful
     FAST/BROWSER response is not enough when the requested factual goal has not actually
-    been evidenced. The adapter therefore evaluates source-backed intent coverage rather
-    than navigation metadata. If a supported semantic goal remains uncovered, it may invoke
-    the normal AGENT -> verified browser replay lifecycle once. Agent output is never
-    accepted as Evidence directly.
+    been evidenced. ARGUS therefore evaluates source-backed intent coverage, prefers a
+    deterministic public review view when the provider exposes one, and only then may use
+    the normal AGENT -> verified browser replay lifecycle. Agent output is never Evidence.
     """
 
-    semantic_escalation_version = "public-map-goal-escalation/2"
+    semantic_escalation_version = "public-map-goal-escalation/3"
     semantic_escalation_goals = frozenset(
-        {"reviews", "comments", "discussions", "complaints", "incidents"}
+        {"reviews", "comments", "discussions", "complaints"}
     )
+    deterministic_review_view_goals = semantic_escalation_goals
     intent_coverage = IntentCoverageEvaluator()
 
     async def extract(
@@ -32,9 +36,18 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
     ) -> SourceResult:
         result = await super().extract(task, fetched, request)
         result = await self._annotate_semantic_evidence(request, result)
+        goals = self._semantic_goals(task)
+
+        if goals and self._semantic_goal_fact_count(result, goals) == 0:
+            result = await self._try_deterministic_review_view(
+                task,
+                fetched,
+                request,
+                result,
+                goals,
+            )
 
         if self._should_semantically_escalate(task, fetched, result):
-            goals = self._semantic_goals(task)
             task.metadata["semantic_agent_retry_attempted"] = True
             task.metadata["semantic_agent_retry_goals"] = goals
             task.metadata["semantic_agent_retry_reason"] = (
@@ -59,6 +72,51 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
         self._attach_public_map_provenance(result, task)
         return result
 
+    async def _try_deterministic_review_view(
+        self,
+        task: SourceTask,
+        fetched,
+        request: CollectionRequest,
+        result: SourceResult,
+        goals: list[str],
+    ) -> SourceResult:
+        if fetched.blocked or result.blocked:
+            return result
+        if not set(goals).intersection(self.deterministic_review_view_goals):
+            return result
+        candidate_url = preferred_public_map_review_url(str(fetched.final_url))
+        if candidate_url is None:
+            return result
+
+        task.metadata["public_map_review_view_attempted"] = True
+        task.metadata["public_map_review_view_url"] = candidate_url
+        task.metadata["public_map_review_view_basis"] = "provider_public_url_shape"
+        before_score = self._semantic_goal_fact_count(result, goals)
+        try:
+            candidate_fetched = await self.browser.fetch(candidate_url)
+        except UnsafeUrlError:
+            raise
+        except Exception as exc:
+            task.metadata["public_map_review_view_accepted"] = False
+            task.metadata["public_map_review_view_error_type"] = type(exc).__name__
+            return result
+
+        if candidate_fetched.blocked:
+            task.metadata["public_map_review_view_accepted"] = False
+            task.metadata["public_map_review_view_blocked"] = True
+            task.metadata["semantic_agent_retry_suppressed"] = "review_view_blocked"
+            return result
+
+        candidate_result = await super().extract(task, candidate_fetched, request)
+        candidate_result = await self._annotate_semantic_evidence(request, candidate_result)
+        after_score = self._semantic_goal_fact_count(candidate_result, goals)
+        accepted = after_score > before_score
+        task.metadata["public_map_review_view_accepted"] = accepted
+        task.metadata["public_map_review_view_final_url"] = candidate_fetched.final_url
+        if accepted:
+            return candidate_result
+        return result
+
     async def _annotate_semantic_evidence(
         self,
         request: CollectionRequest,
@@ -75,6 +133,8 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
         result: SourceResult,
     ) -> bool:
         if self.agent is None or task.metadata.get("semantic_agent_retry_attempted"):
+            return False
+        if task.metadata.get("semantic_agent_retry_suppressed"):
             return False
         if fetched.blocked or result.blocked:
             return False
@@ -121,7 +181,16 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             "accepted": bool(task.metadata.get("semantic_agent_retry_accepted")),
             "reason": task.metadata.get("semantic_agent_retry_reason"),
             "goals": list(task.metadata.get("semantic_agent_retry_goals") or []),
+            "suppressed": task.metadata.get("semantic_agent_retry_suppressed"),
             "agent_output_is_evidence": False,
+        }
+        review_view = {
+            "attempted": bool(task.metadata.get("public_map_review_view_attempted")),
+            "accepted": bool(task.metadata.get("public_map_review_view_accepted")),
+            "basis": task.metadata.get("public_map_review_view_basis"),
+            "candidate_url": task.metadata.get("public_map_review_view_url"),
+            "final_url": task.metadata.get("public_map_review_view_final_url"),
+            "blocked": bool(task.metadata.get("public_map_review_view_blocked")),
         }
         for observation in result.observations:
             provenance = classify_public_map_url(observation.url)
@@ -129,6 +198,7 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
                 continue
             observation.provenance["public_map_source"] = dict(provenance)
             observation.provenance["public_map_semantic_escalation"] = dict(escalation)
+            observation.provenance["public_map_review_view"] = dict(review_view)
             observation.quality["public_map_source_identified"] = True
 
         for evidence in result.evidence:
@@ -137,6 +207,7 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
                 continue
             evidence.metadata["public_map_source"] = dict(provenance)
             evidence.metadata["public_map_semantic_escalation"] = dict(escalation)
+            evidence.metadata["public_map_review_view"] = dict(review_view)
 
     async def health(self) -> dict[str, object]:
         payload = dict(await super().health())
@@ -146,6 +217,11 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             "classification_basis": "url_host_path",
             "content_inference": False,
             "paid_api": False,
+            "deterministic_review_views": {
+                "providers": ["yandex_maps_web", "2gis_web"],
+                "browser_verified": True,
+                "before_agent": True,
+            },
             "semantic_goal_escalation": {
                 "version": self.semantic_escalation_version,
                 "goals": sorted(self.semantic_escalation_goals),
