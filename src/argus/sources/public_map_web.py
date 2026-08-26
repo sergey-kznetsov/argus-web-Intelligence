@@ -29,7 +29,7 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
         if self._should_semantically_escalate(task, fetched, result):
             task.metadata["semantic_agent_retry_attempted"] = True
             task.metadata["semantic_agent_retry_reason"] = "review_goal_without_review_fact"
-            guided = await self._agent_guided_fetch(task)
+            guided = await self._agent_guided_fetch(task, context_fetch=fetched)
             if guided is not None and not guided.blocked:
                 guided_result = await super().extract(task, guided, request)
                 if self._review_fact_count(guided_result) > self._review_fact_count(result):
