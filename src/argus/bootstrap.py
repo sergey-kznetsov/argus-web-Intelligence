@@ -3,7 +3,7 @@ from __future__ import annotations
 from argus.capabilities import OPERATIONAL_AGENT_BACKENDS
 from argus.config import Settings
 from argus.crawler.agent.base import AgentBackend
-from argus.crawler.agent.browser_use import BrowserUseAgent
+from argus.crawler.agent.ollama_recipe import OllamaRecipeAgent
 from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.extraction.ooxml import BoundedOoxmlExtractor
@@ -59,8 +59,8 @@ def configured_archive_provider_names(settings: Settings) -> list[str]:
 def build_agent(settings: Settings, guard: UrlGuard) -> AgentBackend | None:
     if not settings.agent_enabled:
         return None
-    if settings.agent_backend == "browser-use":
-        return BrowserUseAgent(settings, guard)
+    if settings.agent_backend == "ollama-recipe":
+        return OllamaRecipeAgent(settings, guard)
     operational = ", ".join(OPERATIONAL_AGENT_BACKENDS)
     raise RuntimeError(
         f"ARGUS agent backend '{settings.agent_backend}' is not operational; "
