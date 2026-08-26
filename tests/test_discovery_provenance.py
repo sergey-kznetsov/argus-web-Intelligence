@@ -38,6 +38,7 @@ def test_discovery_navigation_metadata_is_provenance_not_evidence_confidence():
         metadata={
             "discovery_provider": "searxng",
             "discovery_rank": 2,
+            "discovery_query": '"Ижевск, Пушкинская, 277" упоминания',
             "discovery_original_url": "https://Example.com:443/article?utm_source=x",
             "discovery_canonical_url": observation.url,
             "discovery_navigation_score": 75,
@@ -48,7 +49,7 @@ def test_discovery_navigation_metadata_is_provenance_not_evidence_confidence():
                 "https": True,
             },
             "discovery_ranking_version": "discovery-ranking/1",
-            "discovery_telemetry_version": "discovery-telemetry/1",
+            "discovery_telemetry_version": "discovery-telemetry/2",
             "discovery_stop_policy": "first_provider_with_valid_destinations",
             "discovery_task_budget": 30,
         },
@@ -60,10 +61,12 @@ def test_discovery_navigation_metadata_is_provenance_not_evidence_confidence():
     discovery = observation.provenance["discovery"]
     assert discovery["provider"] == "searxng"
     assert discovery["rank"] == 2
+    assert discovery["query"] == '"Ижевск, Пушкинская, 277" упоминания'
     assert discovery["canonical_url"] == observation.url
     assert discovery["navigation_score"] == 75
     assert discovery["navigation_only"] is True
     assert discovery["is_evidence"] is False
     assert "confidence" not in discovery
+    assert evidence.metadata["discovery_navigation"]["query"] == discovery["query"]
     assert evidence.metadata["discovery_navigation"]["navigation_only"] is True
     assert evidence.metadata["discovery_navigation"]["is_evidence"] is False
