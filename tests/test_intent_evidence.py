@@ -135,3 +135,41 @@ def test_classifier_rejects_model_invented_excerpt():
     )
 
     assert findings == []
+
+
+def test_classifier_accepts_custom_module_intent_only_with_exact_source_excerpt():
+    classifier = OllamaIntentEvidenceClassifier(Settings(browser_serp_enabled=False))
+    text = "На парковке предусмотрено 120 машино-мест, въезд доступен для посетителей."
+
+    findings = classifier._validate_findings(
+        {
+            "findings": [
+                {
+                    "intent": "parking_capacity",
+                    "excerpt": "На парковке предусмотрено 120 машино-мест",
+                },
+                {
+                    "intent": "parking_access",
+                    "excerpt": "въезд доступен только сотрудникам",
+                },
+            ]
+        },
+        text,
+        ["parking_capacity", "parking_access"],
+    )
+
+    assert [(item.intent, item.excerpt) for item in findings] == [
+        ("parking_capacity", "На парковке предусмотрено 120 машино-мест")
+    ]
+    assert findings[0].marker == "semantic_exact_excerpt"
+
+
+def test_classifier_limits_and_deduplicates_custom_requested_intents():
+    classifier = OllamaIntentEvidenceClassifier(Settings(browser_serp_enabled=False))
+    requested = classifier._requested_intents(
+        ["Parking_Capacity", " parking_capacity ", *[f"custom_{index}" for index in range(20)]]
+    )
+
+    assert requested[0] == "parking_capacity"
+    assert len(requested) == classifier.max_requested_intents
+    assert len(set(requested)) == len(requested)
