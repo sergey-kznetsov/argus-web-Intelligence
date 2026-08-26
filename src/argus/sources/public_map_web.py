@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argus.contracts.models import CollectionRequest
+from argus.crawler.models import FetchResult
 from argus.normalization.public_map_provenance import (
     classify_public_map_url,
     preferred_public_map_review_url,
@@ -37,9 +38,10 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
         result = await super().extract(task, fetched, request)
         result = await self._annotate_semantic_evidence(request, result)
         goals = self._semantic_goals(task)
+        agent_context_fetch = fetched
 
         if goals and self._semantic_goal_fact_count(result, goals) == 0:
-            result = await self._try_deterministic_review_view(
+            result, agent_context_fetch = await self._try_deterministic_review_view(
                 task,
                 fetched,
                 request,
@@ -56,7 +58,11 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
                 else "semantic_goal_without_evidence"
             )
             before_score = self._semantic_goal_fact_count(result, goals)
-            guided = await self._agent_guided_fetch(task, context_fetch=fetched)
+            agent_task = self._agent_task_for_context(task, agent_context_fetch)
+            guided = await self._agent_guided_fetch(
+                agent_task,
+                context_fetch=agent_context_fetch,
+            )
             if guided is not None and not guided.blocked:
                 guided_result = await super().extract(task, guided, request)
                 guided_result = await self._annotate_semantic_evidence(request, guided_result)
@@ -75,18 +81,18 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
     async def _try_deterministic_review_view(
         self,
         task: SourceTask,
-        fetched,
+        fetched: FetchResult,
         request: CollectionRequest,
         result: SourceResult,
         goals: list[str],
-    ) -> SourceResult:
+    ) -> tuple[SourceResult, FetchResult]:
         if fetched.blocked or result.blocked:
-            return result
+            return result, fetched
         if not set(goals).intersection(self.deterministic_review_view_goals):
-            return result
+            return result, fetched
         candidate_url = preferred_public_map_review_url(str(fetched.final_url))
         if candidate_url is None:
-            return result
+            return result, fetched
 
         task.metadata["public_map_review_view_attempted"] = True
         task.metadata["public_map_review_view_url"] = candidate_url
@@ -99,23 +105,44 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
         except Exception as exc:
             task.metadata["public_map_review_view_accepted"] = False
             task.metadata["public_map_review_view_error_type"] = type(exc).__name__
-            return result
+            return result, fetched
 
+        task.metadata["public_map_review_view_status_code"] = candidate_fetched.status_code
+        task.metadata["public_map_review_view_final_url"] = candidate_fetched.final_url
         if candidate_fetched.blocked:
             task.metadata["public_map_review_view_accepted"] = False
             task.metadata["public_map_review_view_blocked"] = True
             task.metadata["semantic_agent_retry_suppressed"] = "review_view_blocked"
-            return result
+            return result, fetched
 
         candidate_result = await super().extract(task, candidate_fetched, request)
         candidate_result = await self._annotate_semantic_evidence(request, candidate_result)
         after_score = self._semantic_goal_fact_count(candidate_result, goals)
         accepted = after_score > before_score
         task.metadata["public_map_review_view_accepted"] = accepted
-        task.metadata["public_map_review_view_final_url"] = candidate_fetched.final_url
         if accepted:
-            return candidate_result
-        return result
+            return candidate_result, candidate_fetched
+
+        # If the deterministic view itself loaded successfully, any later AGENT plan
+        # must be compiled/replayed against that exact DOM URL. Otherwise selectors
+        # chosen from /reviews could be incorrectly persisted against the original card.
+        if 200 <= int(candidate_fetched.status_code) < 400 and candidate_fetched.text.strip():
+            return result, candidate_fetched
+        return result, fetched
+
+    @staticmethod
+    def _agent_task_for_context(task: SourceTask, context_fetch: FetchResult) -> SourceTask:
+        context_url = str(context_fetch.final_url or task.url)
+        if context_url == task.url:
+            return task
+        return SourceTask(
+            source_id=task.source_id,
+            goal=task.goal,
+            url=context_url,
+            depth=task.depth,
+            metadata=task.metadata,
+            task_key=task.task_key,
+        )
 
     async def _annotate_semantic_evidence(
         self,
@@ -190,6 +217,7 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             "basis": task.metadata.get("public_map_review_view_basis"),
             "candidate_url": task.metadata.get("public_map_review_view_url"),
             "final_url": task.metadata.get("public_map_review_view_final_url"),
+            "status_code": task.metadata.get("public_map_review_view_status_code"),
             "blocked": bool(task.metadata.get("public_map_review_view_blocked")),
         }
         for observation in result.observations:
@@ -221,6 +249,7 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
                 "providers": ["yandex_maps_web", "2gis_web"],
                 "browser_verified": True,
                 "before_agent": True,
+                "agent_recipe_bound_to_analyzed_view": True,
             },
             "semantic_goal_escalation": {
                 "version": self.semantic_escalation_version,
