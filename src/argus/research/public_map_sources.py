@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from argus.contracts.models import CollectionRequest, Observation
+from argus.normalization.public_map_provenance import classify_public_map_url
+from argus.research.intent_coverage import IntentCoverageEvaluator
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,9 +23,15 @@ PUBLIC_MAP_SOURCES: tuple[PublicMapSourceProfile, ...] = (
 
 
 class PublicMapSourceResearchPlanner:
-    """Target public map/card pages through normal web discovery, never paid map APIs."""
+    """Target public map/card pages through normal web discovery, never paid map APIs.
 
-    version = "public-map-sources/1"
+    Curated map research is driven by factual coverage gaps. Navigation metadata and
+    successfully opened card shells do not stop research. Only observations from known
+    public-map web surfaces that actually evidence a requested intent count toward the
+    target. This keeps the planner aligned with ARGUS' evidence-first research lifecycle.
+    """
+
+    version = "public-map-sources/2"
     supported_intents = frozenset(
         {
             "reviews",
@@ -38,9 +46,13 @@ class PublicMapSourceResearchPlanner:
         sources: tuple[PublicMapSourceProfile, ...] = PUBLIC_MAP_SOURCES,
         *,
         max_anchor_chars: int = 180,
+        target_sources_per_intent: int = 2,
+        coverage: IntentCoverageEvaluator | None = None,
     ) -> None:
         self.sources = tuple(sorted(sources, key=lambda item: (item.priority, item.source_id)))
         self.max_anchor_chars = max(32, int(max_anchor_chars))
+        self.target_sources_per_intent = max(1, int(target_sources_per_intent))
+        self.coverage = coverage or IntentCoverageEvaluator()
 
     def queries(
         self,
@@ -50,18 +62,22 @@ class PublicMapSourceResearchPlanner:
         seen_queries: set[str] | None = None,
         limit: int = 3,
     ) -> list[str]:
-        if not self.supported_intents.intersection(request.intents) or limit <= 0:
+        if limit <= 0:
+            return []
+        observations = observations or []
+        remaining_intents = self.remaining_intents(request, observations)
+        if not remaining_intents:
             return []
         seen = {
             " ".join(value.split()).casefold()
             for value in (seen_queries or set())
             if value.strip()
         }
-        anchors = self._anchors(request, observations or [])
+        anchors = self._anchors(request, observations)
         if not anchors:
             return []
         language = self._language(request, anchors[0])
-        suffix = self._suffix(request, language)
+        suffix = self._suffix(remaining_intents, language)
 
         result: list[str] = []
         for anchor in anchors:
@@ -76,6 +92,36 @@ class PublicMapSourceResearchPlanner:
                     return result
         return result
 
+    def coverage_counts(
+        self,
+        request: CollectionRequest,
+        observations: list[Observation],
+    ) -> dict[str, int]:
+        """Count independent public-map factual sources for supported requested intents."""
+
+        requested = self._requested_intents(request)
+        if not requested:
+            return {}
+        map_observations = [
+            observation
+            for observation in observations
+            if classify_public_map_url(observation.url) is not None
+        ]
+        counts = self.coverage.counts(map_observations)
+        return {intent: int(counts.get(intent, 0)) for intent in requested}
+
+    def remaining_intents(
+        self,
+        request: CollectionRequest,
+        observations: list[Observation],
+    ) -> list[str]:
+        counts = self.coverage_counts(request, observations)
+        return [
+            intent
+            for intent in self._requested_intents(request)
+            if counts.get(intent, 0) < self.target_sources_per_intent
+        ]
+
     def source_metadata(self) -> list[dict[str, object]]:
         return [
             {
@@ -88,6 +134,15 @@ class PublicMapSourceResearchPlanner:
             }
             for item in self.sources
         ]
+
+    def _requested_intents(self, request: CollectionRequest) -> list[str]:
+        return list(
+            dict.fromkeys(
+                intent
+                for intent in request.intents
+                if intent in self.supported_intents
+            )
+        )
 
     def _anchors(
         self,
@@ -120,8 +175,8 @@ class PublicMapSourceResearchPlanner:
         return values
 
     @staticmethod
-    def _suffix(request: CollectionRequest, language: str) -> str:
-        requested = set(request.intents)
+    def _suffix(intents: list[str], language: str) -> str:
+        requested = set(intents)
         if language == "ru":
             terms: list[str] = []
             if "reviews" in requested:
