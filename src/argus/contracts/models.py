@@ -50,7 +50,17 @@ class CollectionConstraints(BaseModel):
     allowed_domains: list[str] = Field(default_factory=list)
     denied_domains: list[str] = Field(default_factory=list)
     seed_urls: list[HttpUrl] = Field(default_factory=list)
+    source_pool_urls: list[HttpUrl] = Field(default_factory=list, max_length=100)
     language: str | None = None
+    output_language: str = Field(default="ru", min_length=2, max_length=16)
+
+    @field_validator("output_language")
+    @classmethod
+    def normalize_output_language(cls, value: str) -> str:
+        normalized = value.strip().lower().replace("_", "-")
+        if not normalized:
+            raise ValueError("output_language must not be blank")
+        return normalized
 
 
 class CollectionRequest(BaseModel):
