@@ -63,6 +63,21 @@ class OllamaRecipeAgent:
         "скачать",
         "subscribe",
         "подписаться",
+        "submit",
+        "send",
+        "save",
+        "confirm",
+        "accept",
+        "apply",
+        "vote",
+        "like",
+        "отправ",
+        "сохран",
+        "подтверд",
+        "принять",
+        "применить",
+        "голос",
+        "лайк",
     )
 
     def __init__(self, settings: Settings, url_guard: UrlGuard) -> None:
@@ -186,6 +201,8 @@ class OllamaRecipeAgent:
                 )
                 continue
 
+            if not self._safe_click_control(element):
+                continue
             selector = self._selector(element)
             if not selector:
                 continue
@@ -206,6 +223,8 @@ class OllamaRecipeAgent:
             if len(controls) >= self.max_controls:
                 break
             if not isinstance(element, Tag) or element.name in {"a", "button"}:
+                continue
+            if not self._safe_click_control(element):
                 continue
             label = self._label(element)
             if not label or self._denied_label(label):
@@ -296,6 +315,19 @@ class OllamaRecipeAgent:
                 if pixels:
                     actions.append({"scroll": {"pixels": pixels}})
         return actions[: self.max_actions]
+
+    def _safe_click_control(self, element: Tag) -> bool:
+        if element.find_parent("form") is not None or element.get("form") is not None:
+            return False
+        element_type = str(element.get("type") or "").strip().casefold()
+        if element_type in {"submit", "reset"}:
+            return False
+        role = str(element.get("role") or "").strip().casefold()
+        if element.name != "button":
+            return role == "tab" or element.has_attr("aria-expanded") or element.has_attr(
+                "aria-controls"
+            )
+        return True
 
     def _selector(self, element: Tag) -> str | None:
         tag = str(element.name or "*").lower()
