@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from argus.contracts.models import Observation
+from argus.research.url_identity import canonicalize_discovery_url
 
 
 class IntentCoverageEvaluator:
@@ -14,7 +15,7 @@ class IntentCoverageEvaluator:
     an explicit ``intent_evidence`` quality marker.
     """
 
-    version = "intent-evidence-coverage/1"
+    version = "intent-evidence-coverage/2"
     _PUBLICATION_SCHEMA_TYPES = {
         "Article",
         "NewsArticle",
@@ -74,11 +75,16 @@ class IntentCoverageEvaluator:
     def counts(self, observations: Iterable[Observation]) -> dict[str, int]:
         urls_by_intent: dict[str, set[str]] = {}
         for observation in observations:
-            source_identity = observation.url or observation.observation_id
+            source_identity = self._source_identity(observation)
             for intent in self._candidate_intents(observation):
                 if self.supports(observation, intent):
                     urls_by_intent.setdefault(intent, set()).add(source_identity)
         return {intent: len(urls) for intent, urls in urls_by_intent.items()}
+
+    @staticmethod
+    def _source_identity(observation: Observation) -> str:
+        canonical = canonicalize_discovery_url(observation.url)
+        return canonical or observation.url or observation.observation_id
 
     def _candidate_intents(self, observation: Observation) -> set[str]:
         candidates = {
