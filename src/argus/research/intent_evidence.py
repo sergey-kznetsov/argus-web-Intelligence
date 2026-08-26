@@ -9,6 +9,11 @@ import httpx
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest, Evidence, EvidenceSource, Observation
 from argus.normalization.identity import stable_evidence_id
+from argus.normalization.public_map_provenance import classify_public_map_url
+from argus.research.territory_relevance import (
+    TerritoryRelevanceEvaluator,
+    TerritoryRelevanceResult,
+)
 from argus.sources.base import SourceResult
 
 
@@ -20,17 +25,17 @@ class IntentEvidenceFinding:
 
 
 class OllamaIntentEvidenceClassifier:
-    """Attach semantic intent coverage only to exact text from a fetched source.
+    """Attach semantic intent coverage only to verified source-backed facts.
 
     The local model proposes a semantic label and a short verbatim excerpt. ARGUS never
     accepts model prose as Evidence: the excerpt must occur exactly in already extracted
-    page text. Consumer-defined intents are supported without consumer-specific branches;
-    the request intent is only a research label. High-risk event/problem labels additionally
-    require deterministic lexical support. The semantic label is provenance metadata over
-    source-backed Evidence.
+    page text. Before the model is called, the page must deterministically match the requested
+    territory. Built-in intents may additionally require a compatible source shape; for
+    example, ordinary news text cannot become a review merely because a model labels it so.
+    Consumer-defined intents remain consumer-neutral and source-backed.
     """
 
-    version = "exact-excerpt-intent-evidence/3"
+    version = "exact-excerpt-intent-evidence/4"
     builtin_intents = frozenset(
         {"reviews", "comments", "discussions", "complaints", "incidents"}
     )
@@ -89,9 +94,15 @@ class OllamaIntentEvidenceClassifier:
         ),
     }
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        territory_relevance: TerritoryRelevanceEvaluator | None = None,
+    ) -> None:
         self.settings = settings
         self.timeout_seconds = min(20.0, float(settings.fetch_wait_timeout_seconds))
+        self.territory_relevance = territory_relevance or TerritoryRelevanceEvaluator()
 
     async def annotate(self, request: CollectionRequest, result: SourceResult) -> SourceResult:
         requested = self._requested_intents(request.intents)
@@ -104,8 +115,24 @@ class OllamaIntentEvidenceClassifier:
             if item.source_kind == "web_page" and (item.text or "").strip()
         ][: self.max_observations]
         for observation in observations:
+            relevance = self.territory_relevance.evaluate(request, observation)
+            self._record_territory_relevance(observation, relevance)
+            if not relevance.matched:
+                continue
+
             findings = await self._findings(observation.text or "", requested)
-            self._apply_findings(observation, result.evidence, findings)
+            accepted: list[IntentEvidenceFinding] = []
+            for finding in findings:
+                if self._supports_source_shape(observation, finding.intent):
+                    accepted.append(finding)
+                else:
+                    self._record_source_shape_rejection(observation, finding.intent)
+            self._apply_findings(
+                observation,
+                result.evidence,
+                accepted,
+                relevance=relevance,
+            )
         return result
 
     def _requested_intents(self, values: Iterable[str]) -> list[str]:
@@ -206,11 +233,62 @@ class OllamaIntentEvidenceClassifier:
             findings.append(IntentEvidenceFinding(intent, excerpt, marker))
         return findings
 
+    def _supports_source_shape(self, observation: Observation, intent: str) -> bool:
+        if intent != "reviews":
+            return True
+        if observation.entity_type.casefold().strip() == "review":
+            return True
+        if classify_public_map_url(observation.url) is not None:
+            return True
+        return "Review" in self._schema_types(observation)
+
+    @staticmethod
+    def _schema_types(observation: Observation) -> set[str]:
+        normalization = observation.provenance.get("schema_type_normalization")
+        if not isinstance(normalization, dict):
+            return set()
+        values = normalization.get("recognized_types")
+        if not isinstance(values, list):
+            return set()
+        return {str(item) for item in values if str(item).strip()}
+
+    def _record_territory_relevance(
+        self,
+        observation: Observation,
+        relevance: TerritoryRelevanceResult,
+    ) -> None:
+        payload: dict[str, object] = {
+            "version": self.territory_relevance.version,
+            "matched": relevance.matched,
+            "basis": relevance.basis,
+            "matched_anchors": list(relevance.matched_anchors),
+            "navigation_metadata_used": False,
+        }
+        if relevance.distance_meters is not None:
+            payload["distance_meters"] = relevance.distance_meters
+        observation.provenance["territory_relevance"] = payload
+        observation.quality["territory_relevant"] = relevance.matched
+
+    def _record_source_shape_rejection(self, observation: Observation, intent: str) -> None:
+        raw = observation.provenance.get("intent_evidence_rejections")
+        values = list(raw) if isinstance(raw, list) else []
+        values.append(
+            {
+                "classifier_version": self.version,
+                "intent": intent,
+                "reason": "source_shape_not_supported",
+                "model_output_is_evidence": False,
+            }
+        )
+        observation.provenance["intent_evidence_rejections"] = values
+
     def _apply_findings(
         self,
         observation: Observation,
         evidence_items: list[Evidence],
         findings: list[IntentEvidenceFinding],
+        *,
+        relevance: TerritoryRelevanceResult,
     ) -> None:
         if not findings:
             return
@@ -236,6 +314,8 @@ class OllamaIntentEvidenceClassifier:
                     "marker": finding.marker,
                     "custom_intent": finding.intent not in self.builtin_intents,
                     "exact_source_excerpt_verified": True,
+                    "territory_relevance_verified": True,
+                    "territory_relevance_basis": relevance.basis,
                     "semantic_label_model_assisted": True,
                     "model_output_is_evidence": False,
                 }
@@ -266,6 +346,10 @@ class OllamaIntentEvidenceClassifier:
                         "classifier_version": self.version,
                         "custom_intent": finding.intent not in self.builtin_intents,
                         "exact_source_excerpt_verified": True,
+                        "territory_relevance_verified": True,
+                        "territory_relevance_version": self.territory_relevance.version,
+                        "territory_relevance_basis": relevance.basis,
+                        "territory_matched_anchors": list(relevance.matched_anchors),
                         "semantic_label_model_assisted": True,
                         "model_output_is_evidence": False,
                     },
