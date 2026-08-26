@@ -24,6 +24,47 @@ class ResearchPlanner(Protocol):
     async def plan(self, request: CollectionRequest) -> ResearchPlan: ...
 
 
+def _source_pool_tasks(request: CollectionRequest) -> list[SourceTask]:
+    """Turn caller-supplied public URLs into normal research candidates.
+
+    ``source_pool_urls`` supplement ARGUS discovery. They are deliberately emitted as
+    planner tasks (merged after normal initial/discovery work) rather than seed tasks,
+    so a caller-provided URL does not become a privileged source. The destination still
+    passes the normal URL guard, FAST/BROWSER/AGENT lifecycle and Evidence extraction.
+    """
+
+    goals = list(dict.fromkeys(str(intent).strip() for intent in request.intents if intent.strip()))
+    if not goals:
+        return []
+    tasks: list[SourceTask] = []
+    seen: set[str] = set()
+    for raw_url in request.constraints.source_pool_urls:
+        url = str(raw_url)
+        if url in seen:
+            continue
+        seen.add(url)
+        tasks.append(
+            SourceTask(
+                source_id="generic_web",
+                goal=goals[0],
+                url=url,
+                depth=0,
+                metadata={
+                    "research_goals": goals,
+                    "allowed_domains": list(request.constraints.allowed_domains),
+                    "source_pool": {
+                        "kind": "supplemental",
+                        "caller_supplied": True,
+                        "priority": "normal",
+                        "navigation_only": True,
+                        "is_evidence": False,
+                    },
+                },
+            )
+        )
+    return tasks
+
+
 def _merge_curated_sources(
     request: CollectionRequest,
     queries: list[str],
@@ -215,7 +256,10 @@ class HeuristicResearchPlanner:
                 f"curated_public_map_sources={public_map_count};"
                 f"version={self.public_map_sources.version}"
             )
-        return ResearchPlan(queries=queries, notes=notes)
+        source_pool_tasks = _source_pool_tasks(request)
+        if source_pool_tasks:
+            notes.append(f"supplemental_source_pool={len(source_pool_tasks)};priority=normal")
+        return ResearchPlan(queries=queries, tasks=source_pool_tasks, notes=notes)
 
     def _bounded_query(self, value: str) -> str:
         normalized = " ".join(value.split()).strip()
@@ -273,10 +317,11 @@ class OllamaResearchPlanner:
             "Cover the requested intents fairly within a small query budget. For area research include "
             "nearby organizations/places and, when requested, reviews, comments, complaints, resident "
             "discussions, local media, incidents and historical records. Public map/card pages are "
-            "ordinary public web sources: do not assume paid map APIs or access-control bypass. For "
-            "historical context expand current place, former buildings/organizations, construction, "
-            "demolition, reconstruction, old addresses, documents, publications and newly discovered "
-            "entities.\n"
+            "ordinary public web sources: do not assume paid map APIs or access-control bypass. Caller "
+            "supplied source_pool_urls are supplemental candidates, not authoritative or prioritized "
+            "sources; do not reduce normal discovery because they exist. For historical context expand "
+            "current place, former buildings/organizations, construction, demolition, reconstruction, "
+            "old addresses, documents, publications and newly discovered entities.\n"
             f"Input: {request.model_dump_json()}"
         )
         try:
@@ -320,7 +365,16 @@ class OllamaResearchPlanner:
                         f"curated_public_map_sources={public_map_count};"
                         f"version={self.public_map_sources.version}"
                     )
-                return ResearchPlan(queries=queries, notes=notes)
+                source_pool_tasks = _source_pool_tasks(request)
+                if source_pool_tasks:
+                    notes.append(
+                        f"supplemental_source_pool={len(source_pool_tasks)};priority=normal"
+                    )
+                return ResearchPlan(
+                    queries=queries,
+                    tasks=source_pool_tasks,
+                    notes=notes,
+                )
         except (httpx.HTTPError, ValueError, json.JSONDecodeError, TypeError):
             return await self.fallback.plan(request)
 
