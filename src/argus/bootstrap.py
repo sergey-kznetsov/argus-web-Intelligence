@@ -31,6 +31,7 @@ from argus.research.intent_evidence import OllamaIntentEvidenceClassifier
 from argus.research.planner import OllamaResearchPlanner
 from argus.research.searxng import SearxngDiscoveryProvider
 from argus.research.supervisor import HeuristicResearchSupervisor, OllamaResearchSupervisor
+from argus.research.task_context import ResearchInputDiscoveryService, ResearchInputPlanner
 from argus.security.runtime_posture import enforce_runtime_security
 from argus.security.urls import UrlGuard
 from argus.services import ServiceContainer
@@ -85,7 +86,7 @@ def build_discovery(
         providers.append(DuckDuckGoBrowserDiscoveryProvider(settings, browser))
     if not providers:
         return None
-    return DiscoveryService(
+    return ResearchInputDiscoveryService(
         providers=providers,
         url_guard=guard,
         max_queries=settings.discovery_max_queries,
@@ -216,7 +217,7 @@ def build_services(settings: Settings) -> ServiceContainer:
         registry.register(OverpassSourceAdapter(overpass_provider, snapshots, geocoder))
     if settings.wayback_cdx_url:
         registry.register(WaybackSourceAdapter(WaybackCDXProvider(settings), snapshots))
-    planner = OllamaResearchPlanner(settings)
+    planner = ResearchInputPlanner(OllamaResearchPlanner(settings))
     followup_fallback = EvidenceAwareHeuristicFollowupResearchPlanner(coverage=coverage)
     supervisor_fallback = HeuristicResearchSupervisor(
         target_sources_per_intent=2,
