@@ -10,6 +10,7 @@ class AgentRecipeCompiler:
 
     _CLICK_ACTIONS = {"click", "click_element", "click_element_by_index"}
     _FILL_ACTIONS = {"input_text", "fill", "type_text"}
+    _SELECT_ACTIONS = {"select", "select_option"}
     _NAVIGATE_ACTIONS = {"go_to_url", "navigate", "open_url"}
 
     def compile(self, actions: list[dict[str, Any]]) -> list[RecipeStep] | None:
@@ -38,6 +39,13 @@ class AgentRecipeCompiler:
                 if not selector or text is None:
                     return None
                 steps.append(RecipeStep(action="fill", selector=selector, value=text))
+                continue
+            if action_name in self._SELECT_ACTIONS:
+                selector = self._selector(raw) or self._string(params, "selector")
+                value = self._string(params, "value")
+                if not selector or value is None:
+                    return None
+                steps.append(RecipeStep(action="select", selector=selector, value=value))
                 continue
             if action_name in {"send_keys", "press"}:
                 selector = self._selector(raw) or self._string(params, "selector")
