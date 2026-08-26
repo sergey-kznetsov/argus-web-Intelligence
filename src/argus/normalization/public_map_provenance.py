@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 
 _PROVIDER_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
@@ -46,6 +46,49 @@ def classify_public_map_url(url: str) -> dict[str, object] | None:
             "content_claimed": False,
         }
     return None
+
+
+def public_map_surface_kind(url: str) -> str | None:
+    """Return ``entity``, ``search`` or ``map`` for a known public map URL.
+
+    Search-result surfaces are navigation, not attributable entity facts. Keeping this
+    distinction URL-based lets extraction avoid promoting snippets, adverts or nearby results
+    into Evidence for the requested address.
+    """
+
+    classification = classify_public_map_url(url)
+    if classification is None:
+        return None
+    parsed = urlsplit(str(url).strip())
+    segments = [segment.casefold() for segment in parsed.path.split("/") if segment]
+    provider = str(classification["provider"])
+
+    if provider == "yandex_maps_web":
+        if "org" in segments and any(segment.isdigit() for segment in segments):
+            return "entity"
+        query = parse_qs(parsed.query)
+        if "search" in segments or "text" in query:
+            return "search"
+        return "map"
+
+    if provider == "2gis_web":
+        try:
+            firm_index = segments.index("firm")
+        except ValueError:
+            firm_index = -1
+        if firm_index >= 0 and firm_index + 1 < len(segments) and segments[firm_index + 1].isdigit():
+            return "entity"
+        if "search" in segments:
+            return "search"
+        return "map"
+
+    if provider == "google_maps_web":
+        if "place" in segments:
+            return "entity"
+        if "search" in segments:
+            return "search"
+        return "map"
+    return "map"
 
 
 def preferred_public_map_review_url(url: str) -> str | None:
