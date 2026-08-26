@@ -24,8 +24,9 @@ class TerritoryRelevanceEvaluator:
     evaluator uses source-backed text/data or explicit source coordinates only.
     """
 
-    version = "territory-relevance/1"
+    version = "territory-relevance/2"
     point_tolerance_meters = 250
+    max_address_anchor_distance_tokens = 8
     max_data_chars = 30_000
     max_tokens = 12
 
@@ -93,22 +94,26 @@ class TerritoryRelevanceEvaluator:
             address_tokens = [token for token in address_tokens if token not in city_tokens]
             number_tokens = [token for token in address_tokens if self._is_address_number(token)]
             lexical_tokens = [token for token in address_tokens if token not in number_tokens]
-            matched_numbers = [token for token in number_tokens if self.contains_token(haystack, token)]
-            matched_lexical = [token for token in lexical_tokens if self.contains_token(haystack, token)]
+            nearby = self._nearby_address_anchors(haystack, lexical_tokens, number_tokens)
 
-            if number_tokens and matched_numbers and matched_lexical:
-                anchors = tuple((matched_lexical[:2] + matched_numbers[:1]))
-                return TerritoryRelevanceResult(True, "street_and_house_number", anchors)
+            if nearby:
+                return TerritoryRelevanceResult(True, "street_and_house_number", nearby)
 
-            if not number_tokens and len(matched_lexical) >= min(2, len(lexical_tokens)):
-                return TerritoryRelevanceResult(
-                    True,
-                    "address_tokens",
-                    tuple(matched_lexical[:3]),
-                )
+            if not number_tokens:
+                matched_lexical = [
+                    token for token in lexical_tokens if self.contains_token(haystack, token)
+                ]
+                if len(matched_lexical) >= min(2, len(lexical_tokens)):
+                    return TerritoryRelevanceResult(
+                        True,
+                        "address_tokens",
+                        tuple(matched_lexical[:3]),
+                    )
 
             # An address-scoped request must not be downgraded to a city-only match. A search
-            # engine may return an otherwise unrelated page from the same city.
+            # engine may return an otherwise unrelated page from the same city. House-number
+            # matching is proximity-bound so an unrelated date like "27 июля" cannot attach a
+            # street-level article to house 27.
             return TerritoryRelevanceResult(False, "address_anchor_missing")
 
         if city and city in haystack:
@@ -153,6 +158,31 @@ class TerritoryRelevanceEvaluator:
             if len(result) >= self.max_tokens:
                 break
         return result
+
+    def _nearby_address_anchors(
+        self,
+        haystack: str,
+        lexical_tokens: list[str],
+        number_tokens: list[str],
+    ) -> tuple[str, ...]:
+        if not lexical_tokens or not number_tokens:
+            return ()
+        source_tokens = re.findall(r"[\w/-]+", haystack, flags=re.UNICODE)
+        lexical_positions: list[tuple[int, str]] = []
+        number_positions: list[tuple[int, str]] = []
+        lexical_set = set(lexical_tokens)
+        number_set = set(number_tokens)
+        for index, raw in enumerate(source_tokens):
+            token = raw.strip("-/")
+            if token in lexical_set:
+                lexical_positions.append((index, token))
+            if token in number_set:
+                number_positions.append((index, token))
+        for lexical_index, lexical in lexical_positions:
+            for number_index, number in number_positions:
+                if abs(lexical_index - number_index) <= self.max_address_anchor_distance_tokens:
+                    return (lexical, number)
+        return ()
 
     @staticmethod
     def contains_token(haystack: str, token: str) -> bool:
