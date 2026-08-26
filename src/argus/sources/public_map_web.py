@@ -2,21 +2,27 @@ from __future__ import annotations
 
 from argus.contracts.models import CollectionRequest
 from argus.normalization.public_map_provenance import classify_public_map_url
+from argus.research.coverage import IntentCoverageEvaluator
 from argus.sources.base import SourceResult, SourceTask
 from argus.sources.historical_web import HistoricalTimelineWebAdapter
 
 
 class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
-    """Attach public-map provenance and semantically escalate unresolved review goals.
+    """Attach public-map provenance and escalate unresolved semantic goals once.
 
     Public map pages are frequently interactive applications. A technically successful
-    FAST/BROWSER response is not enough when the requested factual goal is reviews but
-    no source-declared review facts were extracted. In that narrow case the adapter may
-    invoke the normal AGENT -> verified browser replay lifecycle once. Agent output is
-    still never accepted as Evidence directly.
+    FAST/BROWSER response is not enough when the requested factual goal has not actually
+    been evidenced. The adapter therefore evaluates source-backed intent coverage rather
+    than navigation metadata. If a supported semantic goal remains uncovered, it may invoke
+    the normal AGENT -> verified browser replay lifecycle once. Agent output is never
+    accepted as Evidence directly.
     """
 
-    semantic_escalation_version = "public-map-goal-escalation/1"
+    semantic_escalation_version = "public-map-goal-escalation/2"
+    semantic_escalation_goals = frozenset(
+        {"reviews", "comments", "discussions", "complaints", "incidents"}
+    )
+    intent_coverage = IntentCoverageEvaluator()
 
     async def extract(
         self,
@@ -25,14 +31,24 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
         request: CollectionRequest,
     ) -> SourceResult:
         result = await super().extract(task, fetched, request)
+        result = await self._annotate_semantic_evidence(request, result)
 
         if self._should_semantically_escalate(task, fetched, result):
+            goals = self._semantic_goals(task)
             task.metadata["semantic_agent_retry_attempted"] = True
-            task.metadata["semantic_agent_retry_reason"] = "review_goal_without_review_fact"
+            task.metadata["semantic_agent_retry_goals"] = goals
+            task.metadata["semantic_agent_retry_reason"] = (
+                "review_goal_without_review_fact"
+                if goals == ["reviews"]
+                else "semantic_goal_without_evidence"
+            )
+            before_score = self._semantic_goal_fact_count(result, goals)
             guided = await self._agent_guided_fetch(task, context_fetch=fetched)
             if guided is not None and not guided.blocked:
                 guided_result = await super().extract(task, guided, request)
-                if self._review_fact_count(guided_result) > self._review_fact_count(result):
+                guided_result = await self._annotate_semantic_evidence(request, guided_result)
+                after_score = self._semantic_goal_fact_count(guided_result, goals)
+                if after_score > before_score:
                     result = guided_result
                     task.metadata["semantic_agent_retry_accepted"] = True
                 else:
@@ -41,6 +57,15 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
                 task.metadata["semantic_agent_retry_accepted"] = False
 
         self._attach_public_map_provenance(result, task)
+        return result
+
+    async def _annotate_semantic_evidence(
+        self,
+        request: CollectionRequest,
+        result: SourceResult,
+    ) -> SourceResult:
+        """Hook for source-backed semantic classifiers in the complete web adapter."""
+        del request
         return result
 
     def _should_semantically_escalate(
@@ -55,13 +80,34 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             return False
         if classify_public_map_url(str(fetched.final_url)) is None:
             return False
-        goals = set(self._research_goals(task))
-        if "reviews" not in goals:
+        goals = self._semantic_goals(task)
+        if not goals:
             return False
-        return self._review_fact_count(result) == 0
+        return self._semantic_goal_fact_count(result, goals) == 0
+
+    def _semantic_goals(self, task: SourceTask) -> list[str]:
+        return sorted(
+            {
+                goal
+                for goal in self._research_goals(task)
+                if goal in self.semantic_escalation_goals
+            }
+        )
+
+    def _semantic_goal_fact_count(
+        self,
+        result: SourceResult,
+        goals: list[str],
+    ) -> int:
+        return sum(
+            1
+            for observation in result.observations
+            if any(self.intent_coverage.supports(observation, goal) for goal in goals)
+        )
 
     @staticmethod
     def _review_fact_count(result: SourceResult) -> int:
+        """Backward-compatible structured review count for callers/tests."""
         return sum(1 for item in result.observations if item.entity_type == "review")
 
     def _attach_public_map_provenance(
@@ -74,6 +120,7 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             "attempted": bool(task.metadata.get("semantic_agent_retry_attempted")),
             "accepted": bool(task.metadata.get("semantic_agent_retry_accepted")),
             "reason": task.metadata.get("semantic_agent_retry_reason"),
+            "goals": list(task.metadata.get("semantic_agent_retry_goals") or []),
             "agent_output_is_evidence": False,
         }
         for observation in result.observations:
@@ -101,10 +148,11 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             "paid_api": False,
             "semantic_goal_escalation": {
                 "version": self.semantic_escalation_version,
-                "review_goal": True,
+                "goals": sorted(self.semantic_escalation_goals),
                 "requires_agent_backend": True,
                 "agent_output_is_evidence": False,
                 "verified_browser_replay": True,
+                "source_backed_goal_evidence": True,
             },
         }
         return payload
