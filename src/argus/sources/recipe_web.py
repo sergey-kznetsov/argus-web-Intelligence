@@ -332,7 +332,7 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
         store = getattr(self, "_recipe_candidates_pending_goal_verification", None)
         if not isinstance(store, dict):
             store = {}
-            setattr(self, "_recipe_candidates_pending_goal_verification", store)
+            self._recipe_candidates_pending_goal_verification = store
         return store
 
     async def _recipe_steps_for_context(
