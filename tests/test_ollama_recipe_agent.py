@@ -87,12 +87,18 @@ async def test_native_agent_uses_only_safe_page_controls(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_controls_exclude_denied_and_cross_domain_actions():
+async def test_controls_exclude_denied_cross_domain_and_state_changing_actions():
     agent = build_agent()
     controls = await agent._controls(
         """
         <button aria-label="Отзывы">Отзывы</button>
         <button aria-label="Купить">Купить</button>
+        <form action="/feedback" method="post">
+          <button type="submit" aria-label="Показать">Показать</button>
+        </form>
+        <button type="button" aria-label="Отправить">Отправить</button>
+        <div role="button" data-testid="vote">Подробнее</div>
+        <div role="tab" data-testid="reviews-tab">Отзывы посетителей</div>
         <a href="/details">Подробнее</a>
         <a href="https://outside.test/details">Подробнее снаружи</a>
         """,
@@ -100,9 +106,14 @@ async def test_controls_exclude_denied_and_cross_domain_actions():
         allowed_domains=["example.com"],
     )
 
-    assert [item.label for item in controls] == ["Отзывы", "Подробнее"]
+    assert [item.label for item in controls] == [
+        "Отзывы",
+        "Подробнее",
+        "Отзывы посетителей",
+    ]
     assert controls[0].kind == "click"
     assert controls[1].url == "https://example.com/details"
+    assert controls[2].selector == 'div[data-testid="reviews-tab"]'
 
 
 @pytest.mark.asyncio
