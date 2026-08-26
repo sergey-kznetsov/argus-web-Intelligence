@@ -140,7 +140,7 @@ class Settings(BaseSettings):
 
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
-    agent_backend: str = "browser-use"
+    agent_backend: str = "ollama-recipe"
     agent_enabled: bool = False
     allow_internal_targets: list[str] = Field(default_factory=list)
 
