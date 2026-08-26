@@ -163,6 +163,7 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             self.discovery is None
             or not requested_intents
             or self.max_curated_public_map_rounds <= 0
+            or record.checkpoint.get("curated_public_map_complete") is True
         ):
             return
         round_count = int(record.checkpoint.get("curated_public_map_rounds", 0) or 0)
@@ -177,6 +178,32 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
 
         committed = await self.repository.list_observations(record.collection_id)
         all_observations = [*committed, *observations]
+        coverage_counts = self.public_map_source_planner.coverage_counts(
+            record.request,
+            all_observations,
+        )
+        remaining_intents = self.public_map_source_planner.remaining_intents(
+            record.request,
+            all_observations,
+        )
+        coverage_checkpoint = {
+            "curated_public_map_coverage": coverage_counts,
+            "curated_public_map_gap_intents": remaining_intents,
+            "curated_public_map_target_sources_per_intent": (
+                self.public_map_source_planner.target_sources_per_intent
+            ),
+            "curated_public_map_coverage_version": self.public_map_source_planner.coverage.version,
+            "curated_public_map_source_version": self.public_map_source_planner.version,
+        }
+        if not remaining_intents:
+            record.checkpoint = {
+                **record.checkpoint,
+                **coverage_checkpoint,
+                "curated_public_map_complete": True,
+                "curated_public_map_exhausted_for_current_anchors": False,
+            }
+            return
+
         seen = {
             str(query)
             for bucket in (
@@ -198,10 +225,15 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             limit=query_limit,
         )
         if not queries:
+            # No query can be produced from the currently known anchors. This is not
+            # factual completion: a later source may reveal a new entity and reopen the
+            # curated map path within the remaining round/page budgets.
             record.checkpoint = {
                 **record.checkpoint,
-                "curated_public_map_complete": True,
-                "curated_public_map_source_version": self.public_map_source_planner.version,
+                **coverage_checkpoint,
+                "curated_public_map_complete": False,
+                "curated_public_map_exhausted_for_current_anchors": True,
+                "curated_public_map_last_candidates": 0,
             }
             return
 
@@ -211,7 +243,7 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
         )
         branch_request = record.request.model_copy(
             update={
-                "intents": requested_intents,
+                "intents": remaining_intents,
                 "constraints": constraints,
             }
         )
@@ -227,14 +259,17 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             branch_task.metadata["curated_public_map_round"] = round_count + 1
             branch_task.metadata["curated_public_map_from"] = task.url
             branch_task.metadata["curated_public_map_queries"] = list(queries)
+            branch_task.metadata["curated_public_map_gap_intents"] = list(remaining_intents)
             additions.append(branch_task)
         self._merge_tasks(pending, additions, record.collection_id)
         record.checkpoint = {
             **record.checkpoint,
+            **coverage_checkpoint,
+            "curated_public_map_complete": False,
+            "curated_public_map_exhausted_for_current_anchors": False,
             "curated_public_map_rounds": round_count + 1,
             "curated_public_map_queries": sorted(seen),
             "curated_public_map_last_candidates": len(additions),
-            "curated_public_map_source_version": self.public_map_source_planner.version,
         }
 
     async def _expand_research_gaps(
