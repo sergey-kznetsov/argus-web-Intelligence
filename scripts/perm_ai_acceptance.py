@@ -12,6 +12,7 @@ from argus.web.profiles import web_test_profiles
 ADDRESS = "Комсомольский проспект, 27"
 CITY = "Пермь"
 PROFILE_IDS = ("kraken", "janus", "historical")
+ACCEPTABLE_STATUSES = {"completed", "partial"}
 
 
 def _request(profile_id: str, profile: dict[str, object]) -> CollectionRequest:
@@ -60,6 +61,20 @@ def _overview(profile_id: str, report: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _acceptance_failures(overview: list[dict[str, object]]) -> list[str]:
+    failures: list[str] = []
+    for item in overview:
+        profile = str(item.get("profile") or "unknown")
+        status = str(item.get("status") or "")
+        if status not in ACCEPTABLE_STATUSES:
+            failures.append(f"{profile}: terminal status is {status or 'missing'}")
+        if int(item.get("observation_count") or 0) <= 0:
+            failures.append(f"{profile}: no factual observations")
+        if int(item.get("evidence_count") or 0) <= 0:
+            failures.append(f"{profile}: no evidence")
+    return failures
+
+
 async def main() -> None:
     output_dir = Path(".argus/probes/perm-ai-acceptance")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -92,20 +107,21 @@ async def main() -> None:
         )
         overview.append(_overview(profile_id, report))
 
+    failures = _acceptance_failures(overview)
+    summary = {
+        "territory": {"city": CITY, "address": ADDRESS},
+        "ai_required": True,
+        "accepted": not failures,
+        "failures": failures,
+        "profiles": overview,
+    }
     (output_dir / "overview.json").write_text(
-        json.dumps(
-            {
-                "territory": {"city": CITY, "address": ADDRESS},
-                "ai_required": True,
-                "profiles": overview,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-        + "\n",
+        json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    print(json.dumps(overview, ensure_ascii=False, indent=2))
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if failures:
+        raise SystemExit("live Perm AI acceptance failed")
 
 
 if __name__ == "__main__":
