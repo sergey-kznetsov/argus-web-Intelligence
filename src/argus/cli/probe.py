@@ -107,7 +107,7 @@ def build_probe_acceptance(request: CollectionRequest, result) -> dict[str, Any]
     """Summarize whether requested research intents were backed by factual observations."""
 
     evaluator = IntentCoverageEvaluator()
-    counts = evaluator.counts(result.observations)
+    counts = evaluator.counts(result.observations, request=request)
     requested: list[str] = []
     seen: set[str] = set()
     for value in request.intents:
@@ -124,7 +124,10 @@ def build_probe_acceptance(request: CollectionRequest, result) -> dict[str, Any]
     )
     public_map_providers: set[str] = set()
     for observation in result.observations:
-        if not any(evaluator.supports(observation, intent) for intent in requested):
+        if not any(
+            evaluator.supports(observation, intent, request=request)
+            for intent in requested
+        ):
             continue
         map_source = observation.provenance.get("public_map_source")
         if not isinstance(map_source, dict):
