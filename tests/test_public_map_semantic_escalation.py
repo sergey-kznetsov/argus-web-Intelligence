@@ -104,6 +104,22 @@ def test_blocked_deterministic_review_view_suppresses_agent_bypass():
     assert adapter._should_semantically_escalate(source_task, fetched(), result) is False
 
 
+def test_agent_recipe_is_bound_to_the_dom_url_it_analyzed():
+    source_task = task("reviews")
+    source_task.metadata["collection_id"] = "collection-1"
+    review_view = fetched("https://2gis.ru/izhevsk/firm/123456/tab/reviews")
+
+    agent_task = PublicMapProvenanceWebAdapter._agent_task_for_context(
+        source_task,
+        review_view,
+    )
+
+    assert agent_task is not source_task
+    assert agent_task.url == review_view.final_url
+    assert agent_task.goal == source_task.goal
+    assert agent_task.metadata is source_task.metadata
+
+
 def test_public_map_semantic_escalation_is_not_used_for_unrelated_web_pages():
     adapter = adapter_with_agent()
     result = SourceResult(observations=[observation("document")])
