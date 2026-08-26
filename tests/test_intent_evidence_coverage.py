@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import pytest
 
+from argus.config import Settings
 from argus.contracts.models import CollectionRequest, Observation
 from argus.research.coverage import (
     EvidenceAwareHeuristicFollowupResearchPlanner,
     IntentCoverageEvaluator,
 )
+from argus.research.followup import OllamaFollowupResearchPlanner
 
 
 def observation(
@@ -90,6 +92,43 @@ def test_archive_capture_counts_as_historical_context():
     )
 
     assert evaluator.supports(historical, "historical_context") is True
+
+
+def test_default_ollama_followup_does_not_credit_navigation_goal_as_evidence():
+    planner = OllamaFollowupResearchPlanner(Settings())
+    page = observation(goals=["reviews"])
+
+    summary = planner._summary(request("reviews"), [page])
+
+    assert planner._factual_coverage_counts([page]).get("reviews", 0) == 0
+    assert summary == [
+        {
+            "source": "generic_web",
+            "source_kind": "web_page",
+            "entity_type": "document",
+            "title": "Source page",
+            "host": "example.org",
+            "published_at": None,
+            "navigation_goals": ["reviews"],
+            "navigation_goals_are_evidence": False,
+            "evidenced_intents": [],
+        }
+    ]
+
+
+def test_default_ollama_followup_marks_actual_review_as_evidenced():
+    planner = OllamaFollowupResearchPlanner(Settings())
+    review = observation(
+        entity_type="review",
+        source_kind="json_ld",
+        goals=["public_mentions"],
+    )
+
+    summary = planner._summary(request("reviews"), [review])
+
+    assert planner._factual_coverage_counts([review])["reviews"] == 1
+    assert summary[0]["navigation_goals"] == ["public_mentions"]
+    assert summary[0]["evidenced_intents"] == ["reviews"]
 
 
 @pytest.mark.asyncio
