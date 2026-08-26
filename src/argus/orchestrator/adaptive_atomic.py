@@ -5,6 +5,7 @@ from argus.orchestrator.area_atomic import AreaAwareAtomicCollectionOrchestrator
 from argus.research.followup import FollowupResearchPlanner
 from argus.research.historical_sources import HistoricalSourceResearchPlanner
 from argus.research.public_map_sources import PublicMapSourceResearchPlanner
+from argus.research.supervisor import ResearchSupervisor
 from argus.sources.base import SourceTask
 
 
@@ -17,6 +18,7 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
         followup_planner: FollowupResearchPlanner | None = None,
         historical_source_planner: HistoricalSourceResearchPlanner | None = None,
         public_map_source_planner: PublicMapSourceResearchPlanner | None = None,
+        research_supervisor: ResearchSupervisor | None = None,
         max_followup_rounds: int = 3,
         max_curated_historical_rounds: int = 3,
         max_curated_public_map_rounds: int = 3,
@@ -28,6 +30,7 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             historical_source_planner or HistoricalSourceResearchPlanner()
         )
         self.public_map_source_planner = public_map_source_planner or PublicMapSourceResearchPlanner()
+        self.research_supervisor = research_supervisor
         self.max_followup_rounds = max(0, int(max_followup_rounds))
         self.max_curated_historical_rounds = max(0, int(max_curated_historical_rounds))
         self.max_curated_public_map_rounds = max(0, int(max_curated_public_map_rounds))
@@ -225,9 +228,6 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             limit=query_limit,
         )
         if not queries:
-            # No query can be produced from the currently known anchors. This is not
-            # factual completion: a later source may reveal a new entity and reopen the
-            # curated map path within the remaining round/page budgets.
             record.checkpoint = {
                 **record.checkpoint,
                 **coverage_checkpoint,
@@ -304,26 +304,68 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             max(1, int(getattr(self.discovery, "max_queries", 8))),
             remaining_page_budget,
         )
+
+        supervisor_decision = None
+        followup_request = record.request
+        supervisor_queries: list[str] = []
+        if self.research_supervisor is not None:
+            supervisor_decision = await self.research_supervisor.assess(
+                record.request,
+                all_observations,
+                errors=record.errors,
+                seen_queries=seen,
+                pending_count=len(pending),
+                remaining_page_budget=remaining_page_budget,
+            )
+            record.checkpoint = {
+                **record.checkpoint,
+                "research_supervisor": supervisor_decision.as_dict(),
+            }
+            if not supervisor_decision.continue_research:
+                record.checkpoint = {
+                    **record.checkpoint,
+                    "adaptive_followup_complete": True,
+                    "adaptive_followup_notes": ["research_supervisor:no_factual_gap"],
+                }
+                return
+            if supervisor_decision.priority_intents:
+                followup_request = record.request.model_copy(
+                    update={"intents": list(supervisor_decision.priority_intents)}
+                )
+            supervisor_queries = list(supervisor_decision.query_hints)
+
         plan = await self.followup_planner.plan_followups(
-            record.request,
+            followup_request,
             all_observations,
             seen_queries=seen,
             max_queries=max_queries,
         )
-        queries = [query for query in plan.queries if query.strip()]
+        queries = self._merge_followup_queries(
+            supervisor_queries,
+            plan.queries,
+            seen_queries=seen,
+            limit=max_queries,
+        )
+        notes = list(plan.notes)
+        if supervisor_decision is not None:
+            notes.append(
+                "research_supervisor:"
+                f"{supervisor_decision.version}:"
+                f"model_assisted={str(supervisor_decision.model_assisted).lower()}"
+            )
         if not queries:
             record.checkpoint = {
                 **record.checkpoint,
                 "adaptive_followup_complete": True,
-                "adaptive_followup_notes": plan.notes,
+                "adaptive_followup_notes": notes,
             }
             return
 
         seen.update(queries)
-        constraints = record.request.constraints.model_copy(
+        constraints = followup_request.constraints.model_copy(
             update={"max_pages": remaining_page_budget}
         )
-        branch_request = record.request.model_copy(update={"constraints": constraints})
+        branch_request = followup_request.model_copy(update={"constraints": constraints})
         outcome = await self.discovery.discover(queries, branch_request)
         additions: list[SourceTask] = []
         for branch_task in outcome.tasks[:remaining_page_budget]:
@@ -332,12 +374,39 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             branch_task.metadata["adaptive_followup_round"] = round_count + 1
             branch_task.metadata["adaptive_followup_from"] = task.url
             branch_task.metadata["adaptive_followup_queries"] = list(queries)
+            if supervisor_decision is not None:
+                branch_task.metadata["research_supervisor_version"] = supervisor_decision.version
+                branch_task.metadata["research_supervisor_model_assisted"] = (
+                    supervisor_decision.model_assisted
+                )
+                branch_task.metadata["research_supervisor_is_evidence"] = False
             additions.append(branch_task)
         self._merge_tasks(pending, additions, record.collection_id)
         record.checkpoint = {
             **record.checkpoint,
             "adaptive_followup_rounds": round_count + 1,
             "adaptive_followup_queries": sorted(seen),
-            "adaptive_followup_notes": plan.notes,
+            "adaptive_followup_notes": notes,
             "adaptive_followup_last_candidates": len(additions),
         }
+
+    @staticmethod
+    def _merge_followup_queries(
+        supervisor_queries: list[str],
+        planner_queries: list[str],
+        *,
+        seen_queries: set[str],
+        limit: int,
+    ) -> list[str]:
+        seen = {str(item).strip().casefold() for item in seen_queries if str(item).strip()}
+        result: list[str] = []
+        for raw in [*supervisor_queries, *planner_queries]:
+            value = " ".join(str(raw).split()).strip()[:512].rstrip()
+            key = value.casefold()
+            if not value or key in seen:
+                continue
+            seen.add(key)
+            result.append(value)
+            if len(result) >= max(0, int(limit)):
+                break
+        return result
