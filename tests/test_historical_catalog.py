@@ -6,7 +6,6 @@ import pytest
 from argus.research.historical_catalog import (
     HistoricalSourceCatalog,
     HistoricalSourceCatalogError,
-    HistoricalSourceProfile,
 )
 from argus.research.historical_sources import (
     RUSSIA_USSR_HISTORICAL_SOURCES,
