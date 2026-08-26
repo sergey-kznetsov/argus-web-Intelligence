@@ -1,17 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from pathlib import Path
 
 from argus.contracts.models import CollectionRequest, Observation
-
-
-@dataclass(frozen=True, slots=True)
-class HistoricalSourceProfile:
-    source_id: str
-    domain: str
-    kind: str
-    priority: int
-    visual: bool = False
+from argus.research.historical_catalog import HistoricalSourceCatalog, HistoricalSourceProfile
 
 
 RUSSIA_USSR_HISTORICAL_SOURCES: tuple[HistoricalSourceProfile, ...] = (
@@ -29,16 +21,23 @@ RUSSIA_USSR_HISTORICAL_SOURCES: tuple[HistoricalSourceProfile, ...] = (
 
 
 class HistoricalSourceResearchPlanner:
-    """Generate bounded discovery queries for verified public historical source families."""
+    """Generate bounded discovery queries from built-in and operator-added historical pools."""
 
-    version = "russia-ussr-historical-sources/1"
+    version = "russia-ussr-historical-sources/2"
 
     def __init__(
         self,
-        sources: tuple[HistoricalSourceProfile, ...] = RUSSIA_USSR_HISTORICAL_SOURCES,
+        sources: tuple[HistoricalSourceProfile, ...] | None = None,
         *,
+        catalog_file: Path | None = None,
         max_anchor_chars: int = 180,
     ) -> None:
+        if sources is None:
+            catalog = HistoricalSourceCatalog(RUSSIA_USSR_HISTORICAL_SOURCES)
+            sources = catalog.profiles(catalog_file)
+            self.catalog_version = catalog.version
+        else:
+            self.catalog_version = "explicit-source-list"
         self.sources = tuple(sorted(sources, key=lambda item: (item.priority, item.source_id)))
         self.max_anchor_chars = max(32, int(max_anchor_chars))
 
@@ -80,6 +79,10 @@ class HistoricalSourceResearchPlanner:
                 "kind": item.kind,
                 "priority": item.priority,
                 "visual": item.visual,
+                "query_suffix": item.query_suffix,
+                "origin": item.origin,
+                "catalog_version": self.catalog_version,
+                "catalog_entry_is_evidence": False,
             }
             for item in self.sources
         ]
@@ -112,12 +115,14 @@ class HistoricalSourceResearchPlanner:
         return values
 
     def _query(self, profile: HistoricalSourceProfile, anchor: str) -> str:
-        suffix = ""
-        if profile.kind in {"historical_photos", "photo_archive"}:
-            suffix = " фото фотография"
-        elif profile.kind == "historical_maps":
-            suffix = " карта план"
-        return f'site:{profile.domain} "{anchor}"{suffix}'[:512].rstrip()
+        suffix = profile.query_suffix
+        if not suffix:
+            if profile.kind in {"historical_photos", "photo_archive"}:
+                suffix = "фото фотография"
+            elif profile.kind == "historical_maps":
+                suffix = "карта план"
+        suffix_text = f" {suffix}" if suffix else ""
+        return f'site:{profile.domain} "{anchor}"{suffix_text}'[:512].rstrip()
 
     def _clean_anchor(self, value: str) -> str | None:
         clean = " ".join(value.replace('"', " ").replace("\\", " ").split()).strip()
