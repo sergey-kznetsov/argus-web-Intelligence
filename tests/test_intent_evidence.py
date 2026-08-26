@@ -141,12 +141,44 @@ async def test_unrelated_address_is_rejected_before_llm(monkeypatch):
         raise AssertionError("semantic LLM must not run for territorially irrelevant pages")
 
     monkeypatch.setattr(classifier, "_findings", fail_if_called)
-    result = await classifier.annotate(perm_request("complaints", "incidents"), SourceResult(observations=[item]))
+    result = await classifier.annotate(
+        perm_request("complaints", "incidents"), SourceResult(observations=[item])
+    )
 
     assert result.evidence == []
     assert item.quality["territory_relevant"] is False
     assert "intent_evidence" not in item.quality
     assert item.provenance["territory_relevance"]["basis"] == "address_anchor_missing"
+
+
+@pytest.mark.asyncio
+async def test_public_map_search_surface_is_navigation_not_semantic_evidence(monkeypatch):
+    classifier = OllamaIntentEvidenceClassifier(Settings(browser_serp_enabled=False))
+    item = observation(
+        text=(
+            "Комсомольский проспект 27. Прикамье. Отель. Цена от 4000 ₽. "
+            "Реклама в 2ГИС."
+        ),
+        url="https://2gis.ru/perm/search/%D0%9A%D0%BE%D0%BC%D1%81%D0%BE%D0%BC%D0%BE%D0%BB%D1%8C%D1%81%D0%BA%D0%B8%D0%B9%2027",
+    )
+
+    async def fail_if_called(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("semantic LLM must not classify public map search-result chrome")
+
+    monkeypatch.setattr(classifier, "_findings", fail_if_called)
+    result = await classifier.annotate(
+        perm_request("parking_capacity", "parking_access", "parking_pricing"),
+        SourceResult(observations=[item]),
+    )
+
+    assert result.evidence == []
+    assert item.quality["territory_relevant"] is True
+    assert "intent_evidence" not in item.quality
+    reasons = {
+        entry["reason"] for entry in item.provenance["intent_evidence_rejections"]
+    }
+    assert reasons == {"navigation_search_surface_not_factual_entity"}
 
 
 @pytest.mark.asyncio
