@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-_CATALOG_ENV = "ARGUS_HISTORICAL_SOURCE_CATALOG_FILE"
 _SOURCE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _KIND_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
-_DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9][a-z0-9-]{0,62}$")
+_DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z0-9][a-z0-9-]{0,62}$"
+)
 _MAX_CUSTOM_SOURCES = 200
 _MAX_SUFFIX_CHARS = 80
 
@@ -43,14 +44,8 @@ class HistoricalSourceCatalog:
         self.builtin = tuple(builtin)
 
     def profiles(self, catalog_file: Path | None = None) -> tuple[HistoricalSourceProfile, ...]:
-        path = catalog_file or self._path_from_environment()
-        custom = self._load_file(path) if path is not None else ()
+        custom = self._load_file(catalog_file) if catalog_file is not None else ()
         return self._merge(self.builtin, custom)
-
-    @staticmethod
-    def _path_from_environment() -> Path | None:
-        raw = os.environ.get(_CATALOG_ENV, "").strip()
-        return Path(raw) if raw else None
 
     def _load_file(self, path: Path) -> tuple[HistoricalSourceProfile, ...]:
         try:
