@@ -176,18 +176,27 @@ class OllamaFollowupResearchPlanner:
     ) -> FollowupPlan:
         if max_queries <= 0:
             return FollowupPlan()
-        summary = self._summary(observations)
+        summary = self._summary(request, observations)
+        coverage_counts = self._factual_coverage_counts(observations)
+        requested_counts = {
+            intent: int(coverage_counts.get(intent, 0)) for intent in request.intents
+        }
+        uncovered = [intent for intent in request.intents if requested_counts[intent] == 0]
         prompt = (
             "You are ARGUS iterative research planner. Your job is to find gaps in web research, "
             "not to answer the research question and not to invent facts. Return strict JSON with "
-            "keys queries (array of search strings) and notes (array). Use only the supplied factual "
-            "coverage summary to decide what still needs to be searched. Prefer missing source types, "
-            "nearby entities, reviews/comments/complaints/discussions, local media and historical "
-            "records when requested. Do not repeat queries from seen_queries. Keep queries precise.\n"
+            "keys queries (array of search strings) and notes (array). Use only FACTUAL COVERAGE "
+            "and evidenced_intents to decide what has already been proven. navigation_goals only "
+            "describe why ARGUS visited a page; they are NOT evidence and MUST NOT be treated as "
+            "coverage. Prefer gaps in requested intents, missing source types, nearby entities, "
+            "reviews/comments/complaints/discussions, local media and historical records when "
+            "requested. Do not repeat queries from seen_queries. Keep queries precise.\n"
             f"Maximum queries: {max_queries}\n"
             f"Request: {request.model_dump_json()}\n"
             f"Seen queries: {json.dumps(sorted(seen_queries)[-100:], ensure_ascii=False)}\n"
-            f"Coverage summary: {json.dumps(summary, ensure_ascii=False)}"
+            f"Factual coverage counts: {json.dumps(requested_counts, ensure_ascii=False)}\n"
+            f"Uncovered requested intents: {json.dumps(uncovered, ensure_ascii=False)}\n"
+            f"Observation summary: {json.dumps(summary, ensure_ascii=False)}"
         )
         try:
             async with httpx.AsyncClient(timeout=20.0, trust_env=False) as client:
@@ -230,14 +239,28 @@ class OllamaFollowupResearchPlanner:
                 max_queries=max_queries,
             )
 
-    def _summary(self, observations: list[Observation]) -> list[dict[str, object]]:
+    def _summary(
+        self,
+        request: CollectionRequest,
+        observations: list[Observation],
+    ) -> list[dict[str, object]]:
         result: list[dict[str, object]] = []
         used_chars = 0
+        coverage = self._coverage_evaluator()
+        requested_intents = list(dict.fromkeys(request.intents))
+
         for observation in observations[-self.max_observations :]:
             host = urlsplit(observation.url).hostname or ""
             goals = observation.data.get("research_goals", [])
             if not isinstance(goals, list):
                 goals = observation.provenance.get("research_goals", [])
+            evidenced_intents: list[str] = []
+            if coverage is not None:
+                evidenced_intents = [
+                    intent
+                    for intent in requested_intents
+                    if bool(coverage.supports(observation, intent))
+                ]
             item: dict[str, object] = {
                 "source": observation.source,
                 "source_kind": observation.source_kind,
@@ -247,7 +270,9 @@ class OllamaFollowupResearchPlanner:
                 "published_at": (
                     observation.published_at.isoformat() if observation.published_at else None
                 ),
-                "research_goals": goals if isinstance(goals, list) else [],
+                "navigation_goals": goals if isinstance(goals, list) else [],
+                "navigation_goals_are_evidence": False,
+                "evidenced_intents": evidenced_intents,
             }
             encoded = json.dumps(item, ensure_ascii=False)
             if used_chars + len(encoded) > self.max_summary_chars:
@@ -255,6 +280,24 @@ class OllamaFollowupResearchPlanner:
             used_chars += len(encoded)
             result.append(item)
         return result
+
+    def _factual_coverage_counts(self, observations: list[Observation]) -> dict[str, int]:
+        coverage = self._coverage_evaluator()
+        if coverage is None:
+            return {}
+        values = coverage.counts(observations)
+        return {str(key): int(value) for key, value in values.items()}
+
+    def _coverage_evaluator(self):
+        """Reuse the fallback's evaluator without importing coverage.py back into this module."""
+        coverage = getattr(self.fallback, "coverage", None)
+        if coverage is None:
+            return None
+        if not callable(getattr(coverage, "supports", None)):
+            return None
+        if not callable(getattr(coverage, "counts", None)):
+            return None
+        return coverage
 
     def _bounded_queries(
         self,
