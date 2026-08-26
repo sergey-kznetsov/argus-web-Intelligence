@@ -73,7 +73,7 @@ class HeuristicFollowupResearchPlanner:
         territory = self._territory_text(request)
         language = self._language(request, territory)
         dictionary = self._RU_TERMS if language == "ru" else self._EN_TERMS
-        counts = self._intent_counts(observations)
+        counts = self._intent_counts(observations, request=request)
         queries: list[str] = []
         notes: list[str] = []
         seen = {item.casefold() for item in seen_queries}
@@ -110,8 +110,13 @@ class HeuristicFollowupResearchPlanner:
                 notes.append("coverage_gap:historical_timeline")
         return FollowupPlan(queries=queries, notes=notes)
 
-    def _intent_counts(self, observations: list[Observation]) -> dict[str, int]:
-        return self.coverage.counts(observations)
+    def _intent_counts(
+        self,
+        observations: list[Observation],
+        *,
+        request: CollectionRequest | None = None,
+    ) -> dict[str, int]:
+        return self.coverage.counts(observations, request=request)
 
     @staticmethod
     def _territory_text(request: CollectionRequest) -> str:
@@ -171,7 +176,7 @@ class OllamaFollowupResearchPlanner:
         if max_queries <= 0:
             return FollowupPlan()
         summary = self._summary(request, observations)
-        coverage_counts = self._factual_coverage_counts(observations)
+        coverage_counts = self._factual_coverage_counts(observations, request=request)
         requested_counts = {
             intent: int(coverage_counts.get(intent, 0)) for intent in request.intents
         }
@@ -250,7 +255,7 @@ class OllamaFollowupResearchPlanner:
             evidenced_intents = [
                 intent
                 for intent in requested_intents
-                if self.coverage.supports(observation, intent)
+                if self.coverage.supports(observation, intent, request=request)
             ]
             item: dict[str, object] = {
                 "source": observation.source,
@@ -272,8 +277,13 @@ class OllamaFollowupResearchPlanner:
             result.append(item)
         return result
 
-    def _factual_coverage_counts(self, observations: list[Observation]) -> dict[str, int]:
-        values = self.coverage.counts(observations)
+    def _factual_coverage_counts(
+        self,
+        observations: list[Observation],
+        *,
+        request: CollectionRequest | None = None,
+    ) -> dict[str, int]:
+        values = self.coverage.counts(observations, request=request)
         return {str(key): int(value) for key, value in values.items()}
 
     def _bounded_queries(
