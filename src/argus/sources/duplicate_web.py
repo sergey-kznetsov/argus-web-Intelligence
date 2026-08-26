@@ -28,6 +28,7 @@ class DuplicateAwareWebAdapter(CanonicalLinkWebAdapter):
         "discovery_provider",
         "discovery_engines",
         "discovery_rank",
+        "discovery_query",
         "discovery_original_url",
         "discovery_canonical_url",
         "discovery_domain_priority",
