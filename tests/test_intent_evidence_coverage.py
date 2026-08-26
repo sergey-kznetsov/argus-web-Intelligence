@@ -8,7 +8,10 @@ from argus.research.coverage import (
     EvidenceAwareHeuristicFollowupResearchPlanner,
     IntentCoverageEvaluator,
 )
-from argus.research.followup import OllamaFollowupResearchPlanner
+from argus.research.followup import (
+    HeuristicFollowupResearchPlanner,
+    OllamaFollowupResearchPlanner,
+)
 
 
 def observation(
@@ -129,6 +132,23 @@ def test_default_ollama_followup_marks_actual_review_as_evidenced():
     assert planner._factual_coverage_counts([review])["reviews"] == 1
     assert summary[0]["navigation_goals"] == ["public_mentions"]
     assert summary[0]["evidenced_intents"] == ["reviews"]
+
+
+@pytest.mark.asyncio
+async def test_default_heuristic_keeps_searching_when_review_goal_has_no_review_fact():
+    planner = HeuristicFollowupResearchPlanner(target_hits_per_intent=1)
+    page = observation(goals=["reviews"])
+
+    plan = await planner.plan_followups(
+        request("reviews"),
+        [page],
+        seen_queries=set(),
+        max_queries=4,
+    )
+
+    assert len(plan.queries) == 1
+    assert "отзывы" in plan.queries[0]
+    assert plan.notes == ["coverage_gap:reviews:0"]
 
 
 @pytest.mark.asyncio
