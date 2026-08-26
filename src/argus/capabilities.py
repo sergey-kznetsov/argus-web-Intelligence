@@ -55,7 +55,12 @@ def runtime_capabilities(
     archive_providers: Iterable[str],
     map_providers: Iterable[str],
 ) -> dict[str, object]:
-    """Return only capabilities that the current process can actually provide."""
+    """Return capabilities configured in the current ARGUS process.
+
+    Ollama planner/supervisor/classifier use deterministic fallbacks when the local
+    endpoint is unavailable; their configuration therefore does not claim current LLM
+    health. AGENT is advertised as active only when explicitly enabled.
+    """
     server_queue = settings.execution_role in {"api", "worker"}
     agent_operational = (
         settings.agent_enabled and settings.agent_backend in OPERATIONAL_AGENT_BACKENDS
@@ -71,6 +76,22 @@ def runtime_capabilities(
         "storage": settings.storage_backend,
         "execution_role": settings.execution_role,
         "api_max_request_bytes": settings.api_max_request_bytes,
+        "research_intelligence": {
+            "llm_backend": "ollama",
+            "llm_url": settings.ollama_url,
+            "model": settings.ollama_model,
+            "planner": "ollama_with_heuristic_fallback",
+            "supervisor": "ollama_with_evidence_aware_fallback",
+            "semantic_exact_excerpt_classifier": True,
+            "custom_consumer_neutral_intents": True,
+            "model_output_is_evidence": False,
+        },
+        "request_contract": {
+            "supplemental_source_pool": True,
+            "supplemental_source_pool_priority": "normal",
+            "seed_urls_are_explicit_targets": True,
+            "default_output_language": "ru",
+        },
         "result_delivery": {
             "full_result_max_items": settings.api_full_result_max_items,
             "full_result_max_bytes": settings.api_full_result_max_bytes,
