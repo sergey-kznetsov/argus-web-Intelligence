@@ -123,6 +123,7 @@ class Settings(BaseSettings):
     sitemap_discovery_enabled: bool = True
     sitemap_max_urls: int = Field(default=20, ge=1, le=100)
     sitemap_max_indexes: int = Field(default=5, ge=1, le=20)
+    historical_source_catalog_file: Path | None = None
 
     overpass_url: str | None = None
     overpass_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
