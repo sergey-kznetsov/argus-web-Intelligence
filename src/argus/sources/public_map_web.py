@@ -19,14 +19,15 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
     FAST/BROWSER response is not enough when the requested factual goal has not actually
     been evidenced. ARGUS therefore evaluates source-backed intent coverage, prefers a
     deterministic public review view when the provider exposes one, and only then may use
-    the normal AGENT -> verified browser replay lifecycle. Agent output is never Evidence.
+    bounded AGENT -> verified browser replay rounds. Agent output is never Evidence.
     """
 
-    semantic_escalation_version = "public-map-goal-escalation/3"
+    semantic_escalation_version = "public-map-goal-escalation/4"
     semantic_escalation_goals = frozenset(
         {"reviews", "comments", "discussions", "complaints"}
     )
     deterministic_review_view_goals = semantic_escalation_goals
+    max_semantic_agent_rounds = 2
     intent_coverage = IntentCoverageEvaluator()
 
     async def extract(
@@ -50,32 +51,68 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             )
 
         if self._should_semantically_escalate(task, fetched, result):
-            task.metadata["semantic_agent_retry_attempted"] = True
-            task.metadata["semantic_agent_retry_goals"] = goals
-            task.metadata["semantic_agent_retry_reason"] = (
-                "review_goal_without_review_fact"
-                if goals == ["reviews"]
-                else "semantic_goal_without_evidence"
+            result = await self._semantic_agent_rounds(
+                task,
+                request,
+                result,
+                goals,
+                agent_context_fetch,
             )
-            before_score = self._semantic_goal_fact_count(result, goals)
-            agent_task = self._agent_task_for_context(task, agent_context_fetch)
-            guided = await self._agent_guided_fetch(
-                agent_task,
-                context_fetch=agent_context_fetch,
-            )
-            if guided is not None and not guided.blocked:
-                guided_result = await super().extract(task, guided, request)
-                guided_result = await self._annotate_semantic_evidence(request, guided_result)
-                after_score = self._semantic_goal_fact_count(guided_result, goals)
-                if after_score > before_score:
-                    result = guided_result
-                    task.metadata["semantic_agent_retry_accepted"] = True
-                else:
-                    task.metadata["semantic_agent_retry_accepted"] = False
-            else:
-                task.metadata["semantic_agent_retry_accepted"] = False
 
         self._attach_public_map_provenance(result, task)
+        return result
+
+    async def _semantic_agent_rounds(
+        self,
+        task: SourceTask,
+        request: CollectionRequest,
+        result: SourceResult,
+        goals: list[str],
+        context_fetch: FetchResult,
+    ) -> SourceResult:
+        task.metadata["semantic_agent_retry_attempted"] = True
+        task.metadata["semantic_agent_retry_goals"] = goals
+        task.metadata["semantic_agent_retry_reason"] = (
+            "review_goal_without_review_fact"
+            if goals == ["reviews"]
+            else "semantic_goal_without_evidence"
+        )
+        before_score = self._semantic_goal_fact_count(result, goals)
+        current_context = context_fetch
+        accepted = False
+        rounds_completed = 0
+
+        for round_index in range(self.max_semantic_agent_rounds):
+            agent_task = self._agent_task_for_context(task, current_context)
+            guided = await self._agent_guided_fetch(
+                agent_task,
+                context_fetch=current_context,
+            )
+            rounds_completed = round_index + 1
+            if guided is None:
+                break
+            if guided.blocked:
+                task.metadata["semantic_agent_retry_suppressed"] = "agent_verification_blocked"
+                break
+
+            guided_result = await super().extract(task, guided, request)
+            guided_result = await self._annotate_semantic_evidence(request, guided_result)
+            after_score = self._semantic_goal_fact_count(guided_result, goals)
+            if after_score > before_score:
+                result = guided_result
+                accepted = True
+                break
+
+            # A verified first step can reveal new controls that were absent from the
+            # prior DOM. Feed that verified DOM into one more bounded planning round.
+            # RecipeWeb will extend only the exact active recipe that produced it.
+            if round_index + 1 < self.max_semantic_agent_rounds:
+                if not (200 <= int(guided.status_code) < 400 and guided.text.strip()):
+                    break
+                current_context = guided
+
+        task.metadata["semantic_agent_retry_rounds"] = rounds_completed
+        task.metadata["semantic_agent_retry_accepted"] = accepted
         return result
 
     async def _try_deterministic_review_view(
@@ -208,6 +245,8 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             "accepted": bool(task.metadata.get("semantic_agent_retry_accepted")),
             "reason": task.metadata.get("semantic_agent_retry_reason"),
             "goals": list(task.metadata.get("semantic_agent_retry_goals") or []),
+            "rounds": int(task.metadata.get("semantic_agent_retry_rounds", 0) or 0),
+            "max_rounds": self.max_semantic_agent_rounds,
             "suppressed": task.metadata.get("semantic_agent_retry_suppressed"),
             "agent_output_is_evidence": False,
         }
@@ -258,6 +297,8 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
                 "agent_output_is_evidence": False,
                 "verified_browser_replay": True,
                 "source_backed_goal_evidence": True,
+                "max_rounds": self.max_semantic_agent_rounds,
+                "verified_recipe_extension": True,
             },
         }
         return payload
