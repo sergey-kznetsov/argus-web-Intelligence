@@ -5,12 +5,20 @@ from collections.abc import Iterable
 from argus.config import Settings
 from argus.contracts.models import PROTOCOL_VERSION
 
-OPERATIONAL_AGENT_BACKENDS = ("browser-use",)
+OPERATIONAL_AGENT_BACKENDS = ("ollama-recipe",)
 UNAVAILABLE_AGENT_BACKENDS = {
+    "browser-use": {
+        "status": "unavailable",
+        "reason_code": "UPSTREAM_DEPENDENCY_CONFLICT",
+        "detail": (
+            "browser-use 0.13.x pins pypdf==6.14.2 while ARGUS requires "
+            "pypdf>=6.16.1 for the patched PDF security baseline"
+        ),
+    },
     "stagehand": {
         "status": "unavailable",
         "reason_code": "LOCAL_LLM_INTEGRATION_NOT_VALIDATED",
-    }
+    },
 }
 
 STRUCTURED_EXTRACTORS = (
