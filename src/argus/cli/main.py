@@ -101,6 +101,13 @@ def probe(
     ] = True,
     preview_items: Annotated[int, typer.Option("--preview-items", min=0, max=100)] = 10,
     preview_chars: Annotated[int, typer.Option("--preview-chars", min=0, max=10000)] = 500,
+    require_covered_intents: Annotated[
+        bool,
+        typer.Option(
+            "--require-covered-intents",
+            help="Exit with code 2 when any requested intent lacks factual coverage",
+        ),
+    ] = False,
     json_stdout: Annotated[
         bool,
         typer.Option("--json", help="Print the full JSON report to stdout as well"),
@@ -185,6 +192,19 @@ def probe(
     if json_stdout:
         typer.echo("")
         typer.echo(report_json)
+
+    acceptance = report.get("acceptance")
+    fully_covered = (
+        bool(acceptance.get("fully_covered")) if isinstance(acceptance, dict) else False
+    )
+    if require_covered_intents and not fully_covered:
+        uncovered = acceptance.get("uncovered_intents", []) if isinstance(acceptance, dict) else []
+        typer.echo(
+            "ARGUS probe acceptance failed; uncovered intents: "
+            + ", ".join(map(str, uncovered)),
+            err=True,
+        )
+        raise typer.Exit(code=2)
 
 
 @app.command("status")
