@@ -1,0 +1,84 @@
+name: live-perm-ai-acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/live-perm-ai-acceptance.yml
+
+permissions:
+  contents: read
+
+jobs:
+  perm-ai-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ARGUS_OLLAMA_MODEL: qwen3:0.6b
+      ARGUS_LLM_REQUIRED: "true"
+      ARGUS_AGENT_ENABLED: "true"
+      ARGUS_BROWSER_SERP_ENABLED: "true"
+      ARGUS_MAX_CONCURRENCY: "2"
+      ARGUS_BROWSER_MAX_CONCURRENCY: "1"
+      ARGUS_PER_DOMAIN_DELAY_SECONDS: "0.5"
+      ARGUS_LOG_LEVEL: INFO
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ARGUS
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          playwright install --with-deps chromium
+
+      - name: Install pinned Ollama
+        run: |
+          curl --fail --silent --show-error --location \
+            https://github.com/ollama/ollama/releases/download/v0.32.14/install.sh \
+            --output /tmp/ollama-install.sh
+          echo "25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f  /tmp/ollama-install.sh" \
+            | sha256sum --check --strict
+          OLLAMA_VERSION=0.32.14 sh /tmp/ollama-install.sh
+
+      - name: Start local Ollama and pull bounded acceptance model
+        run: |
+          nohup ollama serve >/tmp/ollama.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:11434/api/tags >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              cat /tmp/ollama.log
+              exit 1
+            fi
+            sleep 1
+          done
+          ollama pull qwen3:0.6b
+          curl --fail --silent http://127.0.0.1:11434/api/tags
+
+      - name: Run real Perm AI acceptance profiles
+        run: python scripts/perm_ai_acceptance.py
+
+      - name: Show acceptance overview
+        if: always()
+        run: |
+          if [ -f .argus/probes/perm-ai-acceptance/overview.json ]; then
+            cat .argus/probes/perm-ai-acceptance/overview.json
+          fi
+
+      - name: Upload factual probe reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perm-ai-acceptance
+          path: |
+            .argus/probes/perm-ai-acceptance
+            /tmp/ollama.log
+          if-no-files-found: warn
+          retention-days: 7
