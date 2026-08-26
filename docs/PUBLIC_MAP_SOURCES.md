@@ -58,6 +58,25 @@ This supports common SPA sequences such as `Отзывы -> Показать е�
 
 This also preserves the project rule that CAPTCHA, access controls and anti-bot challenges are boundaries, not obstacles to bypass.
 
+## Coverage-driven repeated research
+
+Curated public-map discovery is gap-driven rather than a fixed number of repeated searches. `PublicMapSourceResearchPlanner` evaluates only factual observations whose URLs belong to recognized Yandex Maps, 2GIS or Google Maps public surfaces. A card shell that was merely opened for `reviews` does not count as review coverage.
+
+The default target is two independent public-map source URLs for each supported requested intent. URL identity is conservative and removes fragments, default ports and common tracking parameters before counting, so the same page reached through `utm_*`, `gclid`, `yclid` or similar navigation variants cannot inflate coverage.
+
+When one map intent reaches its target and another does not, subsequent curated queries contain only the remaining factual gaps. For example, if `reviews` is covered but `complaints` is not, the next map discovery request targets `complaints` rather than repeating both intents.
+
+The orchestrator checkpoints:
+
+- current public-map factual counts by intent;
+- remaining gap intents;
+- target source count;
+- coverage evaluator version and public-map planner version;
+- whether factual public-map coverage is complete;
+- whether the currently known anchors have no unused map queries.
+
+`curated_public_map_complete` is set only when factual targets are met. Exhausting queries for the currently known anchors is recorded separately and does not falsely mark research complete, because a later source may reveal a new organization or place that can reopen the map branch within the remaining page/round budgets.
+
 ## Provenance
 
 Observations/Evidence from recognized map pages receive `public_map_source` metadata based on host/path identity only.
