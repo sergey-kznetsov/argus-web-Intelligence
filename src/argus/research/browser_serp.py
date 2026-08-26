@@ -66,6 +66,7 @@ class DuckDuckGoBrowserDiscoveryProvider:
             for hit in self._extract_hits(
                 fetched.text,
                 self.settings.browser_serp_max_results_per_query,
+                query=value,
             ):
                 if hit.url in seen:
                     continue
@@ -77,7 +78,13 @@ class DuckDuckGoBrowserDiscoveryProvider:
         return {"provider": self.name, "status": "configured"}
 
     @classmethod
-    def _extract_hits(cls, html: str, limit: int) -> list[DiscoveryHit]:
+    def _extract_hits(
+        cls,
+        html: str,
+        limit: int,
+        *,
+        query: str | None = None,
+    ) -> list[DiscoveryHit]:
         soup = BeautifulSoup(html, "html.parser")
         hits: list[DiscoveryHit] = []
         seen: set[str] = set()
@@ -93,6 +100,7 @@ class DuckDuckGoBrowserDiscoveryProvider:
                     title=anchor.get_text(" ", strip=True) or None,
                     engines=["duckduckgo"],
                     rank=len(hits) + 1,
+                    query=query,
                 )
             )
             if len(hits) >= limit:
