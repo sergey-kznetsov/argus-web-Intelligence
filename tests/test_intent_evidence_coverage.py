@@ -69,6 +69,22 @@ def test_source_declared_review_entity_counts_as_review_evidence():
     assert evaluator.counts([review])["reviews"] == 1
 
 
+def test_tracking_url_variants_count_as_one_factual_source():
+    evaluator = IntentCoverageEvaluator()
+    first = observation(
+        entity_type="review",
+        source_kind="json_ld",
+        url="https://example.org/place?utm_source=search&gclid=one#reviews",
+    )
+    second = observation(
+        entity_type="review",
+        source_kind="json_ld",
+        url="https://EXAMPLE.org:443/place?utm_medium=cpc&yclid=two",
+    )
+
+    assert evaluator.counts([first, second])["reviews"] == 1
+
+
 def test_feed_entry_counts_as_local_news_without_research_goal_credit():
     evaluator = IntentCoverageEvaluator()
     feed = observation(
