@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from argus.config import Settings
 from argus.research.historical_catalog import (
     HistoricalSourceCatalog,
     HistoricalSourceCatalogError,
@@ -92,7 +93,7 @@ def test_operator_catalog_rejects_invalid_entries(tmp_path: Path, entry: dict[st
         HistoricalSourceCatalog(RUSSIA_USSR_HISTORICAL_SOURCES).profiles(path)
 
 
-def test_catalog_environment_path_is_supported(tmp_path: Path, monkeypatch):
+def test_catalog_environment_path_is_supported_through_settings(tmp_path: Path, monkeypatch):
     path = _write(
         tmp_path / "env-history.json",
         {
@@ -108,6 +109,10 @@ def test_catalog_environment_path_is_supported(tmp_path: Path, monkeypatch):
     )
     monkeypatch.setenv("ARGUS_HISTORICAL_SOURCE_CATALOG_FILE", str(path))
 
-    profiles = HistoricalSourceCatalog(RUSSIA_USSR_HISTORICAL_SOURCES).profiles()
+    settings = Settings()
+    planner = HistoricalSourceResearchPlanner(
+        catalog_file=settings.historical_source_catalog_file
+    )
 
-    assert any(item.source_id == "regional_history" for item in profiles)
+    assert settings.historical_source_catalog_file == path
+    assert any(item.source_id == "regional_history" for item in planner.sources)
