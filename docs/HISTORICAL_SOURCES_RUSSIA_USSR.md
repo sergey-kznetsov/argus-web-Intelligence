@@ -108,6 +108,35 @@ site:runivers.ru Ижевск Пушкинская
 
 When an old entity/name is discovered, the same source families should be queried again with that historical label.
 
+## Operator-added historical source pool
+
+Additional public historical domains can be added without changing Python code by setting:
+
+```text
+ARGUS_HISTORICAL_SOURCE_CATALOG_FILE=/path/to/historical-sources.json
+```
+
+Accepted JSON form:
+
+```json
+{
+  "sources": [
+    {
+      "source_id": "regional_archive",
+      "domain": "archive.region.example",
+      "kind": "archive_catalogues",
+      "priority": 500,
+      "visual": false,
+      "query_suffix": "история документы"
+    }
+  ]
+}
+```
+
+The operator catalogue is bounded to 200 entries and 512 KiB. Domains must be plain public DNS names or root HTTP(S) URLs without credentials, ports, paths, query strings or fragments. `source_id` and `kind` use bounded machine-readable identifiers; priority is `1..10000`; `visual` is boolean; `query_suffix` is optional and bounded.
+
+Operator entries may add candidates but cannot silently replace a code-reviewed built-in source by ID or domain. An entry is discovery metadata only: it does not grant trust, bypass URL/security policy, or become Evidence. A discovered page must still pass the normal `FAST → BROWSER → AGENT` lifecycle and factual extraction/provenance checks.
+
 ## Image evidence requirements
 
 A historical image reference should be normalised separately from the surrounding page when possible.
