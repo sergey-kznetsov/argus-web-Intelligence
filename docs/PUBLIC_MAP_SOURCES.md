@@ -4,7 +4,7 @@ ARGUS treats Yandex Maps, 2GIS and Google Maps as public web sources, not as man
 
 The public-map path follows the same factual contract as the rest of ARGUS:
 
-`discovery -> FAST/BROWSER -> deterministic public view -> optional AGENT -> verified BROWSER replay -> Observation/Evidence`
+`discovery -> FAST/BROWSER -> deterministic public view -> optional bounded AGENT rounds -> verified BROWSER replay -> Observation/Evidence`
 
 No map page, URL or AGENT action is itself evidence that a review, complaint, comment or discussion exists. Facts are accepted only after normal extraction from content fetched by ARGUS.
 
@@ -18,7 +18,7 @@ No map page, URL or AGENT action is itself evidence that a review, complaint, co
 
 The deterministic rewrites are navigation hints only. Every generated URL still passes the normal `UrlGuard`, browser limits and blocking detection before use.
 
-Google Maps does not receive a guessed review URL. A review-specific Google URI requires additional place identity that ARGUS may not possess in the free public-web contour. When the requested facts are hidden behind a public UI control, ARGUS may use the bounded AGENT path and must verify its deterministic replay before extracting facts.
+Google Maps does not receive a guessed review URL. A review-specific Google URI requires additional place identity that ARGUS may not possess in the free public-web contour. When the requested facts are hidden behind public UI controls, ARGUS may use the bounded AGENT path and must verify each deterministic replay before extracting facts.
 
 ## Semantic goal satisfaction
 
@@ -47,10 +47,16 @@ When a public card is fetched but the requested map-specific semantic facts rema
 3. The resulting content is extracted and evaluated with the same intent coverage evaluator used elsewhere.
 4. If factual coverage improves, that result becomes the accepted source result.
 5. If the deterministic review view is blocked, ARGUS records the block and does not invoke AGENT to route around it.
-6. If it is not blocked but still does not expose the requested facts, ARGUS may invoke the configured AGENT once.
-7. AGENT output is never Evidence. Any action path must be converted to a deterministic `SiteRecipe` and successfully replayed by BROWSER before content is extracted.
+6. If the view is public and non-blocked but still needs interaction, ARGUS may execute at most two semantic AGENT planning rounds.
+7. Every AGENT action path is compiled into a deterministic `SiteRecipe` and successfully replayed by BROWSER before its result can be extracted.
+8. A second planning round may inspect only the verified DOM produced by the first replay. When that DOM was produced by an active `SiteRecipe`, ARGUS may extend only that exact recipe version with the new deterministic steps.
+9. The complete extended recipe is replayed again from its normal start URL before promotion. If the active recipe identity does not match the analyzed DOM, ARGUS does not splice the paths together.
+10. Combined AGENT-generated recipe paths are bounded to 40 steps. Any larger path is rejected.
+11. AGENT output itself is never Evidence. A semantic round is accepted only if source-backed factual coverage improves.
 
-This preserves the project rule that CAPTCHA, access controls and anti-bot challenges are boundaries, not obstacles to bypass.
+This supports common SPA sequences such as `Отзывы -> Показать ещё` without granting the model arbitrary browser control or persisting an unverified path.
+
+This also preserves the project rule that CAPTCHA, access controls and anti-bot challenges are boundaries, not obstacles to bypass.
 
 ## Provenance
 
@@ -58,8 +64,9 @@ Observations/Evidence from recognized map pages receive `public_map_source` meta
 
 The selected result also records:
 
-- `public_map_review_view`: whether a deterministic review view was attempted, accepted or blocked and which public URL was used;
-- `public_map_semantic_escalation`: semantic goals, AGENT attempt/acceptance state and any suppression reason;
+- `public_map_review_view`: whether a deterministic review view was attempted, accepted or blocked, its status code and the public URL used;
+- `public_map_semantic_escalation`: semantic goals, AGENT attempt/acceptance state, completed/max rounds and any suppression reason;
+- recipe lifecycle/extension telemetry when a verified SiteRecipe was created or extended;
 - `agent_output_is_evidence = false` for the AGENT path.
 
 These fields explain how ARGUS reached the source. They do not raise source confidence by themselves.
