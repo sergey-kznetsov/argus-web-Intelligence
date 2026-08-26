@@ -10,6 +10,7 @@ from fastapi.encoders import jsonable_encoder
 from argus.bootstrap import build_services
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest, CollectionStatus
+from argus.research.coverage import IntentCoverageEvaluator
 
 _TERMINAL_STATUSES = {
     CollectionStatus.COMPLETED,
@@ -89,6 +90,7 @@ async def run_embedded_probe(
                     "database_path": str(Path(settings.db_path).resolve()),
                     "elapsed_seconds": round(elapsed, 3),
                 },
+                "acceptance": build_probe_acceptance(request, result),
                 "request": request,
                 "collection": record,
                 "result": result,
@@ -99,6 +101,49 @@ async def run_embedded_probe(
     finally:
         if started:
             await services.shutdown()
+
+
+def build_probe_acceptance(request: CollectionRequest, result) -> dict[str, Any]:
+    """Summarize whether requested research intents were backed by factual observations."""
+
+    evaluator = IntentCoverageEvaluator()
+    counts = evaluator.counts(result.observations)
+    requested: list[str] = []
+    seen: set[str] = set()
+    for value in request.intents:
+        intent = str(value).strip().casefold()
+        if intent and intent not in seen:
+            requested.append(intent)
+            seen.add(intent)
+
+    intent_counts = {intent: int(counts.get(intent, 0)) for intent in requested}
+    covered = [intent for intent in requested if intent_counts[intent] > 0]
+    uncovered = [intent for intent in requested if intent_counts[intent] == 0]
+    semantic_evidence = sum(
+        1 for item in result.evidence if item.type == "semantic_intent_excerpt"
+    )
+    public_map_providers: set[str] = set()
+    for observation in result.observations:
+        map_source = observation.provenance.get("public_map_source")
+        if not isinstance(map_source, dict):
+            continue
+        provider = str(map_source.get("provider") or "").strip()
+        if provider:
+            public_map_providers.add(provider)
+
+    return {
+        "coverage_evaluator_version": evaluator.version,
+        "requested_intents": requested,
+        "covered_intents": covered,
+        "uncovered_intents": uncovered,
+        "intent_source_counts": intent_counts,
+        "covered_count": len(covered),
+        "requested_count": len(requested),
+        "fully_covered": not uncovered,
+        "semantic_excerpt_evidence_count": semantic_evidence,
+        "public_map_providers_with_facts": sorted(public_map_providers),
+        "model_output_is_evidence": False,
+    }
 
 
 def render_probe_summary(
@@ -114,6 +159,7 @@ def render_probe_summary(
     result = report.get("result") if isinstance(report, dict) else None
     collection = report.get("collection") if isinstance(report, dict) else None
     probe = report.get("probe") if isinstance(report, dict) else None
+    acceptance = report.get("acceptance") if isinstance(report, dict) else None
     if not isinstance(result, dict) or not isinstance(collection, dict):
         return "ARGUS probe report is incomplete"
 
@@ -136,6 +182,25 @@ def render_probe_summary(
     ]
     if isinstance(probe, dict) and probe.get("elapsed_seconds") is not None:
         lines.append(f"Elapsed: {probe['elapsed_seconds']} s")
+
+    if isinstance(acceptance, dict):
+        covered_count = int(acceptance.get("covered_count") or 0)
+        requested_count = int(acceptance.get("requested_count") or 0)
+        lines.append("")
+        lines.append(f"Intent coverage: {covered_count}/{requested_count}")
+        intent_counts = acceptance.get("intent_source_counts")
+        if isinstance(intent_counts, dict):
+            for intent in acceptance.get("requested_intents") or []:
+                count = int(intent_counts.get(str(intent), 0) or 0)
+                state = "covered" if count else "uncovered"
+                lines.append(f"- {intent}: {state}; source_urls={count}")
+        lines.append(
+            "Semantic excerpt evidence: "
+            f"{int(acceptance.get('semantic_excerpt_evidence_count') or 0)}"
+        )
+        providers = acceptance.get("public_map_providers_with_facts")
+        if isinstance(providers, list) and providers:
+            lines.append("Public map providers with facts: " + ", ".join(map(str, providers)))
 
     if coverage:
         lines.append("")
