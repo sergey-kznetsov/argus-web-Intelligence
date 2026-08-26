@@ -4,13 +4,19 @@ from pathlib import Path
 
 import pytest
 
+from argus.contracts.models import (
+    CollectionRequest,
+    Evidence,
+    EvidenceSource,
+    Observation,
+)
 from argus.crawler.agent.base import AgentResult
 from argus.crawler.models import FetchResult
 from argus.extraction.pdf import BoundedPdfExtractor
 from argus.history.snapshots import SnapshotService
 from argus.recipes.models import RecipeStep, SiteRecipe
 from argus.recipes.service import RecipeManager
-from argus.sources.base import SourceTask
+from argus.sources.base import SourceResult, SourceTask
 from argus.sources.recipe_web import LifecycleRecipeWebAdapter
 from argus.storage.lifecycle_sqlite import LifecycleAtomicSQLiteRepository
 
@@ -67,7 +73,14 @@ class BrowserSuccessfulCandidate:
             content_type="text/html",
             text="<html><body>verified result</body></html>",
             runtime="browser_recipe" if recipe is not None else "browser",
-            metadata={},
+            metadata=(
+                {
+                    "recipe_id": recipe.recipe_id,
+                    "recipe_version": recipe.version,
+                }
+                if recipe is not None
+                else {}
+            ),
         )
 
 
@@ -94,6 +107,42 @@ def source_task() -> SourceTask:
         url="https://example.com/reviews",
         metadata={"collection_id": "recipe-web-lifecycle"},
     )
+
+
+def request() -> CollectionRequest:
+    return CollectionRequest(
+        consumer="recipe-web-lifecycle",
+        analysis_id="recipe-web-lifecycle",
+        territory={"city": "Пермь"},
+        intents=["reviews"],
+    )
+
+
+def review_result(recipe_id: str) -> SourceResult:
+    observation = Observation(
+        collection_id="recipe-web-lifecycle",
+        analysis_id="recipe-web-lifecycle",
+        consumer="recipe-web-lifecycle",
+        source="generic_web",
+        source_kind="web_page",
+        url="https://example.com/reviews",
+        entity_type="review",
+        text="Публичный отзыв о месте.",
+        content_hash="a" * 64,
+        provenance={"recipe_id": recipe_id},
+    )
+    evidence = Evidence(
+        observation_id=observation.observation_id,
+        type="review_text",
+        text=observation.text or "",
+        source=EvidenceSource(
+            provider="generic_web",
+            source_id="generic_web",
+            url=observation.url,
+            collected_at=observation.collected_at,
+        ),
+    )
+    return SourceResult(observations=[observation], evidence=[evidence])
 
 
 def build_adapter(
@@ -193,7 +242,7 @@ async def test_blocked_candidate_verification_stops_without_alternate_url_bypass
 
 
 @pytest.mark.asyncio
-async def test_successful_candidate_replay_promotes_verified_recipe(tmp_path: Path):
+async def test_successful_candidate_waits_for_source_backed_goal_before_promotion(tmp_path: Path):
     repository = LifecycleAtomicSQLiteRepository(tmp_path / "argus.sqlite")
     await repository.initialize()
     web = build_adapter(
@@ -202,19 +251,62 @@ async def test_successful_candidate_replay_promotes_verified_recipe(tmp_path: Pa
         browser=BrowserSuccessfulCandidate(),
         agent=AgentWithRecipe(),
     )
+    task = source_task()
 
-    result = await web._agent_guided_fetch(source_task())
+    result = await web._agent_guided_fetch(task)
 
     assert result is not None
     assert result.blocked is False
     assert result.metadata["agent_compiled_recipe"] is True
     lifecycle = result.metadata["recipe_lifecycle"]
     assert isinstance(lifecycle, dict)
-    assert lifecycle["status"] == "active"
-    assert lifecycle["verified"] is True
+    assert lifecycle["status"] == "candidate"
+    assert lifecycle["verified"] is False
+    assert await repository.get_recipe("example.com", "reviews") is None
+
+    candidate_ids = task.metadata["pending_recipe_candidate_ids"]
+    assert isinstance(candidate_ids, list)
+    candidate_id = str(candidate_ids[-1])
+    await web._finalize_recipe_goal_verification(
+        task,
+        request(),
+        review_result(candidate_id),
+    )
+
     stored = await repository.get_recipe("example.com", "reviews")
     assert stored is not None
+    assert stored.recipe_id == candidate_id
     assert stored.status == "active"
     assert stored.verified_at is not None
     assert stored.successes == 1
+    await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_candidate_without_goal_evidence_is_never_persisted(tmp_path: Path):
+    repository = LifecycleAtomicSQLiteRepository(tmp_path / "argus.sqlite")
+    await repository.initialize()
+    web = build_adapter(
+        repository,
+        fast=FastSuccess(),
+        browser=BrowserSuccessfulCandidate(),
+        agent=AgentWithRecipe(),
+    )
+    task = source_task()
+
+    result = await web._agent_guided_fetch(task)
+    assert result is not None
+
+    await web._finalize_recipe_goal_verification(
+        task,
+        request(),
+        SourceResult(observations=[], evidence=[]),
+    )
+
+    assert await repository.get_recipe("example.com", "reviews") is None
+    verification = task.metadata["recipe_goal_verification"]
+    assert isinstance(verification, dict)
+    candidates = verification["candidates"]
+    assert isinstance(candidates, list)
+    assert candidates[-1]["reason"] == "semantic_goal_not_satisfied"
     await repository.close()
