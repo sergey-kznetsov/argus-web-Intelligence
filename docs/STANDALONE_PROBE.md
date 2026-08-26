@@ -45,12 +45,14 @@ The JSON report contains:
 - every Evidence item with provider and source URL;
 - provenance and quality metadata;
 - evidence-aware acceptance state for every requested intent;
-- count of distinct factual source URLs supporting each requested intent;
+- count of canonical factual source URLs supporting each requested intent;
 - semantic exact-excerpt Evidence count;
-- public-map providers that actually produced factual observations;
+- public-map providers that produced factual evidence for at least one requested intent;
 - source health state;
 - operational metrics for the run;
 - elapsed time and local probe database path.
+
+Canonical source counting removes fragments, default ports and common tracking parameters such as `utm_*`, `gclid` and `yclid`. Reaching the same factual page through advertising/tracking URL variants therefore does not inflate acceptance coverage.
 
 To also print the complete JSON to stdout, add `--json`.
 
@@ -111,7 +113,7 @@ argus probe \
   --require-covered-intents
 ```
 
-The acceptance block reports only map providers that actually produced factual observations with `public_map_source` provenance. Merely discovering or opening Yandex Maps, 2GIS or Google Maps does not add a provider to this list.
+The acceptance block reports a map provider only when an observation from that provider actually supports at least one intent requested by this probe. Merely discovering or opening Yandex Maps, 2GIS or Google Maps does not add a provider to `public_map_providers_with_facts`.
 
 When AGENT is deliberately enabled in environment configuration, the same probe also exercises deterministic public review views, bounded semantic AGENT rounds and verified SiteRecipe replay. A CAPTCHA/access block remains a blocked source and is not bypassed.
 
