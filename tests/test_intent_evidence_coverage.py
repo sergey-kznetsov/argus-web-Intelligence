@@ -99,6 +99,41 @@ def test_feed_entry_counts_as_local_news_without_research_goal_credit():
     assert counts["public_mentions"] == 1
 
 
+def test_public_mention_requires_territory_relevance_when_request_is_known():
+    evaluator = IntentCoverageEvaluator()
+    unrelated = observation(goals=["public_mentions"])
+    relevant = observation(goals=["public_mentions"]).model_copy(
+        update={"text": "Кофейня находится по адресу ул. Пушкинская, д. 277."}
+    )
+    current_request = request("public_mentions")
+
+    assert evaluator.supports(unrelated, "public_mentions") is True
+    assert (
+        evaluator.supports(unrelated, "public_mentions", request=current_request)
+        is False
+    )
+    assert evaluator.supports(relevant, "public_mentions", request=current_request) is True
+    assert evaluator.counts([unrelated], request=current_request).get("public_mentions", 0) == 0
+    assert evaluator.counts([relevant], request=current_request)["public_mentions"] == 1
+
+
+def test_city_only_public_mention_accepts_city_text():
+    evaluator = IntentCoverageEvaluator()
+    current_request = CollectionRequest(
+        consumer="coverage-test",
+        analysis_id="city-only",
+        territory={"city": "Ижевск"},
+        intents=["public_mentions"],
+    )
+    page = observation().model_copy(update={"text": "Новый объект открылся в Ижевске."})
+
+    # Exact word forms are intentionally conservative: source text must contain the
+    # configured anchor, not merely a search-engine navigation hint.
+    assert evaluator.supports(page, "public_mentions", request=current_request) is False
+    exact = page.model_copy(update={"text": "Ижевск: новый объект открылся сегодня."})
+    assert evaluator.supports(exact, "public_mentions", request=current_request) is True
+
+
 def test_archive_capture_counts_as_historical_context():
     evaluator = IntentCoverageEvaluator()
     historical = observation(
@@ -165,6 +200,40 @@ async def test_default_heuristic_keeps_searching_when_review_goal_has_no_review_
     assert len(plan.queries) == 1
     assert "отзывы" in plan.queries[0]
     assert plan.notes == ["coverage_gap:reviews:0"]
+
+
+@pytest.mark.asyncio
+async def test_default_heuristic_keeps_searching_after_irrelevant_public_mention_page():
+    planner = HeuristicFollowupResearchPlanner(target_hits_per_intent=1)
+    page = observation(goals=["public_mentions"])
+
+    plan = await planner.plan_followups(
+        request("public_mentions"),
+        [page],
+        seen_queries=set(),
+        max_queries=4,
+    )
+
+    assert len(plan.queries) == 1
+    assert "упоминания" in plan.queries[0]
+    assert plan.notes == ["coverage_gap:public_mentions:0"]
+
+
+@pytest.mark.asyncio
+async def test_default_heuristic_stops_after_territory_backed_public_mention():
+    planner = HeuristicFollowupResearchPlanner(target_hits_per_intent=1)
+    page = observation(goals=["public_mentions"]).model_copy(
+        update={"text": "Адрес объекта: Пушкинская, 277, Ижевск."}
+    )
+
+    plan = await planner.plan_followups(
+        request("public_mentions"),
+        [page],
+        seen_queries=set(),
+        max_queries=4,
+    )
+
+    assert plan.queries == []
 
 
 @pytest.mark.asyncio
