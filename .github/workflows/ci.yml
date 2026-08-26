@@ -46,4 +46,13 @@ jobs:
       - run: ruff check src tests
       - name: Security lint production sources
         run: ruff check src --select S
-      - run: pytest -q --cov=argus --cov-report=term-missing --cov-fail-under=80
+      - name: Run pytest with coverage
+        run: pytest -q --cov=argus --cov-report=term-missing --cov-fail-under=80 2>&1 | tee pytest.log
+      - name: Preserve pytest failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-failure-log
+          path: pytest.log
+          retention-days: 3
+          if-no-files-found: error
