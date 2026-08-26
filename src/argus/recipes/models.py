@@ -10,7 +10,7 @@ from argus.contracts.models import utcnow
 
 
 class RecipeStep(BaseModel):
-    action: Literal["goto", "click", "fill", "press", "wait", "scroll", "extract"]
+    action: Literal["goto", "click", "fill", "select", "press", "wait", "scroll", "extract"]
     selector: str | None = Field(default=None, max_length=2_000)
     value: str | None = Field(default=None, max_length=20_000)
     data: dict[str, Any] = Field(default_factory=dict)
