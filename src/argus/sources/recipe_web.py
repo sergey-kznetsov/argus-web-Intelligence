@@ -11,6 +11,7 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
     """Apply bounded SiteRecipe and AGENT lifecycle around the factual web stack."""
 
     max_agent_direct_replay_urls = 2
+    max_agent_recipe_steps = 40
 
     async def fetch(self, task: SourceTask) -> FetchResult:
         if self.recipes is not None:
@@ -137,9 +138,16 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
             if self.recipes is None:
                 task.metadata["agent_path_rejected"] = "recipe_manager_unavailable"
                 return None
-            steps = self.recipe_compiler.compile(agent_result.actions)
-            if not steps:
+            compiled_steps = self.recipe_compiler.compile(agent_result.actions)
+            if not compiled_steps:
                 task.metadata["agent_path_rejected"] = "actions_not_deterministically_compilable"
+                return None
+            steps = await self._recipe_steps_for_context(
+                task,
+                context_fetch,
+                compiled_steps,
+            )
+            if steps is None:
                 return None
 
             candidate = await self.recipes.candidate(task.url, task.goal, steps)
@@ -208,6 +216,46 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
             return fetched
         return None
 
+    async def _recipe_steps_for_context(
+        self,
+        task: SourceTask,
+        context_fetch: FetchResult | None,
+        compiled_steps,
+    ):
+        """Extend only the exact verified recipe that produced the analyzed DOM."""
+        steps = list(compiled_steps)
+        if self.recipes is None or context_fetch is None:
+            return steps
+        context_recipe_id = context_fetch.metadata.get("recipe_id")
+        if not isinstance(context_recipe_id, str) or not context_recipe_id:
+            return steps
+
+        active = await self.recipes.get(task.url, task.goal)
+        if active is None or active.recipe_id != context_recipe_id:
+            return steps
+        combined = [*active.steps, *steps]
+        if len(combined) > self.max_agent_recipe_steps:
+            task.metadata["agent_path_rejected"] = "extended_recipe_step_budget_exceeded"
+            task.metadata["agent_recipe_extension"] = {
+                "base_recipe_id": active.recipe_id,
+                "base_version": active.version,
+                "base_steps": len(active.steps),
+                "new_steps": len(steps),
+                "max_steps": self.max_agent_recipe_steps,
+                "accepted": False,
+            }
+            return None
+        task.metadata["agent_recipe_extension"] = {
+            "base_recipe_id": active.recipe_id,
+            "base_version": active.version,
+            "base_steps": len(active.steps),
+            "new_steps": len(steps),
+            "combined_steps": len(combined),
+            "max_steps": self.max_agent_recipe_steps,
+            "accepted": True,
+        }
+        return combined
+
     def _attach_recipe_lifecycle(self, result: FetchResult, recipe) -> None:
         if self.recipes is None:
             return
@@ -222,6 +270,8 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
                 "max_age_days": self.recipes.max_age_days,
                 "keep_versions": self.recipes.keep_versions,
                 "blocked_verification_fallback": False,
+                "verified_recipe_extension": True,
+                "max_agent_recipe_steps": self.max_agent_recipe_steps,
             }
         if self.agent is not None:
             payload["agent_execution"] = {
@@ -230,6 +280,7 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
                 "agent_output_is_evidence": False,
                 "successful_action_paths_require_verified_recipe": True,
                 "max_direct_replay_urls": self.max_agent_direct_replay_urls,
+                "max_recipe_steps": self.max_agent_recipe_steps,
                 "max_steps": getattr(self.agent, "max_steps", None),
                 "timeout_seconds": getattr(self.agent, "timeout_seconds", None),
                 "max_actions": getattr(self.agent, "max_actions", None),
