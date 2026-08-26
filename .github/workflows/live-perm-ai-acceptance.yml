@@ -12,8 +12,13 @@ permissions:
 
 jobs:
   perm-ai-acceptance:
+    name: perm-${{ matrix.profile }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [kraken, janus, historical]
     env:
       ARGUS_OLLAMA_MODEL: qwen3:0.6b
       ARGUS_LLM_REQUIRED: "true"
@@ -68,21 +73,22 @@ jobs:
           ollama pull qwen3:0.6b
           curl --fail --silent http://127.0.0.1:11434/api/tags
 
-      - name: Run real Perm AI acceptance profiles
-        run: python scripts/perm_ai_acceptance.py
+      - name: Run real Perm AI acceptance profile
+        run: python scripts/perm_ai_acceptance.py --profile "${{ matrix.profile }}"
 
       - name: Show acceptance overview
         if: always()
         run: |
-          if [ -f .argus/probes/perm-ai-acceptance/overview.json ]; then
-            cat .argus/probes/perm-ai-acceptance/overview.json
+          file=".argus/probes/perm-ai-acceptance/overview-${{ matrix.profile }}.json"
+          if [ -f "$file" ]; then
+            cat "$file"
           fi
 
-      - name: Upload factual probe reports
+      - name: Upload factual probe report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: perm-ai-acceptance
+          name: perm-ai-acceptance-${{ matrix.profile }}
           path: |
             .argus/probes/perm-ai-acceptance
             /tmp/ollama.log
