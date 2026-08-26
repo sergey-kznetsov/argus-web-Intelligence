@@ -9,6 +9,7 @@ import httpx
 
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest, Observation
+from argus.research.intent_coverage import IntentCoverageEvaluator
 
 
 @dataclass(slots=True)
@@ -159,9 +160,11 @@ class OllamaFollowupResearchPlanner:
         self,
         settings: Settings,
         fallback: FollowupResearchPlanner | None = None,
+        coverage: IntentCoverageEvaluator | None = None,
     ) -> None:
         self.settings = settings
         self.fallback = fallback or HeuristicFollowupResearchPlanner()
+        self.coverage = coverage or IntentCoverageEvaluator()
         self.max_observations = 60
         self.max_summary_chars = 24_000
         self.max_query_chars = 512
@@ -246,7 +249,6 @@ class OllamaFollowupResearchPlanner:
     ) -> list[dict[str, object]]:
         result: list[dict[str, object]] = []
         used_chars = 0
-        coverage = self._coverage_evaluator()
         requested_intents = list(dict.fromkeys(request.intents))
 
         for observation in observations[-self.max_observations :]:
@@ -254,13 +256,11 @@ class OllamaFollowupResearchPlanner:
             goals = observation.data.get("research_goals", [])
             if not isinstance(goals, list):
                 goals = observation.provenance.get("research_goals", [])
-            evidenced_intents: list[str] = []
-            if coverage is not None:
-                evidenced_intents = [
-                    intent
-                    for intent in requested_intents
-                    if bool(coverage.supports(observation, intent))
-                ]
+            evidenced_intents = [
+                intent
+                for intent in requested_intents
+                if self.coverage.supports(observation, intent)
+            ]
             item: dict[str, object] = {
                 "source": observation.source,
                 "source_kind": observation.source_kind,
@@ -282,22 +282,8 @@ class OllamaFollowupResearchPlanner:
         return result
 
     def _factual_coverage_counts(self, observations: list[Observation]) -> dict[str, int]:
-        coverage = self._coverage_evaluator()
-        if coverage is None:
-            return {}
-        values = coverage.counts(observations)
+        values = self.coverage.counts(observations)
         return {str(key): int(value) for key, value in values.items()}
-
-    def _coverage_evaluator(self):
-        """Reuse the fallback's evaluator without importing coverage.py back into this module."""
-        coverage = getattr(self.fallback, "coverage", None)
-        if coverage is None:
-            return None
-        if not callable(getattr(coverage, "supports", None)):
-            return None
-        if not callable(getattr(coverage, "counts", None)):
-            return None
-        return coverage
 
     def _bounded_queries(
         self,
