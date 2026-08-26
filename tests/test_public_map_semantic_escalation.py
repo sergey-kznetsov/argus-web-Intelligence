@@ -66,6 +66,27 @@ def test_public_map_review_goal_does_not_escalate_after_source_declared_review()
     assert adapter._should_semantically_escalate(task("reviews"), fetched(), result) is False
 
 
+def test_public_map_review_goal_accepts_exact_excerpt_semantic_evidence():
+    adapter = adapter_with_agent()
+    item = observation("document")
+    item.quality["intent_evidence"] = {"reviews": True}
+    result = SourceResult(observations=[item])
+
+    assert adapter._semantic_goal_fact_count(result, ["reviews"]) == 1
+    assert adapter._should_semantically_escalate(task("reviews"), fetched(), result) is False
+
+
+def test_public_map_non_review_semantic_goal_uses_same_coverage_evaluator():
+    adapter = adapter_with_agent()
+    item = observation("document")
+    item.quality["intent_evidence"] = {"complaints": True}
+    result = SourceResult(observations=[item])
+
+    assert adapter._semantic_goals(task("complaints")) == ["complaints"]
+    assert adapter._semantic_goal_fact_count(result, ["complaints"]) == 1
+    assert adapter._should_semantically_escalate(task("complaints"), fetched(), result) is False
+
+
 def test_public_map_semantic_escalation_is_not_used_for_unrelated_web_pages():
     adapter = adapter_with_agent()
     result = SourceResult(observations=[observation("document")])
@@ -101,6 +122,7 @@ def test_public_map_semantic_escalation_provenance_never_treats_agent_output_as_
             "semantic_agent_retry_attempted": True,
             "semantic_agent_retry_accepted": True,
             "semantic_agent_retry_reason": "review_goal_without_review_fact",
+            "semantic_agent_retry_goals": ["reviews"],
         }
     )
 
@@ -109,5 +131,6 @@ def test_public_map_semantic_escalation_provenance_never_treats_agent_output_as_
     metadata = item.provenance["public_map_semantic_escalation"]
     assert metadata["attempted"] is True
     assert metadata["accepted"] is True
+    assert metadata["goals"] == ["reviews"]
     assert metadata["agent_output_is_evidence"] is False
     assert evidence.metadata["public_map_semantic_escalation"]["agent_output_is_evidence"] is False
