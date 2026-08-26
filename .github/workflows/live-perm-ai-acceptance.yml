@@ -37,6 +37,12 @@ jobs:
           pip install -e .
           playwright install --with-deps chromium
 
+      - name: Enable Chromium sandbox user namespaces
+        run: |
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
       - name: Install pinned Ollama
         run: |
           curl --fail --silent --show-error --location \
