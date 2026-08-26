@@ -124,6 +124,8 @@ def build_probe_acceptance(request: CollectionRequest, result) -> dict[str, Any]
     )
     public_map_providers: set[str] = set()
     for observation in result.observations:
+        if not any(evaluator.supports(observation, intent) for intent in requested):
+            continue
         map_source = observation.provenance.get("public_map_source")
         if not isinstance(map_source, dict):
             continue
