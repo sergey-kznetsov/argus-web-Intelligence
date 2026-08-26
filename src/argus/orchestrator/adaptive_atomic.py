@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from argus.contracts.models import Observation
 from argus.orchestrator.area_atomic import AreaAwareAtomicCollectionOrchestrator
+from argus.research.entity_hypotheses import OllamaEntityHypothesisExtractor
 from argus.research.followup import FollowupResearchPlanner
 from argus.research.historical_sources import HistoricalSourceResearchPlanner
 from argus.research.public_map_sources import PublicMapSourceResearchPlanner
@@ -19,6 +20,7 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
         historical_source_planner: HistoricalSourceResearchPlanner | None = None,
         public_map_source_planner: PublicMapSourceResearchPlanner | None = None,
         research_supervisor: ResearchSupervisor | None = None,
+        entity_hypothesis_extractor: OllamaEntityHypothesisExtractor | None = None,
         max_followup_rounds: int = 3,
         max_curated_historical_rounds: int = 3,
         max_curated_public_map_rounds: int = 3,
@@ -31,6 +33,7 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
         )
         self.public_map_source_planner = public_map_source_planner or PublicMapSourceResearchPlanner()
         self.research_supervisor = research_supervisor
+        self.entity_hypothesis_extractor = entity_hypothesis_extractor
         self.max_followup_rounds = max(0, int(max_followup_rounds))
         self.max_curated_historical_rounds = max(0, int(max_curated_historical_rounds))
         self.max_curated_public_map_rounds = max(0, int(max_curated_public_map_rounds))
@@ -334,6 +337,31 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
                 )
             supervisor_queries = list(supervisor_decision.query_hints)
 
+        entity_queries: list[str] = []
+        if self.entity_hypothesis_extractor is not None:
+            hypotheses = await self.entity_hypothesis_extractor.extract(
+                followup_request,
+                all_observations,
+            )
+            priority_intents = (
+                supervisor_decision.priority_intents
+                if supervisor_decision is not None
+                else followup_request.intents
+            )
+            entity_queries = self.entity_hypothesis_extractor.query_hints(
+                followup_request,
+                hypotheses,
+                priority_intents=priority_intents,
+                seen_queries=seen,
+            )
+            record.checkpoint = {
+                **record.checkpoint,
+                "llm_entity_hypothesis_version": self.entity_hypothesis_extractor.version,
+                "llm_entity_hypotheses": [item.as_dict() for item in hypotheses],
+                "llm_entity_hypothesis_queries": list(entity_queries),
+                "llm_entity_hypotheses_are_evidence": False,
+            }
+
         plan = await self.followup_planner.plan_followups(
             followup_request,
             all_observations,
@@ -341,7 +369,7 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             max_queries=max_queries,
         )
         queries = self._merge_followup_queries(
-            supervisor_queries,
+            [*entity_queries, *supervisor_queries],
             plan.queries,
             seen_queries=seen,
             limit=max_queries,
@@ -352,6 +380,11 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
                 "research_supervisor:"
                 f"{supervisor_decision.version}:"
                 f"model_assisted={str(supervisor_decision.model_assisted).lower()}"
+            )
+        if entity_queries:
+            notes.append(
+                "entity_hypotheses:"
+                f"{self.entity_hypothesis_extractor.version}:queries={len(entity_queries)}"
             )
         if not queries:
             record.checkpoint = {
@@ -380,6 +413,9 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
                     supervisor_decision.model_assisted
                 )
                 branch_task.metadata["research_supervisor_is_evidence"] = False
+            if entity_queries:
+                branch_task.metadata["entity_hypothesis_navigation"] = True
+                branch_task.metadata["entity_hypothesis_is_evidence"] = False
             additions.append(branch_task)
         self._merge_tasks(pending, additions, record.collection_id)
         record.checkpoint = {
