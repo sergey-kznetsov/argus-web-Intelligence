@@ -61,6 +61,22 @@ def test_street_and_house_number_survive_address_format_variation():
     assert "27" in result.matched_anchors
 
 
+def test_distant_date_number_does_not_attach_street_article_to_house():
+    evaluator = TerritoryRelevanceEvaluator()
+    text = (
+        "История Комсомольского проспекта начинается с плана Перми 1784 года. "
+        "Материал рассказывает о развитии и застройке улицы. "
+        "Другие новости региона. С 27 июля начнут выплаты пострадавшим от паводка."
+    )
+    result = evaluator.evaluate(
+        request(city="Пермь", address="Комсомольский проспект, 27"),
+        observation(text=text),
+    )
+
+    assert result.matched is False
+    assert result.basis == "address_anchor_missing"
+
+
 def test_city_only_request_accepts_city_source_context():
     evaluator = TerritoryRelevanceEvaluator()
     result = evaluator.evaluate(
