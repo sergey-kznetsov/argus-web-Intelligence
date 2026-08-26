@@ -24,6 +24,31 @@ class ResearchPlanner(Protocol):
     async def plan(self, request: CollectionRequest) -> ResearchPlan: ...
 
 
+def research_semantics_payload(request: CollectionRequest) -> dict[str, object]:
+    """Return only fields that are allowed to influence research semantics.
+
+    ``consumer``, ``analysis_id``, idempotency and protocol fields are transport/routing
+    metadata. Passing them to an LLM can accidentally turn a module name into a search
+    subject (for example, researching the word "Kraken" instead of the requested place).
+    The planner therefore receives an explicit allow-list rather than a dumped request.
+    """
+
+    constraints: dict[str, object] = {
+        "max_pages": int(request.constraints.max_pages),
+        "max_depth": int(request.constraints.max_depth),
+    }
+    if request.constraints.language:
+        constraints["language"] = request.constraints.language
+    if request.constraints.allowed_domains:
+        constraints["allowed_domains"] = list(request.constraints.allowed_domains)
+
+    return {
+        "territory": request.territory.model_dump(mode="json", exclude_none=True),
+        "intents": list(request.intents),
+        "constraints": constraints,
+    }
+
+
 def _source_pool_tasks(request: CollectionRequest) -> list[SourceTask]:
     """Turn caller-supplied public URLs into normal research candidates.
 
@@ -313,18 +338,22 @@ class OllamaResearchPlanner:
         )
 
     async def plan(self, request: CollectionRequest) -> ResearchPlan:
+        research_input = research_semantics_payload(request)
         prompt = (
             "You are ARGUS Research Planner. Return strict JSON with keys queries (array of search strings) "
             "and notes (array). Do not invent facts. Plan only how to research public sources. "
-            "Cover the requested intents fairly within a small query budget. For area research include "
-            "nearby organizations/places and, when requested, reviews, comments, complaints, resident "
-            "discussions, local media, incidents and historical records. Public map/card pages are "
-            "ordinary public web sources: do not assume paid map APIs or access-control bypass. Caller "
-            "supplied source_pool_urls are supplemental candidates, not authoritative or prioritized "
-            "sources; do not reduce normal discovery because they exist. For historical context expand "
-            "current place, former buildings/organizations, construction, demolition, reconstruction, "
-            "old addresses, documents, publications and newly discovered entities.\n"
-            f"Input: {request.model_dump_json()}"
+            "Use only territory, requested intents and research constraints from Input as search semantics; "
+            "service/module/routing identifiers are intentionally absent and must never be guessed or added "
+            "to queries. Every general query should preserve a territorial anchor unless it is a domain-"
+            "targeted source query. Cover the requested intents fairly within a small query budget. For area "
+            "research include nearby organizations/places and, when requested, reviews, comments, complaints, "
+            "resident discussions, local media, incidents and historical records. Public map/card pages are "
+            "ordinary public web sources: do not assume paid map APIs or access-control bypass. Caller supplied "
+            "source_pool_urls are handled outside this planner as supplemental candidates and must not alter "
+            "normal discovery. For historical context expand current place, former buildings/organizations, "
+            "construction, demolition, reconstruction, old addresses, documents, publications and newly "
+            "discovered entities.\n"
+            f"Input: {json.dumps(research_input, ensure_ascii=False, sort_keys=True)}"
         )
         try:
             async with httpx.AsyncClient(timeout=20.0, trust_env=False) as client:
