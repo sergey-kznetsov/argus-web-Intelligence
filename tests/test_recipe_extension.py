@@ -119,10 +119,18 @@ async def test_agent_extends_only_recipe_that_produced_context_dom(tmp_path: Pat
     extension = task.metadata["agent_recipe_extension"]
     assert extension["base_recipe_id"] == base.recipe_id
     assert extension["accepted"] is True
+
+    # The extension is technically replayable but remains ephemeral until extraction
+    # proves the research goal with source-backed Evidence.
     stored = await repository.get_recipe("example.com", "reviews")
     assert stored is not None
-    assert stored.recipe_id == candidate.recipe_id
-    assert stored.version == 2
+    assert stored.recipe_id == base.recipe_id
+    assert stored.version == 1
+    pending = task.metadata["pending_recipe_candidate_ids"]
+    assert isinstance(pending, list)
+    assert candidate.recipe_id in pending
+    lifecycle = result.metadata["recipe_lifecycle"]
+    assert lifecycle["status"] == "candidate"
     await repository.close()
 
 
@@ -155,4 +163,7 @@ async def test_agent_does_not_extend_unrelated_recipe_context(tmp_path: Path):
     assert candidate is not None
     assert len(candidate.steps) == 1
     assert candidate.steps[0].selector == "#more-reviews"
+    stored = await repository.get_recipe("example.com", "reviews")
+    assert stored is not None
+    assert stored.recipe_id == base.recipe_id
     await repository.close()
