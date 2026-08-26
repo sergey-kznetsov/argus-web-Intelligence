@@ -24,14 +24,15 @@ from argus.research.discovery import DiscoveryService
 from argus.research.entities import AreaEntityResearchPlanner
 from argus.research.followup import OllamaFollowupResearchPlanner
 from argus.research.historical import HistoricalBranchPlanner
+from argus.research.intent_evidence import OllamaIntentEvidenceClassifier
 from argus.research.planner import OllamaResearchPlanner
 from argus.research.searxng import SearxngDiscoveryProvider
 from argus.security.runtime_posture import enforce_runtime_security
 from argus.security.urls import UrlGuard
 from argus.services import ServiceContainer
+from argus.sources.intent_evidence_web import IntentEvidenceWebAdapter
 from argus.sources.json_feed import JSONFeedAdapter
 from argus.sources.overpass_map import OverpassSourceAdapter
-from argus.sources.public_map_web import PublicMapProvenanceWebAdapter
 from argus.sources.registry import SourceRegistry
 from argus.sources.rss import RSSAdapter
 from argus.sources.sitemap import SitemapDiscoveryAdapter
@@ -159,15 +160,17 @@ def build_services(settings: Settings) -> ServiceContainer:
     geocoder = build_geocoder(settings)
     map_registry = build_map_registry(settings)
     structured_extractor = build_structured_data_extractor(settings)
+    intent_evidence_classifier = OllamaIntentEvidenceClassifier(settings)
     registry = SourceRegistry(metrics=metrics)
     registry.register(
-        PublicMapProvenanceWebAdapter(
+        IntentEvidenceWebAdapter(
             repository=repository,
             fast=fast,
             browser=browser,
             snapshots=snapshots,
             recipes=recipes,
             agent=agent,
+            intent_evidence_classifier=intent_evidence_classifier,
             sitemap_discovery_enabled=settings.sitemap_discovery_enabled,
             pdf_extractor=build_pdf_extractor(settings),
             structured_data_extractor=structured_extractor,
