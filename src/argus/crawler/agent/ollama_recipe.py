@@ -19,15 +19,17 @@ class _Control:
     label: str
     selector: str | None = None
     url: str | None = None
+    value: str | None = None
 
 
 class OllamaRecipeAgent:
     """Plan bounded deterministic public-page interactions with local Ollama.
 
     The model never controls Playwright directly and its text is never Evidence. It may
-    only choose from controls extracted from an already fetched public page. ARGUS then
-    compiles the selected controls into a SiteRecipe and verifies that recipe through
-    the normal BROWSER runtime before any resulting page can be extracted.
+    only choose from controls extracted from an already fetched public page. Search/form
+    values are also precomputed by ARGUS from public research context; the model cannot
+    invent text that will be submitted to a site. Every selected path is compiled into a
+    SiteRecipe and verified through the normal BROWSER runtime before extraction.
     """
 
     name = "ollama-recipe"
@@ -35,8 +37,12 @@ class OllamaRecipeAgent:
     max_actions = 6
     max_visited_urls = 8
     max_controls = 120
+    max_form_controls = 60
+    max_input_candidates = 8
+    max_select_options = 20
     max_page_chars = 300_000
     max_label_chars = 300
+    max_input_value_chars = 512
     max_prompt_chars = 40_000
     max_scroll_pixels = 8_000
 
@@ -79,6 +85,46 @@ class OllamaRecipeAgent:
         "голос",
         "лайк",
     )
+    _SEARCH_FIELD_MARKERS = (
+        "search",
+        "query",
+        "keyword",
+        "find",
+        "lookup",
+        "address",
+        "location",
+        "place",
+        "name",
+        "city",
+        "street",
+        "поиск",
+        "найти",
+        "запрос",
+        "адрес",
+        "место",
+        "объект",
+        "название",
+        "город",
+        "улиц",
+        "организац",
+        "ключев",
+    )
+    _FILTER_FIELD_MARKERS = _SEARCH_FIELD_MARKERS + (
+        "filter",
+        "category",
+        "type",
+        "region",
+        "district",
+        "year",
+        "period",
+        "фильтр",
+        "категор",
+        "тип",
+        "регион",
+        "район",
+        "год",
+        "период",
+    )
 
     def __init__(self, settings: Settings, url_guard: UrlGuard) -> None:
         self.settings = settings
@@ -100,6 +146,7 @@ class OllamaRecipeAgent:
             page_html[: self.max_page_chars],
             page_url=page_url,
             allowed_domains=task.context.get("allowed_domains", []),
+            input_candidates=task.context.get("research_input_candidates", []),
         )
         if not controls:
             return self._failure(
@@ -152,6 +199,7 @@ class OllamaRecipeAgent:
                 "action_count": len(actions),
                 "agent_output_is_evidence": False,
                 "deterministic_replay_required": True,
+                "bounded_form_values": True,
             },
         )
 
@@ -161,11 +209,22 @@ class OllamaRecipeAgent:
         *,
         page_url: str,
         allowed_domains: object,
+        input_candidates: object = None,
     ) -> list[_Control]:
         soup = BeautifulSoup(html, "html.parser")
         controls: list[_Control] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, str, str]] = set()
         domains = self._domains(allowed_domains, page_url)
+        candidates = self._input_candidates(input_candidates)
+
+        await self._append_safe_form_controls(
+            soup,
+            controls,
+            seen,
+            page_url=page_url,
+            domains=domains,
+            candidates=candidates,
+        )
 
         for element in soup.find_all(["a", "button"]):
             if len(controls) >= self.max_controls:
@@ -187,7 +246,7 @@ class OllamaRecipeAgent:
                     await self.url_guard.validate(url)
                 except ValueError:
                     continue
-                key = ("goto", url)
+                key = ("goto", url, "")
                 if key in seen:
                     continue
                 seen.add(key)
@@ -206,7 +265,7 @@ class OllamaRecipeAgent:
             selector = self._selector(element)
             if not selector:
                 continue
-            key = ("click", selector)
+            key = ("click", selector, "")
             if key in seen:
                 continue
             seen.add(key)
@@ -232,7 +291,7 @@ class OllamaRecipeAgent:
             selector = self._selector(element)
             if not selector:
                 continue
-            key = ("click", selector)
+            key = ("click", selector, "")
             if key in seen:
                 continue
             seen.add(key)
@@ -246,6 +305,128 @@ class OllamaRecipeAgent:
             )
         return controls
 
+    async def _append_safe_form_controls(
+        self,
+        soup: BeautifulSoup,
+        controls: list[_Control],
+        seen: set[tuple[str, str, str]],
+        *,
+        page_url: str,
+        domains: list[str],
+        candidates: list[str],
+    ) -> None:
+        start_count = len(controls)
+        for element in soup.find_all(["input", "select"]):
+            if len(controls) >= self.max_controls:
+                break
+            if len(controls) - start_count >= self.max_form_controls:
+                break
+            if not isinstance(element, Tag) or element.has_attr("disabled"):
+                continue
+            label = self._field_label(element)
+            if not label or self._denied_label(label):
+                continue
+            if not await self._safe_search_form(element, page_url=page_url, domains=domains):
+                continue
+            selector = self._selector(element)
+            if not selector:
+                continue
+
+            if element.name == "input":
+                input_type = str(element.get("type") or "text").strip().casefold()
+                role = str(element.get("role") or "").strip().casefold()
+                if input_type not in {"", "text", "search"} or element.has_attr("readonly"):
+                    continue
+                if role not in {"", "searchbox"}:
+                    continue
+                if not self._field_matches(label, self._SEARCH_FIELD_MARKERS):
+                    continue
+                for candidate in candidates:
+                    if len(controls) >= self.max_controls:
+                        break
+                    if len(controls) - start_count >= self.max_form_controls:
+                        break
+                    key = ("fill", selector, candidate)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    controls.append(
+                        _Control(
+                            control_id=len(controls) + 1,
+                            kind="fill",
+                            label=f"{label}: ввести исследовательское значение",
+                            selector=selector,
+                            value=candidate,
+                        )
+                    )
+                if candidates and len(controls) < self.max_controls:
+                    key = ("press", selector, "Enter")
+                    if key not in seen:
+                        seen.add(key)
+                        controls.append(
+                            _Control(
+                                control_id=len(controls) + 1,
+                                kind="press",
+                                label=f"{label}: выполнить публичный поиск",
+                                selector=selector,
+                                value="Enter",
+                            )
+                        )
+                continue
+
+            if element.has_attr("multiple"):
+                continue
+            if not self._field_matches(label, self._FILTER_FIELD_MARKERS):
+                continue
+            option_count = 0
+            for option in element.find_all("option"):
+                if len(controls) >= self.max_controls or option_count >= self.max_select_options:
+                    break
+                if not isinstance(option, Tag) or option.has_attr("disabled"):
+                    continue
+                value = str(option.get("value") or "").strip()
+                option_label = " ".join(option.get_text(" ", strip=True).split())
+                if not value or not option_label or self._denied_label(option_label):
+                    continue
+                value = value[: self.max_input_value_chars]
+                key = ("select", selector, value)
+                if key in seen:
+                    continue
+                seen.add(key)
+                option_count += 1
+                controls.append(
+                    _Control(
+                        control_id=len(controls) + 1,
+                        kind="select",
+                        label=f"{label}: {option_label[:160]}",
+                        selector=selector,
+                        value=value,
+                    )
+                )
+
+    async def _safe_search_form(
+        self,
+        element: Tag,
+        *,
+        page_url: str,
+        domains: list[str],
+    ) -> bool:
+        form = element.find_parent("form")
+        if form is None:
+            return True
+        method = str(form.get("method") or "get").strip().casefold()
+        if method not in {"", "get"}:
+            return False
+        action_raw = str(form.get("action") or "").strip()
+        action_url = urljoin(page_url, action_raw) if action_raw else page_url
+        if not self._same_domain_boundary(action_url, domains):
+            return False
+        try:
+            await self.url_guard.validate(action_url)
+        except ValueError:
+            return False
+        return True
+
     def _prompt(self, task: AgentTask, controls: list[_Control]) -> str:
         compact = [
             {
@@ -253,20 +434,21 @@ class OllamaRecipeAgent:
                 "kind": item.kind,
                 "label": item.label,
                 "url": item.url,
+                "value": item.value,
             }
             for item in controls
         ]
         prompt = (
             "You are ARGUS deterministic interaction planner. Do not answer the research "
-            "question and do not invent selectors, URLs or facts. Choose only from the "
-            "supplied public-page controls. The goal is to reveal the requested factual "
-            "content such as reviews, comments, details or expandable public sections. "
-            "Never choose login, registration, purchase, checkout, upload, download, "
-            "delete, subscription, CAPTCHA/access-control or form-submission actions. "
-            "Return strict JSON: {\"actions\":[{\"control_id\":N}, "
-            "{\"scroll_pixels\":1200}]}. Use at most 6 actions. A scroll may be used "
-            "after a chosen tab/control to reveal lazy-loaded public content. If no safe "
-            "control is useful, return {\"actions\":[]}. "
+            "question and do not invent selectors, URLs, form values or facts. Choose only "
+            "from the supplied public-page controls. Fill/select values in controls were "
+            "pre-approved by ARGUS and must never be changed. The goal is to reveal requested "
+            "factual content using navigation, public GET/search/filter forms, tabs and "
+            "expandable sections. Never choose login, registration, purchase, checkout, POST "
+            "forms, upload, download, delete, subscription, CAPTCHA/access-control or other "
+            "state-changing actions. Return strict JSON: {\"actions\":[{\"control_id\":N}, "
+            "{\"scroll_pixels\":1200}]}. Use at most 6 actions. If no safe control is useful, "
+            "return {\"actions\":[]}. "
             f"Goal: {task.goal}. Instruction: {task.instruction}. "
             f"Controls: {json.dumps(compact, ensure_ascii=False)}"
         )
@@ -304,6 +486,18 @@ class OllamaRecipeAgent:
                     actions.append({"go_to_url": {"url": control.url}})
                 elif control.kind == "click" and control.selector:
                     actions.append({"click": {"selector": control.selector}})
+                elif control.kind == "fill" and control.selector and control.value is not None:
+                    actions.append(
+                        {"fill": {"selector": control.selector, "value": control.value}}
+                    )
+                elif control.kind == "select" and control.selector and control.value is not None:
+                    actions.append(
+                        {"select": {"selector": control.selector, "value": control.value}}
+                    )
+                elif control.kind == "press" and control.selector and control.value:
+                    actions.append(
+                        {"press": {"selector": control.selector, "key": control.value}}
+                    )
                 continue
 
             if "scroll_pixels" in raw:
@@ -331,12 +525,12 @@ class OllamaRecipeAgent:
 
     def _selector(self, element: Tag) -> str | None:
         tag = str(element.name or "*").lower()
-        for key in ("data-testid", "data-test", "id", "name", "aria-label"):
+        for key in ("data-testid", "data-test", "id", "name", "aria-label", "placeholder"):
             value = element.get(key)
             if isinstance(value, str) and value.strip():
                 return f'{tag}[{key}={self._css_string(value.strip())}]'
         label = self._label(element)
-        if label and len(label) <= 120:
+        if label and len(label) <= 120 and element.name not in {"input", "select"}:
             return f'{tag}:has-text({self._css_string(label)})'
         return None
 
@@ -348,9 +542,44 @@ class OllamaRecipeAgent:
         text = " ".join(element.get_text(" ", strip=True).split())
         return text[: self.max_label_chars]
 
+    def _field_label(self, element: Tag) -> str:
+        values: list[str] = []
+        for key in ("aria-label", "title", "placeholder", "name", "id"):
+            value = element.get(key)
+            if isinstance(value, str) and value.strip():
+                values.append(value.strip())
+        parent_label = element.find_parent("label")
+        if isinstance(parent_label, Tag):
+            text = " ".join(parent_label.get_text(" ", strip=True).split())
+            if text:
+                values.append(text)
+        normalized = " | ".join(" ".join(value.split()) for value in values if value.strip())
+        return normalized[: self.max_label_chars]
+
     def _denied_label(self, label: str) -> bool:
         normalized = label.casefold()
         return any(marker in normalized for marker in self._DENIED_LABEL_MARKERS)
+
+    @staticmethod
+    def _field_matches(label: str, markers: tuple[str, ...]) -> bool:
+        normalized = label.casefold()
+        return any(marker in normalized for marker in markers)
+
+    def _input_candidates(self, raw: object) -> list[str]:
+        values = raw if isinstance(raw, list) else []
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            normalized = " ".join(str(value).split()).strip()
+            normalized = normalized[: self.max_input_value_chars].rstrip()
+            key = normalized.casefold()
+            if not normalized or key in seen:
+                continue
+            seen.add(key)
+            result.append(normalized)
+            if len(result) >= self.max_input_candidates:
+                break
+        return result
 
     @staticmethod
     def _domains(raw: object, page_url: str) -> list[str]:
