@@ -48,6 +48,7 @@ async def test_browser_serp_extracts_destination_urls_only():
         "https://example.com/a",
         "https://docs.python.org/3/",
     ]
+    assert all(hit.query == "Ижевск отзывы" for hit in hits)
     _, recipe = browser.calls[0]
     assert recipe.steps[0].selector == 'input[name="q"]'
     assert recipe.steps[0].value == "Ижевск отзывы"
