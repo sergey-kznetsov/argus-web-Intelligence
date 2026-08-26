@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-import json
-import re
 
 from argus.contracts.models import CollectionRequest, Observation
+from argus.research.territory_relevance import TerritoryRelevanceEvaluator
 from argus.research.url_identity import canonicalize_discovery_url
 
 
@@ -17,11 +16,12 @@ class IntentCoverageEvaluator:
     an explicit ``intent_evidence`` quality marker.
 
     Request context is optional for backward-compatible structural checks. Production
-    callers should supply it so broad intents such as ``public_mentions`` can require
+    callers should supply it so broad intents such as ``public_mentions`` require
     deterministic territorial relevance rather than trusting search navigation alone.
     """
 
-    version = "intent-evidence-coverage/3"
+    version = "intent-evidence-coverage/4"
+    territory_relevance = TerritoryRelevanceEvaluator()
     _PUBLICATION_SCHEMA_TYPES = {
         "Article",
         "NewsArticle",
@@ -33,27 +33,6 @@ class IntentCoverageEvaluator:
     _HISTORICAL_SOURCE_KINDS = {
         "historical_page_version",
         "historical_entity_change",
-    }
-    _TERRITORY_STOPWORDS = {
-        "street",
-        "st",
-        "road",
-        "rd",
-        "avenue",
-        "ave",
-        "house",
-        "building",
-        "city",
-        "улица",
-        "ул",
-        "дом",
-        "д",
-        "корпус",
-        "корп",
-        "строение",
-        "стр",
-        "город",
-        "г",
     }
 
     def supports(
@@ -100,8 +79,8 @@ class IntentCoverageEvaluator:
         if normalized in {"images", "historical_images"}:
             return entity_type == "image" or source_kind == "image_reference"
 
-        # Incidents and complaints require semantic relevance, not merely a page that
-        # happened to be fetched for that goal. They remain uncovered until a factual
+        # Incidents, complaints and consumer-defined intents require semantic relevance,
+        # not merely a page fetched for that goal. They remain uncovered until a factual
         # extractor/classifier emits an explicit intent_evidence marker.
         return False
 
@@ -142,9 +121,8 @@ class IntentCoverageEvaluator:
             candidates.update(str(item).strip().casefold() for item in explicit)
         return {item for item in candidates if item}
 
-    @classmethod
     def _is_public_mention(
-        cls,
+        self,
         observation: Observation,
         schema_types: set[str],
         *,
@@ -153,7 +131,7 @@ class IntentCoverageEvaluator:
         structural = False
         if observation.entity_type.casefold() in {"publication", "comment", "review"}:
             structural = True
-        elif schema_types & cls._PUBLICATION_SCHEMA_TYPES:
+        elif schema_types & self._PUBLICATION_SCHEMA_TYPES:
             structural = True
         elif observation.source_kind.casefold() == "web_page":
             structural = bool(
@@ -163,75 +141,7 @@ class IntentCoverageEvaluator:
             return False
         if request is None:
             return True
-        return cls._matches_territory(observation, request)
-
-    @classmethod
-    def _matches_territory(
-        cls,
-        observation: Observation,
-        request: CollectionRequest,
-    ) -> bool:
-        address = cls._normalize_text(request.territory.address or "")
-        city = cls._normalize_text(request.territory.city or "")
-        if not address and not city:
-            # Point/geometry-only relevance needs explicit geospatial evidence or a
-            # future dedicated matcher; plain page text must not be assumed relevant.
-            return False
-
-        haystack = cls._observation_text(observation)
-        if not haystack:
-            return False
-        if address and len(address) >= 3 and address in haystack:
-            return True
-        if not address and city and city in haystack:
-            return True
-
-        raw_anchor = address or city
-        tokens = cls._territory_tokens(raw_anchor)
-        if not tokens:
-            return False
-        matched = sum(1 for token in tokens if cls._contains_token(haystack, token))
-        required = 1 if len(tokens) == 1 else 2
-        return matched >= required
-
-    @classmethod
-    def _observation_text(cls, observation: Observation) -> str:
-        parts = [observation.title or "", observation.text or ""]
-        try:
-            data = json.dumps(
-                observation.data,
-                ensure_ascii=False,
-                sort_keys=True,
-                default=str,
-            )
-        except (TypeError, ValueError):
-            data = ""
-        parts.append(data[:30_000])
-        return cls._normalize_text(" ".join(parts))
-
-    @classmethod
-    def _territory_tokens(cls, value: str) -> list[str]:
-        result: list[str] = []
-        seen: set[str] = set()
-        for token in re.findall(r"[\w-]+", value.casefold(), flags=re.UNICODE):
-            token = token.strip("-")
-            if not token or token in cls._TERRITORY_STOPWORDS:
-                continue
-            if not token.isdigit() and len(token) < 3:
-                continue
-            if token in seen:
-                continue
-            seen.add(token)
-            result.append(token)
-        return result[:12]
-
-    @staticmethod
-    def _contains_token(haystack: str, token: str) -> bool:
-        return re.search(rf"(?<!\w){re.escape(token)}(?!\w)", haystack) is not None
-
-    @staticmethod
-    def _normalize_text(value: str) -> str:
-        return " ".join(re.findall(r"[\w-]+", value.casefold(), flags=re.UNICODE))
+        return self.territory_relevance.matches(request, observation)
 
     @staticmethod
     def _schema_types(observation: Observation) -> list[str]:
