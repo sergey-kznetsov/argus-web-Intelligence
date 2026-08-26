@@ -24,9 +24,11 @@ from argus.research.discovery import DiscoveryService
 from argus.research.entities import AreaEntityResearchPlanner
 from argus.research.followup import OllamaFollowupResearchPlanner
 from argus.research.historical import HistoricalBranchPlanner
+from argus.research.intent_coverage import IntentCoverageEvaluator
 from argus.research.intent_evidence import OllamaIntentEvidenceClassifier
 from argus.research.planner import OllamaResearchPlanner
 from argus.research.searxng import SearxngDiscoveryProvider
+from argus.research.supervisor import HeuristicResearchSupervisor, OllamaResearchSupervisor
 from argus.security.runtime_posture import enforce_runtime_security
 from argus.security.urls import UrlGuard
 from argus.services import ServiceContainer
@@ -161,6 +163,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     map_registry = build_map_registry(settings)
     structured_extractor = build_structured_data_extractor(settings)
     intent_evidence_classifier = OllamaIntentEvidenceClassifier(settings)
+    coverage = IntentCoverageEvaluator()
     registry = SourceRegistry(metrics=metrics)
     registry.register(
         IntentEvidenceWebAdapter(
@@ -211,6 +214,11 @@ def build_services(settings: Settings) -> ServiceContainer:
     if settings.wayback_cdx_url:
         registry.register(WaybackSourceAdapter(WaybackCDXProvider(settings), snapshots))
     planner = OllamaResearchPlanner(settings)
+    followup_fallback = EvidenceAwareHeuristicFollowupResearchPlanner(coverage=coverage)
+    supervisor_fallback = HeuristicResearchSupervisor(
+        target_sources_per_intent=2,
+        coverage=coverage,
+    )
     orchestrator = AdaptiveResearchAtomicCollectionOrchestrator(
         repository=repository,
         registry=registry,
@@ -221,7 +229,14 @@ def build_services(settings: Settings) -> ServiceContainer:
         area_entity_planner=AreaEntityResearchPlanner(),
         followup_planner=OllamaFollowupResearchPlanner(
             settings,
-            fallback=EvidenceAwareHeuristicFollowupResearchPlanner(),
+            fallback=followup_fallback,
+            coverage=coverage,
+        ),
+        research_supervisor=OllamaResearchSupervisor(
+            settings,
+            fallback=supervisor_fallback,
+            coverage=coverage,
+            target_sources_per_intent=2,
         ),
         max_followup_rounds=3,
         auto_execute=settings.execution_role == "embedded",
