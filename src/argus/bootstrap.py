@@ -13,6 +13,7 @@ from argus.geocoding.contracts import GeocodeProvider
 from argus.geocoding.nominatim import NominatimGeocoder
 from argus.history.snapshots import SnapshotService
 from argus.history.wayback import WaybackCDXProvider
+from argus.llm_health import OllamaRuntimeHealth
 from argus.maps.overpass import OverpassMapProvider
 from argus.maps.registry import MapProviderRegistry
 from argus.observability import OperationalMetrics
@@ -158,6 +159,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     snapshots = SnapshotService(repository)
     recipes = RecipeManager(repository)
     metrics = OperationalMetrics()
+    llm_health = OllamaRuntimeHealth(settings)
     agent = build_agent(settings, guard)
     discovery = build_discovery(settings, guard, browser)
     geocoder = build_geocoder(settings)
@@ -252,4 +254,8 @@ def build_services(settings: Settings) -> ServiceContainer:
         fast=fast,
         browser=browser,
         metrics=metrics,
+        llm_health=llm_health,
+        llm_required_on_start=(
+            settings.llm_required and settings.execution_role in {"embedded", "worker"}
+        ),
     )
