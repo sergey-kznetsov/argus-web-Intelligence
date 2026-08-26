@@ -3,14 +3,14 @@
 ARGUS intentionally reuses maintained open-source components instead of reimplementing crawler and database infrastructure.
 
 - Crawlee for Python: queue/request management, retries, sessions, concurrency and Playwright crawler runtime. Apache-2.0.
-- Playwright: browser automation runtime. Apache-2.0.
+- Playwright: browser automation runtime used by BROWSER and deterministic SiteRecipe verification. Apache-2.0.
 - FastAPI: internal HTTP API. MIT.
 - Psycopg 3 + psycopg_pool: PostgreSQL driver and native asyncio connection pool used by the product/server repository backend. LGPL-3.0-only. ARGUS uses the published package API and does not modify or vendor Psycopg code.
 - defusedxml: hardened parsing for untrusted RSS/Atom and Sitemap XML, including entity/external-reference protections. Python Software Foundation License (PSFL).
 - pypdf: local PDF metadata/text extraction. BSD-3-Clause. ARGUS requires `pypdf>=6.16.1,<7`, does not use a remote PDF service, and executes untrusted PDF parsing in a short-lived bounded child process. Raw document bytes remain subject to the normal HTTP response-size limit before parsing.
-- Browser Use: optional agent backend with Ollama/local-model support. MIT.
-- Ollama Python: optional local-model client. MIT.
-- Stagehand through Crawlee: optional future/experimental agent backend. Verify the exact transitive Stagehand package/license before enabling it in a packaged distribution.
+- Ollama: optional local-model HTTP service used for research planning, exact-excerpt semantic classification and the native `ollama-recipe` navigation planner. ARGUS does not require an Ollama Python SDK and does not treat model output as Evidence.
+- Browser Use: retained only as dormant compatibility/security-harness code. It is not an operational or installable ARGUS backend while Browser Use 0.13.x pins `pypdf==6.14.2`, which conflicts with ARGUS's patched `pypdf>=6.16.1` security baseline. ARGUS will not downgrade pypdf to enable it.
+- Stagehand through Crawlee: optional future/experimental backend boundary. It is not operational until local-LLM integration and the exact transitive package/license set are validated.
 - SearXNG: optional separate/self-hosted discovery service accessed only through its HTTP API. AGPL-3.0-or-later. ARGUS does not vendor, link to, import or copy SearXNG code. If SearXNG is deployed, its own license and source-offer obligations must be handled for that separate service.
 - DuckDuckGo HTML: optional low-volume public browser discovery fallback. ARGUS does not ship DuckDuckGo code or use a private API; search-result pages only provide candidate destination URLs and are never factual Evidence.
 - OpenStreetMap/Overpass: optional map data provider accessed through a separately configured Overpass interpreter. OpenStreetMap data is licensed under ODbL and requires attribution. ARGUS normalizes each place with `© OpenStreetMap contributors`, the ODbL marker and a direct `openstreetmap.org` source URL. No public Overpass endpoint is enabled by default.
