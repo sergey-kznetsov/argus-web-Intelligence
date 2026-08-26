@@ -71,6 +71,7 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
         context: dict[str, object] = {
             "allowed_domains": task.metadata.get("allowed_domains", []),
             "research_goals": goals,
+            "research_input_candidates": task.metadata.get("research_input_candidates", []),
         }
         if context_fetch is not None and not context_fetch.blocked:
             context.update(
@@ -95,10 +96,6 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
         except UnsafeUrlError:
             raise
         except Exception as exc:
-            # AGENT is a last-resort capability. Missing local LLM service or an
-            # agent-runtime failure must not turn a bounded FAST/BROWSER research path
-            # into an unhandled collection failure. Keep only the exception class in
-            # metadata so secrets/endpoints are not copied to output.
             task.metadata["agent_error"] = "agent runtime unavailable"
             task.metadata["agent_execution"] = {
                 "status": "failed",
@@ -132,9 +129,6 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
             return None
 
         if agent_result.actions:
-            # Any successful agent run that performed actions must become a verified
-            # deterministic recipe. Never replay arbitrary visited URLs as a fallback
-            # when the action path cannot be compiled or verified.
             if self.recipes is None:
                 task.metadata["agent_path_rejected"] = "recipe_manager_unavailable"
                 return None
@@ -176,8 +170,6 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
                         "recipe_candidate_rejected": self.recipes.lifecycle(rejected),
                     }
                 )
-                # Do not try alternate URLs to sidestep a challenge encountered while
-                # verifying the deterministic recipe.
                 return replayed
 
             await self.recipes.mark_success(candidate)
@@ -191,9 +183,6 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
             )
             return replayed
 
-        # A successful action-free agent run may have discovered a direct public URL.
-        # Re-fetch at most a tiny bounded number with the normal BROWSER runtime so the
-        # agent's own final text never becomes factual Evidence.
         replay_candidates = [
             url for url in reversed(agent_result.visited_urls) if url and url != task.url
         ][: self.max_agent_direct_replay_urls]
