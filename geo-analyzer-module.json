@@ -11,7 +11,7 @@
     "kind": "python",
     "python": ">=3.11,<3.14",
     "install": [
-      ["{python}", "-m", "pip", "install", "--disable-pip-version-check", ".[agent-browser-use]"],
+      ["{python}", "-m", "pip", "install", "--disable-pip-version-check", "."],
       ["{python}", "-m", "playwright", "install", "chromium"]
     ]
   },
