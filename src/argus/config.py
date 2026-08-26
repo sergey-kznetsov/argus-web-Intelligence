@@ -140,6 +140,9 @@ class Settings(BaseSettings):
 
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
+    llm_required: bool = False
+    llm_health_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    llm_health_cache_seconds: float = Field(default=10.0, ge=0, le=300)
     agent_backend: str = "ollama-recipe"
     agent_enabled: bool = False
     allow_internal_targets: list[str] = Field(default_factory=list)
@@ -191,6 +194,7 @@ class Settings(BaseSettings):
         "nominatim_url",
         "wayback_cdx_url",
         "wayback_capture_base_url",
+        "ollama_url",
         mode="before",
     )
     @classmethod
