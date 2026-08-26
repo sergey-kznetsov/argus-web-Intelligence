@@ -27,20 +27,20 @@ class AgentRecipeCompiler:
                 steps.append(RecipeStep(action="goto", value=url))
                 continue
             if action_name in self._CLICK_ACTIONS:
-                selector = self._selector(raw)
+                selector = self._selector(raw) or self._string(params, "selector")
                 if not selector:
                     return None
                 steps.append(RecipeStep(action="click", selector=selector))
                 continue
             if action_name in self._FILL_ACTIONS:
-                selector = self._selector(raw)
+                selector = self._selector(raw) or self._string(params, "selector")
                 text = self._string(params, "text", "value")
                 if not selector or text is None:
                     return None
                 steps.append(RecipeStep(action="fill", selector=selector, value=text))
                 continue
             if action_name in {"send_keys", "press"}:
-                selector = self._selector(raw)
+                selector = self._selector(raw) or self._string(params, "selector")
                 keys = self._string(params, "keys", "key", "value")
                 if not selector or not keys:
                     return None
