@@ -48,6 +48,7 @@ class CollectionWorker:
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._maintenance_task: asyncio.Task[None] | None = None
         self._probe_server: asyncio.AbstractServer | None = None
+        self._llm_claims_ready: bool | None = None
 
     async def start(self) -> None:
         await self.services.start()
@@ -114,6 +115,9 @@ class CollectionWorker:
             float(self.settings.worker_concurrency),
             scope="process",
         )
+        if self.settings.llm_required:
+            self._llm_claims_ready = True
+            self.metrics.gauge("worker_llm_ready", 1.0, scope="process")
         logger.info(
             "worker started",
             extra={
@@ -129,6 +133,9 @@ class CollectionWorker:
         try:
             while not self._stop.is_set():
                 self._reap_finished()
+                if not await self._llm_allows_new_claims():
+                    await self._idle_wait()
+                    continue
                 available = self.settings.worker_concurrency - len(self._active)
                 claimed = 0
                 for _ in range(max(0, available)):
@@ -151,15 +158,77 @@ class CollectionWorker:
                         scope="process",
                     )
                 if claimed == 0:
-                    try:
-                        await asyncio.wait_for(
-                            self._stop.wait(),
-                            timeout=self.settings.worker_poll_interval_seconds,
-                        )
-                    except TimeoutError:
-                        pass
+                    await self._idle_wait()
         finally:
             await self.stop()
+
+    async def _idle_wait(self) -> None:
+        try:
+            await asyncio.wait_for(
+                self._stop.wait(),
+                timeout=self.settings.worker_poll_interval_seconds,
+            )
+        except TimeoutError:
+            pass
+
+    async def _llm_allows_new_claims(self) -> bool:
+        if not self.settings.llm_required:
+            return True
+        checker = self.services.llm_health
+        if checker is None:
+            return self._set_llm_claim_state(False, reason_code="LLM_HEALTH_NOT_CONFIGURED")
+        try:
+            health = await checker.check()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.metrics.inc(
+                "worker_llm_health_checks_total",
+                status="error",
+                error_type=type(exc).__name__,
+            )
+            return self._set_llm_claim_state(False, reason_code="LLM_HEALTH_CHECK_FAILED")
+        self.metrics.inc(
+            "worker_llm_health_checks_total",
+            status="ready" if health.ready else "degraded",
+        )
+        return self._set_llm_claim_state(
+            bool(health.ready),
+            reason_code=health.reason_code,
+        )
+
+    def _set_llm_claim_state(self, ready: bool, *, reason_code: str | None) -> bool:
+        previous = self._llm_claims_ready
+        self._llm_claims_ready = ready
+        self.metrics.gauge(
+            "worker_llm_ready",
+            1.0 if ready else 0.0,
+            scope="process",
+        )
+        if previous is ready:
+            return ready
+        self.metrics.inc(
+            "worker_llm_readiness_transitions_total",
+            status="ready" if ready else "degraded",
+        )
+        if ready:
+            logger.info(
+                "required local LLM recovered; worker claims resumed",
+                extra={
+                    "event": "worker_llm_recovered",
+                    "worker_id": self.worker_id,
+                },
+            )
+        else:
+            logger.warning(
+                "required local LLM unavailable; pausing new worker claims",
+                extra={
+                    "event": "worker_llm_unavailable",
+                    "worker_id": self.worker_id,
+                    "reason_code": reason_code or "LLM_NOT_READY",
+                },
+            )
+        return ready
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -175,6 +244,8 @@ class CollectionWorker:
             await asyncio.gather(*active, return_exceptions=True)
         self._active.clear()
         self.metrics.gauge("worker_active_collections", 0.0, scope="process")
+        if self.settings.llm_required:
+            self.metrics.gauge("worker_llm_ready", 0.0, scope="process")
 
         for attr in ("_heartbeat_task", "_maintenance_task"):
             task = getattr(self, attr)
@@ -363,6 +434,32 @@ class CollectionWorker:
             except TimeoutError:
                 pass
 
+    async def _probe_llm(self) -> dict[str, object] | None:
+        if not self.settings.llm_required:
+            return None
+        checker = self.services.llm_health
+        if checker is None:
+            return {
+                "status": "unavailable",
+                "ready": False,
+                "backend": "ollama",
+                "model": self.settings.ollama_model,
+                "reason_code": "LLM_HEALTH_NOT_CONFIGURED",
+            }
+        try:
+            return (await checker.check()).as_dict()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return {
+                "status": "unavailable",
+                "ready": False,
+                "backend": "ollama",
+                "model": self.settings.ollama_model,
+                "reason_code": "LLM_HEALTH_CHECK_FAILED",
+                "error_type": type(exc).__name__,
+            }
+
     async def _handle_probe(
         self,
         reader: asyncio.StreamReader,
@@ -389,14 +486,22 @@ class CollectionWorker:
                 payload = {"status": "not_found"}
             else:
                 database = await self.repository.health()
-                ready = self._started and database.get("status") == "ok"
-                status_code = 200 if ready else 503
+                llm = await self._probe_llm()
+                database_ready = database.get("status") == "ok"
+                llm_ready = llm is None or bool(llm.get("ready"))
+                live = self._started and database_ready
+                ready = live and llm_ready
+                probe_ready = ready if path == "/readyz" else live
+                status_code = 200 if probe_ready else 503
                 payload = {
-                    "status": "ok" if ready else "degraded",
+                    "status": "ok" if probe_ready else "degraded",
                     "worker_id": self.worker_id,
                     "active_collections": len(self._active),
                     "database": database,
+                    "claims_paused": bool(self.settings.llm_required and not llm_ready),
                 }
+                if llm is not None:
+                    payload["llm"] = llm
         except Exception:
             status_code = 503
             payload = {"status": "error"}
