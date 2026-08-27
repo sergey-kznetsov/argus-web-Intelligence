@@ -4,6 +4,7 @@ import pytest
 
 from argus.contracts.models import CollectionRequest, CollectionStatus, Observation
 from argus.history.snapshots import sha256_text
+from argus.observability import OperationalMetrics
 from argus.orchestrator.evidence_status import EvidenceStatusAdaptiveResearchOrchestrator
 from argus.research.planner import HeuristicResearchPlanner
 from argus.sources.base import SourceResult, SourceTask
@@ -63,6 +64,7 @@ async def run(tmp_path: Path, *, intents: list[str], allow_partial: bool = True)
         max_curated_historical_rounds=0,
         max_curated_public_map_rounds=0,
         max_concurrency=1,
+        metrics=OperationalMetrics(),
     )
     await orchestrator.start()
     accepted = await orchestrator.submit(
