@@ -22,18 +22,25 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
         if self.recipes is not None:
             recipe = await self.recipes.get(task.url, task.goal)
             if recipe is not None:
-                try:
-                    result = await self.browser.fetch(task.url, recipe=recipe)
-                    self._track_active_recipe_replay(task, recipe, result)
-                    self._attach_recipe_lifecycle(result, recipe)
-                    return result
-                except UnsafeUrlError:
-                    raise
-                except Exception as exc:
-                    await self.recipes.mark_failure(
-                        recipe,
-                        reason=f"replay_failed:{type(exc).__name__}",
+                if not self._recipe_replay_compatible(task, recipe):
+                    task.metadata["active_recipe_replay_suppressed"] = (
+                        "research_input_scope_mismatch"
                     )
+                    task.metadata["active_recipe_replay_suppressed_recipe_id"] = recipe.recipe_id
+                    task.metadata["active_recipe_replay_suppressed_version"] = recipe.version
+                else:
+                    try:
+                        result = await self.browser.fetch(task.url, recipe=recipe)
+                        self._track_active_recipe_replay(task, recipe, result)
+                        self._attach_recipe_lifecycle(result, recipe)
+                        return result
+                    except UnsafeUrlError:
+                        raise
+                    except Exception as exc:
+                        await self.recipes.mark_failure(
+                            recipe,
+                            reason=f"replay_failed:{type(exc).__name__}",
+                        )
 
         try:
             result = await self.fast.fetch(task.url)
@@ -404,6 +411,34 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
         }
         return combined
 
+    @staticmethod
+    def _recipe_replay_compatible(task: SourceTask, recipe: SiteRecipe) -> bool:
+        """Prevent literal form values from leaking across unrelated research inputs.
+
+        AGENT-generated ``fill`` values are copied from bounded research input candidates.
+        Because recipes are persisted by domain + goal, a literal address from one collection
+        must never be replayed for another address. Static recipes without fill steps remain
+        globally reusable; recipes with fills are replayable only when every literal fill
+        value is explicitly allowed by the current task's research input candidates.
+        """
+
+        fill_values = {
+            " ".join(str(step.value or "").split()).strip().casefold()
+            for step in recipe.steps
+            if step.action == "fill" and str(step.value or "").strip()
+        }
+        if not fill_values:
+            return True
+        raw_candidates = task.metadata.get("research_input_candidates")
+        if not isinstance(raw_candidates, list):
+            return False
+        allowed = {
+            " ".join(str(value).split()).strip().casefold()
+            for value in raw_candidates
+            if str(value).strip()
+        }
+        return fill_values.issubset(allowed)
+
     def _attach_recipe_lifecycle(self, result: FetchResult, recipe) -> None:
         if self.recipes is None:
             return
@@ -421,6 +456,8 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
                 "keep_versions": self.recipes.keep_versions,
                 "blocked_verification_fallback": False,
                 "verified_recipe_extension": True,
+                "literal_fill_replay_scope": "current_research_input_candidates",
+                "fill_scope_mismatch_counts_as_failure": False,
                 "max_agent_recipe_steps": self.max_agent_recipe_steps,
             }
         if self.agent is not None:
