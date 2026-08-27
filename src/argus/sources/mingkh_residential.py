@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Protocol
 from urllib.parse import urldefrag, urlparse
 
 from bs4 import BeautifulSoup
@@ -15,25 +16,49 @@ from argus.contracts.models import (
 from argus.crawler.models import FetchResult
 from argus.history.snapshots import SnapshotService, sha256_text
 from argus.normalization.identity import stable_evidence_id, stable_observation_id
+from argus.research.input_candidates import research_input_candidates
 from argus.research.residential_sources import RESIDENTIAL_INTENTS
 from argus.research.territory_relevance import TerritoryRelevanceEvaluator
 from argus.sources.base import SourceResult, SourceTask
-from argus.sources.generic_web import GenericWebAdapter
+
+
+class ResidentialWebRuntime(Protocol):
+    """Narrow web-runtime contract required by the dedicated residential source."""
+
+    async def fetch(self, task: SourceTask) -> FetchResult: ...
+
+    async def navigate_with_agent(
+        self,
+        task: SourceTask,
+        *,
+        context_fetch: FetchResult,
+    ) -> FetchResult | None: ...
+
+    async def finalize_navigation_goal(
+        self,
+        task: SourceTask,
+        request: CollectionRequest,
+        result: SourceResult,
+    ) -> None: ...
+
+    async def health(self) -> dict[str, object]: ...
 
 
 class MingkhResidentialAdapter:
     """Collect source-declared residential building facts from ``dom.mingkh.ru``.
 
     Population is never estimated from apartments, area or other proxies. A fact is
-    emitted only when the fetched public page explicitly labels the value. Access
-    challenges are detected and reported as blocked; this adapter never solves or bypasses
-    CAPTCHA/access-control mechanisms.
+    emitted only when the fetched public page explicitly labels the value. Accessible
+    public search/filter interfaces may be traversed through the bounded AGENT -> verified
+    SiteRecipe contract. Access challenges are detected and reported as blocked; this
+    adapter never solves or bypasses CAPTCHA/access-control mechanisms.
     """
 
     source_id = "mingkh_residential"
     intents = set(RESIDENTIAL_INTENTS)
     domain = "dom.mingkh.ru"
-    extractor_version = "mingkh-residential/1"
+    extractor_version = "mingkh-residential/2"
+    interface_navigation_version = "mingkh-interface-navigation/1"
 
     _LABELS: dict[str, tuple[str, ...]] = {
         "residential_premises_count": (
@@ -64,7 +89,7 @@ class MingkhResidentialAdapter:
 
     def __init__(
         self,
-        web: GenericWebAdapter,
+        web: ResidentialWebRuntime,
         snapshots: SnapshotService,
         *,
         territory_relevance: TerritoryRelevanceEvaluator | None = None,
@@ -78,6 +103,7 @@ class MingkhResidentialAdapter:
         if not requested:
             return []
         tasks: list[SourceTask] = []
+        input_candidates = research_input_candidates(request)
         for raw in request.constraints.seed_urls:
             url = str(raw)
             if not self._is_domain_url(url):
@@ -90,6 +116,9 @@ class MingkhResidentialAdapter:
                     metadata={
                         "research_goals": sorted(requested),
                         "allowed_domains": [self.domain],
+                        "research_input_candidates": list(input_candidates),
+                        "research_input_candidates_navigation_only": True,
+                        "research_input_candidates_are_evidence": False,
                     },
                 )
             )
@@ -105,6 +134,23 @@ class MingkhResidentialAdapter:
         task: SourceTask,
         fetched: FetchResult,
         request: CollectionRequest,
+    ) -> SourceResult:
+        result = await self._extract_page(
+            task,
+            fetched,
+            request,
+            allow_interface_navigation=True,
+        )
+        await self.web.finalize_navigation_goal(task, request, result)
+        return result
+
+    async def _extract_page(
+        self,
+        task: SourceTask,
+        fetched: FetchResult,
+        request: CollectionRequest,
+        *,
+        allow_interface_navigation: bool,
     ) -> SourceResult:
         if not self._is_domain_url(fetched.final_url):
             return SourceResult(
@@ -171,8 +217,9 @@ class MingkhResidentialAdapter:
             quality={"evidence_backed": False},
         )
         relevance = self.territory_relevance.evaluate(request, page_observation)
+        discovered_tasks = self._same_domain_house_tasks(task, fetched, request)
         if not relevance.matched:
-            return SourceResult(
+            result = SourceResult(
                 observations=[],
                 partial=True,
                 errors=[
@@ -183,8 +230,18 @@ class MingkhResidentialAdapter:
                         source_id=self.source_id,
                     )
                 ],
-                discovered_tasks=self._same_domain_house_tasks(task, fetched, request),
+                discovered_tasks=discovered_tasks,
             )
+            if self._should_try_interface_navigation(
+                task,
+                result,
+                chunks,
+                goal_satisfied=False,
+                relevance_matched=False,
+                allow_interface_navigation=allow_interface_navigation,
+            ):
+                return await self._navigate_interface(task, fetched, request, result)
+            return result
 
         observations: list[Observation] = []
         evidence_items: list[Evidence] = []
@@ -207,7 +264,7 @@ class MingkhResidentialAdapter:
                             source_id=self.source_id,
                         )
                     ],
-                    discovered_tasks=self._same_domain_house_tasks(task, fetched, request),
+                    discovered_tasks=discovered_tasks,
                 )
             label, value = matches[0]
             observation, evidence = self._fact(
@@ -219,16 +276,64 @@ class MingkhResidentialAdapter:
                 label=label,
                 value=value,
                 relevance_basis=relevance.basis,
+                fetch_metadata=fetched.metadata,
             )
             observations.append(observation)
             evidence_items.append(evidence)
 
-        return SourceResult(
+        result = SourceResult(
             observations=observations,
             evidence=evidence_items,
-            discovered_tasks=self._same_domain_house_tasks(task, fetched, request),
+            discovered_tasks=discovered_tasks,
             partial=False,
         )
+        goal = str(task.goal or "").strip().casefold()
+        goal_satisfied = any(
+            str(item.data.get("intent") or "").strip().casefold() == goal
+            for item in observations
+        )
+        if self._should_try_interface_navigation(
+            task,
+            result,
+            chunks,
+            goal_satisfied=goal_satisfied,
+            relevance_matched=True,
+            allow_interface_navigation=allow_interface_navigation,
+        ):
+            return await self._navigate_interface(task, fetched, request, result)
+        return result
+
+    async def _navigate_interface(
+        self,
+        task: SourceTask,
+        fetched: FetchResult,
+        request: CollectionRequest,
+        fallback: SourceResult,
+    ) -> SourceResult:
+        task.metadata["mingkh_interface_navigation_attempted"] = True
+        task.metadata["mingkh_interface_navigation_version"] = self.interface_navigation_version
+        self._ensure_research_inputs(task, request)
+        guided = await self.web.navigate_with_agent(task, context_fetch=fetched)
+        if guided is None:
+            task.metadata["mingkh_interface_navigation_result"] = "no_safe_verified_path"
+            return fallback
+
+        task.metadata["mingkh_interface_navigation_final_url"] = guided.final_url
+        task.metadata["mingkh_interface_navigation_runtime"] = guided.runtime
+        guided_result = await self._extract_page(
+            task,
+            guided,
+            request,
+            allow_interface_navigation=False,
+        )
+        if guided_result.blocked:
+            task.metadata["mingkh_interface_navigation_result"] = "blocked"
+            return guided_result
+        if guided_result.observations:
+            task.metadata["mingkh_interface_navigation_result"] = "source_fact_revealed"
+            return guided_result
+        task.metadata["mingkh_interface_navigation_result"] = "no_source_fact_revealed"
+        return self._prefer_guided_result(fallback, guided_result)
 
     async def normalize(self, result: SourceResult) -> SourceResult:
         return result
@@ -243,6 +348,15 @@ class MingkhResidentialAdapter:
             "extractor_version": self.extractor_version,
             "population_estimation": False,
             "access_challenge_policy": "detect_and_report_blocked",
+            "interface_navigation": {
+                "version": self.interface_navigation_version,
+                "enabled": True,
+                "mode": "bounded_agent_verified_site_recipe",
+                "accessible_pages_only": True,
+                "max_rounds_per_task": 1,
+                "candidate_requires_source_fact": True,
+                "challenge_bypass": False,
+            },
             "upstream_web_runtime": upstream,
         }
 
@@ -257,6 +371,7 @@ class MingkhResidentialAdapter:
         label: str,
         value: int,
         relevance_basis: str,
+        fetch_metadata: dict[str, object],
     ) -> tuple[Observation, Evidence]:
         evidence_text = f"{label}: {value}"
         content_hash = sha256_text(f"{intent}\x00{value}\x00{label}")
@@ -268,7 +383,7 @@ class MingkhResidentialAdapter:
             source_url=source_url,
             content_hash=content_hash,
         )
-        provenance = {
+        provenance: dict[str, object] = {
             "snapshot_id": snapshot_id,
             "extractor": self.extractor_version,
             "source_label": label,
@@ -277,6 +392,18 @@ class MingkhResidentialAdapter:
                 "basis": relevance_basis,
             },
         }
+        recipe_id = fetch_metadata.get("recipe_id")
+        if isinstance(recipe_id, str) and recipe_id:
+            provenance["recipe_id"] = recipe_id
+            provenance["recipe_version"] = fetch_metadata.get("recipe_version")
+        agent_backend = fetch_metadata.get("agent_backend")
+        if isinstance(agent_backend, str) and agent_backend:
+            provenance["interface_navigation"] = {
+                "version": self.interface_navigation_version,
+                "agent_backend": agent_backend,
+                "verified_browser_replay": True,
+                "agent_output_is_evidence": False,
+            }
         observation = Observation(
             observation_id=observation_id,
             collection_id=collection_id,
@@ -392,6 +519,54 @@ class MingkhResidentialAdapter:
         match = re.fullmatch(r"\s*(\d{1,9})(?:\s*(?:шт\.?|ед\.?|чел\.?))?\s*", value, re.I)
         return int(match.group(1)) if match else None
 
+    @classmethod
+    def _has_explicit_residential_value(cls, chunks: list[str]) -> bool:
+        return any(
+            cls._extract_values(chunks, labels)
+            for labels in cls._LABELS.values()
+        )
+
+    def _should_try_interface_navigation(
+        self,
+        task: SourceTask,
+        result: SourceResult,
+        chunks: list[str],
+        *,
+        goal_satisfied: bool,
+        relevance_matched: bool,
+        allow_interface_navigation: bool,
+    ) -> bool:
+        if not allow_interface_navigation or goal_satisfied:
+            return False
+        if task.metadata.get("mingkh_interface_navigation_attempted"):
+            return False
+        if result.blocked or result.discovered_tasks:
+            return False
+        if not relevance_matched and self._has_explicit_residential_value(chunks):
+            # A detail page for another house is not a navigation surface. Never let AGENT
+            # turn a proven territory mismatch into evidence for the requested address.
+            return False
+        return True
+
+    async def _ensure_research_inputs(
+        self,
+        task: SourceTask,
+        request: CollectionRequest,
+    ) -> None:
+        raw_existing = task.metadata.get("research_input_candidates", [])
+        existing = raw_existing if isinstance(raw_existing, list) else []
+        values = research_input_candidates(request, extra_values=existing)
+        task.metadata["research_input_candidates"] = values
+        task.metadata["research_input_candidates_navigation_only"] = True
+        task.metadata["research_input_candidates_are_evidence"] = False
+        task.metadata["allowed_domains"] = [self.domain]
+
+    @staticmethod
+    def _prefer_guided_result(fallback: SourceResult, guided: SourceResult) -> SourceResult:
+        if guided.errors or guided.discovered_tasks:
+            return guided
+        return fallback
+
     def _same_domain_house_tasks(
         self,
         task: SourceTask,
@@ -403,6 +578,8 @@ class MingkhResidentialAdapter:
         result: list[SourceTask] = []
         seen: set[str] = set()
         goals = [intent for intent in request.intents if intent in RESIDENTIAL_INTENTS]
+        raw_inputs = task.metadata.get("research_input_candidates", [])
+        input_candidates = raw_inputs if isinstance(raw_inputs, list) else []
         for raw in fetched.links:
             url, _ = urldefrag(str(raw))
             if not url or url in seen or not self._is_domain_url(url):
@@ -420,6 +597,9 @@ class MingkhResidentialAdapter:
                     metadata={
                         "research_goals": goals,
                         "allowed_domains": [self.domain],
+                        "research_input_candidates": list(input_candidates),
+                        "research_input_candidates_navigation_only": True,
+                        "research_input_candidates_are_evidence": False,
                         "dedicated_source_followup": True,
                     },
                 )
