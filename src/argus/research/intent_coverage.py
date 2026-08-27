@@ -20,7 +20,7 @@ class IntentCoverageEvaluator:
     deterministic territorial relevance rather than trusting search navigation alone.
     """
 
-    version = "intent-evidence-coverage/4"
+    version = "intent-evidence-coverage/5"
     territory_relevance = TerritoryRelevanceEvaluator()
     _PUBLICATION_SCHEMA_TYPES = {
         "Article",
@@ -76,8 +76,16 @@ class IntentCoverageEvaluator:
                 source_kind in self._HISTORICAL_SOURCE_KINDS
                 or self._has_archive_provenance(observation)
             )
-        if normalized in {"images", "historical_images"}:
+        if normalized == "images":
             return entity_type == "image" or source_kind == "image_reference"
+        if normalized == "historical_images":
+            image_reference = entity_type == "image" or source_kind == "image_reference"
+            if not image_reference:
+                return False
+            return (
+                self._has_archive_provenance(observation)
+                or self._has_historical_image_provenance(observation)
+            )
 
         # Incidents, complaints and consumer-defined intents require semantic relevance,
         # not merely a page fetched for that goal. They remain uncovered until a factual
@@ -157,3 +165,10 @@ class IntentCoverageEvaluator:
     def _has_archive_provenance(observation: Observation) -> bool:
         archive = observation.provenance.get("archive")
         return isinstance(archive, dict) and archive.get("historical_capture") is True
+
+    @staticmethod
+    def _has_historical_image_provenance(observation: Observation) -> bool:
+        return (
+            observation.quality.get("historical_image") is True
+            or observation.provenance.get("historical_image") is True
+        )
