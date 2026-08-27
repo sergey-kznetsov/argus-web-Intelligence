@@ -27,7 +27,7 @@ class FastCrawlerRuntime:
         await self._ensure_started()
         from crawlee import Request
 
-        key, future = self._broker.create()
+        key, future = self._broker.create(url)
         try:
             request = Request.from_url(url, unique_key=key)
             await self._crawler.add_requests([request])
@@ -57,7 +57,7 @@ class FastCrawlerRuntime:
             if self._crawler is not None and self._run_task is not None and not self._run_task.done():
                 return
             try:
-                from crawlee import ConcurrencySettings
+                from crawlee import ConcurrencySettings, SkippedReason
                 from crawlee.crawlers import (
                     BasicCrawlingContext,
                     FileDownloadCrawler,
@@ -102,6 +102,10 @@ class FastCrawlerRuntime:
                 respect_robots_txt_file=True,
                 configure_logging=False,
             )
+
+            @crawler.on_skipped_request
+            async def skipped_request_handler(url: str, reason: SkippedReason) -> None:
+                self._broker.reject_skipped(url, reason)
 
             @crawler.router.default_handler
             async def handler(context: FileDownloadCrawlingContext) -> None:
