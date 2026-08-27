@@ -13,9 +13,9 @@ The current factual source is the public web interface of `dom.mingkh.ru`, repre
 
 This is an intent-to-source policy, not a consumer-specific branch. ARGUS does not check whether the caller is Janus, Kraken or another module. Any consumer requesting these intents receives the same source contract.
 
-For every residential request with usable territory text, the curated planner creates a direct same-domain house-search task using `https://dom.mingkh.ru/search?address=...&searchtype=house`. This makes the configured factual site itself the primary entry point instead of requiring a search engine to have indexed the requested building.
+For every residential request with a non-empty building address, the curated planner creates a direct same-domain house-search task using `https://dom.mingkh.ru/search?address=...&searchtype=house`. The `address` parameter contains the request's building address itself; city remains in `TerritoryContext` and is used for territory relevance and external discovery precision. This makes the configured factual site itself the primary entry point instead of requiring a search engine to have indexed the requested building.
 
-Residential discovery is fail-closed to `dom.mingkh.ru`. Search providers may additionally be used to locate a corresponding public house detail page, but search results are navigation only and never Evidence. ARGUS does not fall back to unrelated housing sites for these two intents.
+A residential request without a building address fails closed at planning: ARGUS does not run a city-wide house search and does not select an arbitrary building. Residential discovery is also fail-closed to `dom.mingkh.ru`. Search providers may additionally be used to locate a corresponding public house detail page, but search results are navigation only and never Evidence. ARGUS does not fall back to unrelated housing sites for these two intents.
 
 Mixed collections preserve normal ARGUS research for their other intents. Generic semantic classification is explicitly prevented from proving the source-scoped residential intents, so an alternative web page cannot accidentally satisfy their factual coverage.
 
