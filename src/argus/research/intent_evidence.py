@@ -12,6 +12,7 @@ from argus.config import Settings
 from argus.contracts.models import CollectionRequest, Evidence, EvidenceSource, Observation
 from argus.normalization.identity import stable_evidence_id
 from argus.normalization.public_map_provenance import public_map_surface_kind
+from argus.research.historical_relevance import HistoricalTerritoryRelevanceEvaluator
 from argus.research.territory_relevance import (
     TerritoryRelevanceEvaluator,
     TerritoryRelevanceResult,
@@ -38,7 +39,7 @@ class OllamaIntentEvidenceClassifier:
     source-backed.
     """
 
-    version = "exact-excerpt-intent-evidence/6"
+    version = "exact-excerpt-intent-evidence/7"
     builtin_intents = frozenset(
         {
             "reviews",
@@ -140,10 +141,15 @@ class OllamaIntentEvidenceClassifier:
         settings: Settings,
         *,
         territory_relevance: TerritoryRelevanceEvaluator | None = None,
+        historical_territory_relevance: HistoricalTerritoryRelevanceEvaluator | None = None,
     ) -> None:
         self.settings = settings
         self.timeout_seconds = min(20.0, float(settings.fetch_wait_timeout_seconds))
         self.territory_relevance = territory_relevance or TerritoryRelevanceEvaluator()
+        self.historical_territory_relevance = (
+            historical_territory_relevance
+            or HistoricalTerritoryRelevanceEvaluator(self.territory_relevance)
+        )
 
     async def annotate(self, request: CollectionRequest, result: SourceResult) -> SourceResult:
         requested = self._requested_intents(request.intents)
@@ -157,14 +163,37 @@ class OllamaIntentEvidenceClassifier:
         ][: self.max_observations]
         for observation in observations:
             relevance = self.territory_relevance.evaluate(request, observation)
+            relevance_version = self.territory_relevance.version
             self._record_territory_relevance(observation, relevance)
+            active_requested = requested
+
             if not relevance.matched:
-                continue
+                historical_requested = [
+                    intent for intent in requested if intent == "historical_context"
+                ]
+                if not historical_requested:
+                    continue
+                historical_relevance = self.historical_territory_relevance.evaluate(
+                    request,
+                    observation,
+                )
+                self._record_historical_territory_relevance(
+                    observation,
+                    historical_relevance,
+                )
+                if not historical_relevance.matched:
+                    continue
+                # Street-level historical context must never make unrelated current/custom
+                # intents address-relevant. Only the historical branch receives this fallback.
+                active_requested = historical_requested
+                relevance = historical_relevance
+                relevance_version = self.historical_territory_relevance.version
+
             if public_map_surface_kind(observation.url) == "search":
-                self._record_navigation_surface_rejection(observation, requested)
+                self._record_navigation_surface_rejection(observation, active_requested)
                 continue
 
-            findings = await self._findings(observation.text or "", requested)
+            findings = await self._findings(observation.text or "", active_requested)
             accepted: list[IntentEvidenceFinding] = []
             for finding in findings:
                 if self._supports_source_shape(observation, finding.intent):
@@ -176,6 +205,7 @@ class OllamaIntentEvidenceClassifier:
                 result.evidence,
                 accepted,
                 relevance=relevance,
+                relevance_version=relevance_version,
             )
         return result
 
@@ -316,6 +346,22 @@ class OllamaIntentEvidenceClassifier:
         observation.provenance["territory_relevance"] = payload
         observation.quality["territory_relevant"] = relevance.matched
 
+    def _record_historical_territory_relevance(
+        self,
+        observation: Observation,
+        relevance: TerritoryRelevanceResult,
+    ) -> None:
+        payload: dict[str, object] = {
+            "version": self.historical_territory_relevance.version,
+            "matched": relevance.matched,
+            "basis": relevance.basis,
+            "matched_anchors": list(relevance.matched_anchors),
+            "navigation_metadata_used": False,
+            "scope": "historical_context_only",
+        }
+        observation.provenance["historical_territory_relevance"] = payload
+        observation.quality["historical_territory_relevant"] = relevance.matched
+
     def _record_navigation_surface_rejection(
         self,
         observation: Observation,
@@ -354,6 +400,7 @@ class OllamaIntentEvidenceClassifier:
         findings: list[IntentEvidenceFinding],
         *,
         relevance: TerritoryRelevanceResult,
+        relevance_version: str,
     ) -> None:
         if not findings:
             return
@@ -380,6 +427,7 @@ class OllamaIntentEvidenceClassifier:
                     "custom_intent": finding.intent not in self.builtin_intents,
                     "exact_source_excerpt_verified": True,
                     "territory_relevance_verified": True,
+                    "territory_relevance_version": relevance_version,
                     "territory_relevance_basis": relevance.basis,
                     "semantic_label_model_assisted": True,
                     "model_output_is_evidence": False,
@@ -412,7 +460,7 @@ class OllamaIntentEvidenceClassifier:
                         "custom_intent": finding.intent not in self.builtin_intents,
                         "exact_source_excerpt_verified": True,
                         "territory_relevance_verified": True,
-                        "territory_relevance_version": self.territory_relevance.version,
+                        "territory_relevance_version": relevance_version,
                         "territory_relevance_basis": relevance.basis,
                         "territory_matched_anchors": list(relevance.matched_anchors),
                         "semantic_label_model_assisted": True,
