@@ -287,11 +287,7 @@ class MingkhResidentialAdapter:
             discovered_tasks=discovered_tasks,
             partial=False,
         )
-        goal = str(task.goal or "").strip().casefold()
-        goal_satisfied = any(
-            str(item.data.get("intent") or "").strip().casefold() == goal
-            for item in observations
-        )
+        goal_satisfied = self._goal_satisfied(result, task.goal)
         if self._should_try_interface_navigation(
             task,
             result,
@@ -329,11 +325,14 @@ class MingkhResidentialAdapter:
         if guided_result.blocked:
             task.metadata["mingkh_interface_navigation_result"] = "blocked"
             return guided_result
+        if self._goal_satisfied(guided_result, task.goal):
+            task.metadata["mingkh_interface_navigation_result"] = "source_goal_revealed"
+            return self._merge_successful_guidance(fallback, guided_result)
         if guided_result.observations:
-            task.metadata["mingkh_interface_navigation_result"] = "source_fact_revealed"
-            return guided_result
-        task.metadata["mingkh_interface_navigation_result"] = "no_source_fact_revealed"
-        return self._prefer_guided_result(fallback, guided_result)
+            task.metadata["mingkh_interface_navigation_result"] = "non_goal_source_fact_revealed"
+        else:
+            task.metadata["mingkh_interface_navigation_result"] = "no_source_fact_revealed"
+        return self._merge_unsuccessful_guidance(fallback, guided_result)
 
     async def normalize(self, result: SourceResult) -> SourceResult:
         return result
@@ -521,10 +520,7 @@ class MingkhResidentialAdapter:
 
     @classmethod
     def _has_explicit_residential_value(cls, chunks: list[str]) -> bool:
-        return any(
-            cls._extract_values(chunks, labels)
-            for labels in cls._LABELS.values()
-        )
+        return any(cls._extract_values(chunks, labels) for labels in cls._LABELS.values())
 
     def _should_try_interface_navigation(
         self,
@@ -548,7 +544,7 @@ class MingkhResidentialAdapter:
             return False
         return True
 
-    async def _ensure_research_inputs(
+    def _ensure_research_inputs(
         self,
         task: SourceTask,
         request: CollectionRequest,
@@ -562,10 +558,102 @@ class MingkhResidentialAdapter:
         task.metadata["allowed_domains"] = [self.domain]
 
     @staticmethod
-    def _prefer_guided_result(fallback: SourceResult, guided: SourceResult) -> SourceResult:
-        if guided.errors or guided.discovered_tasks:
-            return guided
-        return fallback
+    def _goal_satisfied(result: SourceResult, goal: str) -> bool:
+        normalized = str(goal or "").strip().casefold()
+        if not normalized:
+            return False
+        return any(
+            str(item.data.get("intent") or "").strip().casefold() == normalized
+            for item in result.observations
+        )
+
+    @classmethod
+    def _merge_successful_guidance(
+        cls,
+        fallback: SourceResult,
+        guided: SourceResult,
+    ) -> SourceResult:
+        """Keep prior valid facts while replacing navigation-surface errors with success."""
+
+        return SourceResult(
+            observations=cls._dedupe_observations(
+                [*fallback.observations, *guided.observations]
+            ),
+            evidence=cls._dedupe_evidence([*fallback.evidence, *guided.evidence]),
+            discovered_tasks=cls._dedupe_tasks(
+                [*fallback.discovered_tasks, *guided.discovered_tasks]
+            ),
+            blocked=guided.blocked,
+            partial=guided.partial,
+            errors=list(guided.errors),
+        )
+
+    @classmethod
+    def _merge_unsuccessful_guidance(
+        cls,
+        fallback: SourceResult,
+        guided: SourceResult,
+    ) -> SourceResult:
+        """Retain all factual rows and diagnostics when navigation reveals no goal fact."""
+
+        return SourceResult(
+            observations=cls._dedupe_observations(
+                [*fallback.observations, *guided.observations]
+            ),
+            evidence=cls._dedupe_evidence([*fallback.evidence, *guided.evidence]),
+            discovered_tasks=cls._dedupe_tasks(
+                [*fallback.discovered_tasks, *guided.discovered_tasks]
+            ),
+            blocked=fallback.blocked or guided.blocked,
+            partial=fallback.partial or guided.partial,
+            errors=cls._dedupe_errors([*fallback.errors, *guided.errors]),
+        )
+
+    @staticmethod
+    def _dedupe_observations(values: list[Observation]) -> list[Observation]:
+        result: list[Observation] = []
+        seen: set[str] = set()
+        for item in values:
+            if item.observation_id in seen:
+                continue
+            seen.add(item.observation_id)
+            result.append(item)
+        return result
+
+    @staticmethod
+    def _dedupe_evidence(values: list[Evidence]) -> list[Evidence]:
+        result: list[Evidence] = []
+        seen: set[str] = set()
+        for item in values:
+            if item.evidence_id in seen:
+                continue
+            seen.add(item.evidence_id)
+            result.append(item)
+        return result
+
+    @staticmethod
+    def _dedupe_tasks(values: list[SourceTask]) -> list[SourceTask]:
+        result: list[SourceTask] = []
+        seen: set[str] = set()
+        for item in values:
+            key = item.dedupe_key
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(item)
+        return result
+
+    @staticmethod
+    def _dedupe_errors(values: list[StructuredError]) -> list[StructuredError]:
+        result: list[StructuredError] = []
+        seen: set[tuple[str, str | None, str]] = set()
+        for item in values:
+            key = (item.code, item.source_id, item.message)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(item)
+        return result
 
     def _same_domain_house_tasks(
         self,
