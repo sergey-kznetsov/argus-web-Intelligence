@@ -17,12 +17,12 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
 
     Public map pages are frequently interactive applications. A technically successful
     FAST/BROWSER response is not enough when the requested factual goal has not actually
-    been evidenced. ARGUS therefore evaluates source-backed intent coverage, prefers a
-    deterministic public review view when the provider exposes one, and only then may use
-    bounded AGENT -> verified browser replay rounds. Agent output is never Evidence.
+    been evidenced. ARGUS therefore evaluates source-backed, request-aware intent coverage,
+    prefers a deterministic public review view when the provider exposes one, and only then
+    may use bounded AGENT -> verified browser replay rounds. Agent output is never Evidence.
     """
 
-    semantic_escalation_version = "public-map-goal-escalation/4"
+    semantic_escalation_version = "public-map-goal-escalation/5"
     semantic_escalation_goals = frozenset(
         {"reviews", "comments", "discussions", "complaints"}
     )
@@ -41,7 +41,7 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
         goals = self._semantic_goals(task)
         agent_context_fetch = fetched
 
-        if goals and self._semantic_goal_fact_count(result, goals) == 0:
+        if goals and self._semantic_goal_fact_count(result, goals, request=request) == 0:
             result, agent_context_fetch = await self._try_deterministic_review_view(
                 task,
                 fetched,
@@ -50,7 +50,7 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
                 goals,
             )
 
-        if self._should_semantically_escalate(task, fetched, result):
+        if self._should_semantically_escalate(task, fetched, result, request=request):
             result = await self._semantic_agent_rounds(
                 task,
                 request,
@@ -77,7 +77,7 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             if goals == ["reviews"]
             else "semantic_goal_without_evidence"
         )
-        before_score = self._semantic_goal_fact_count(result, goals)
+        before_score = self._semantic_goal_fact_count(result, goals, request=request)
         current_context = context_fetch
         accepted = False
         rounds_completed = 0
@@ -97,7 +97,11 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
 
             guided_result = await super().extract(task, guided, request)
             guided_result = await self._annotate_semantic_evidence(request, guided_result)
-            after_score = self._semantic_goal_fact_count(guided_result, goals)
+            after_score = self._semantic_goal_fact_count(
+                guided_result,
+                goals,
+                request=request,
+            )
             if after_score > before_score:
                 result = guided_result
                 accepted = True
@@ -134,7 +138,7 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
         task.metadata["public_map_review_view_attempted"] = True
         task.metadata["public_map_review_view_url"] = candidate_url
         task.metadata["public_map_review_view_basis"] = "provider_public_url_shape"
-        before_score = self._semantic_goal_fact_count(result, goals)
+        before_score = self._semantic_goal_fact_count(result, goals, request=request)
         try:
             candidate_fetched = await self.browser.fetch(candidate_url)
         except UnsafeUrlError:
@@ -154,7 +158,11 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
 
         candidate_result = await super().extract(task, candidate_fetched, request)
         candidate_result = await self._annotate_semantic_evidence(request, candidate_result)
-        after_score = self._semantic_goal_fact_count(candidate_result, goals)
+        after_score = self._semantic_goal_fact_count(
+            candidate_result,
+            goals,
+            request=request,
+        )
         accepted = after_score > before_score
         task.metadata["public_map_review_view_accepted"] = accepted
         if accepted:
@@ -195,6 +203,8 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
         task: SourceTask,
         fetched,
         result: SourceResult,
+        *,
+        request: CollectionRequest,
     ) -> bool:
         if self.agent is None or task.metadata.get("semantic_agent_retry_attempted"):
             return False
@@ -207,7 +217,7 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
         goals = self._semantic_goals(task)
         if not goals:
             return False
-        return self._semantic_goal_fact_count(result, goals) == 0
+        return self._semantic_goal_fact_count(result, goals, request=request) == 0
 
     def _semantic_goals(self, task: SourceTask) -> list[str]:
         return sorted(
@@ -222,11 +232,16 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
         self,
         result: SourceResult,
         goals: list[str],
+        *,
+        request: CollectionRequest,
     ) -> int:
         return sum(
             1
             for observation in result.observations
-            if any(self.intent_coverage.supports(observation, goal) for goal in goals)
+            if any(
+                self.intent_coverage.supports(observation, goal, request=request)
+                for goal in goals
+            )
         )
 
     @staticmethod
@@ -297,6 +312,7 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
                 "agent_output_is_evidence": False,
                 "verified_browser_replay": True,
                 "source_backed_goal_evidence": True,
+                "request_aware_coverage": True,
                 "max_rounds": self.max_semantic_agent_rounds,
                 "verified_recipe_extension": True,
             },
