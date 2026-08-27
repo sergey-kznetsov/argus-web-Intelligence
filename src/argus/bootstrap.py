@@ -22,7 +22,6 @@ from argus.recipes.service import RecipeManager
 from argus.research.browser_serp import DuckDuckGoBrowserDiscoveryProvider
 from argus.research.coverage import EvidenceAwareHeuristicFollowupResearchPlanner
 from argus.research.discovery import DiscoveryService
-from argus.research.discovery_relevance import TerritoryAwareDiscoveryService
 from argus.research.entities import AreaEntityResearchPlanner
 from argus.research.entity_hypotheses import OllamaEntityHypothesisExtractor
 from argus.research.followup import OllamaFollowupResearchPlanner
@@ -32,7 +31,9 @@ from argus.research.intent_coverage import IntentCoverageEvaluator
 from argus.research.intent_evidence import OllamaIntentEvidenceClassifier
 from argus.research.planner import OllamaResearchPlanner
 from argus.research.query_safety import QuerySafeFollowupResearchPlanner, QuerySafeResearchPlanner
+from argus.research.residential_sources import CuratedResidentialResearchPlanner
 from argus.research.searxng import SearxngDiscoveryProvider
+from argus.research.source_routing import DedicatedSourceRoutingDiscoveryService
 from argus.research.supervisor import HeuristicResearchSupervisor, OllamaResearchSupervisor
 from argus.research.task_context import ResearchInputPlanner
 from argus.security.runtime_posture import enforce_runtime_security
@@ -40,6 +41,7 @@ from argus.security.urls import UrlGuard
 from argus.services import ServiceContainer
 from argus.sources.intent_evidence_web import IntentEvidenceWebAdapter
 from argus.sources.json_feed import JSONFeedAdapter
+from argus.sources.mingkh_residential import MingkhResidentialAdapter
 from argus.sources.overpass_map import OverpassSourceAdapter
 from argus.sources.registry import SourceRegistry
 from argus.sources.rss import RSSAdapter
@@ -89,13 +91,14 @@ def build_discovery(
         providers.append(DuckDuckGoBrowserDiscoveryProvider(settings, browser))
     if not providers:
         return None
-    return TerritoryAwareDiscoveryService(
+    return DedicatedSourceRoutingDiscoveryService(
         providers=providers,
         url_guard=guard,
         max_queries=settings.discovery_max_queries,
         historical_archive_source_id=(
             "wayback_cdx" if settings.wayback_cdx_url else None
         ),
+        domain_source_routes={"dom.mingkh.ru": "mingkh_residential"},
     )
 
 
@@ -175,31 +178,31 @@ def build_services(settings: Settings) -> ServiceContainer:
     )
     coverage = IntentCoverageEvaluator()
     registry = SourceRegistry(metrics=metrics)
-    registry.register(
-        IntentEvidenceWebAdapter(
-            repository=repository,
-            fast=fast,
-            browser=browser,
-            snapshots=snapshots,
-            recipes=recipes,
-            agent=agent,
-            intent_evidence_classifier=intent_evidence_classifier,
-            sitemap_discovery_enabled=settings.sitemap_discovery_enabled,
-            pdf_extractor=build_pdf_extractor(settings),
-            structured_data_extractor=structured_extractor,
-            ooxml_extractor=build_ooxml_extractor(settings),
-            html_table_max_scan_chars=min(settings.structured_data_max_bytes, 1_000_000),
-            html_table_max_rows_per_table=min(settings.structured_data_max_records, 200),
-            html_table_max_total_rows=settings.structured_data_max_records,
-            html_table_max_columns=settings.structured_data_max_columns,
-            html_table_max_cell_chars=settings.structured_data_max_cell_chars,
-            microdata_max_scan_chars=min(settings.structured_data_max_bytes, 750_000),
-            microdata_max_items=min(settings.structured_data_max_records, 100),
-            microdata_max_properties_per_item=min(settings.structured_data_max_columns, 100),
-            microdata_max_value_chars=settings.structured_data_max_cell_chars,
-            kml_max_placemarks=settings.structured_data_max_records,
-        )
+    generic_web = IntentEvidenceWebAdapter(
+        repository=repository,
+        fast=fast,
+        browser=browser,
+        snapshots=snapshots,
+        recipes=recipes,
+        agent=agent,
+        intent_evidence_classifier=intent_evidence_classifier,
+        sitemap_discovery_enabled=settings.sitemap_discovery_enabled,
+        pdf_extractor=build_pdf_extractor(settings),
+        structured_data_extractor=structured_extractor,
+        ooxml_extractor=build_ooxml_extractor(settings),
+        html_table_max_scan_chars=min(settings.structured_data_max_bytes, 1_000_000),
+        html_table_max_rows_per_table=min(settings.structured_data_max_records, 200),
+        html_table_max_total_rows=settings.structured_data_max_records,
+        html_table_max_columns=settings.structured_data_max_columns,
+        html_table_max_cell_chars=settings.structured_data_max_cell_chars,
+        microdata_max_scan_chars=min(settings.structured_data_max_bytes, 750_000),
+        microdata_max_items=min(settings.structured_data_max_records, 100),
+        microdata_max_properties_per_item=min(settings.structured_data_max_columns, 100),
+        microdata_max_value_chars=settings.structured_data_max_cell_chars,
+        kml_max_placemarks=settings.structured_data_max_records,
     )
+    registry.register(generic_web)
+    registry.register(MingkhResidentialAdapter(generic_web, snapshots))
     registry.register(
         RSSAdapter(
             fast,
@@ -225,10 +228,18 @@ def build_services(settings: Settings) -> ServiceContainer:
         registry.register(WaybackSourceAdapter(WaybackCDXProvider(settings), snapshots))
 
     ollama_planner = OllamaResearchPlanner(settings)
+    residential_planner = CuratedResidentialResearchPlanner(
+        ollama_planner,
+        max_queries=settings.discovery_max_queries,
+    )
+    residential_fallback = CuratedResidentialResearchPlanner(
+        ollama_planner.fallback,
+        max_queries=settings.discovery_max_queries,
+    )
     planner = ResearchInputPlanner(
         QuerySafeResearchPlanner(
-            ollama_planner,
-            fallback=ollama_planner.fallback,
+            residential_planner,
+            fallback=residential_fallback,
             max_queries=settings.discovery_max_queries,
         )
     )
