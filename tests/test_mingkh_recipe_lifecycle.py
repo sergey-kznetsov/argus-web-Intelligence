@@ -77,9 +77,10 @@ class _RecipeAgent:
 
     async def run(self, task) -> AgentResult:
         assert task.context["page_url"] == "https://dom.mingkh.ru/search"
-        assert "Пермь, Комсомольский проспект, 27" in task.context[
-            "research_input_candidates"
-        ]
+        candidates = task.context["research_input_candidates"]
+        assert "Пермь, Комсомольский проспект, 27" in candidates
+        assert not any("site:dom.mingkh.ru" in str(value) for value in candidates)
+        assert not any("Количество жителей" in str(value) for value in candidates)
         return AgentResult(
             success=True,
             data={},
@@ -119,6 +120,9 @@ def _task() -> SourceTask:
             "collection_id": "collection-residential-recipe",
             "research_goals": ["residential_population"],
             "allowed_domains": ["dom.mingkh.ru"],
+            "research_input_candidates": [
+                'site:dom.mingkh.ru "Пермь, Комсомольский проспект, 27" "Количество жителей"'
+            ],
         },
     )
 
