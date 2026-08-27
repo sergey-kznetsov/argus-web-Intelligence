@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from argus.contracts.models import CollectionRequest
 from argus.research.discovery import DiscoveryOutcome
 from argus.research.discovery_relevance import TerritoryAwareDiscoveryService
+from argus.research.residential_sources import RESIDENTIAL_INTENTS
 
 
 class DedicatedSourceRoutingDiscoveryService(TerritoryAwareDiscoveryService):
@@ -14,14 +15,18 @@ class DedicatedSourceRoutingDiscoveryService(TerritoryAwareDiscoveryService):
     fetch a destination; it never treats a known domain as Evidence. Domain routing is
     consumer-neutral and can be extended for future public-source adapters without adding
     source-specific conditions to the orchestrator.
+
+    Requests containing only source-scoped residential intents are additionally fail-closed:
+    non-routed search destinations are discarded instead of becoming fallback factual
+    sources. This keeps residential facts on the explicitly configured public source.
     """
 
-    routing_version = "dedicated-source-routing/1"
+    routing_version = "dedicated-source-routing/2"
 
     def __init__(self, *args, domain_source_routes: dict[str, str] | None = None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.domain_source_routes = {
-            self._normalize_domain(domain): source_id
+            self._normalize_domain(domain): str(source_id).strip()
             for domain, source_id in (domain_source_routes or {}).items()
             if self._normalize_domain(domain) and str(source_id).strip()
         }
@@ -45,6 +50,16 @@ class DedicatedSourceRoutingDiscoveryService(TerritoryAwareDiscoveryService):
                 "navigation_only": True,
                 "is_evidence": False,
             }
+
+        if self._residential_only(request):
+            kept = [task for task in outcome.tasks if task.source_id == "mingkh_residential"]
+            removed = len(outcome.tasks) - len(kept)
+            outcome.tasks = kept
+            outcome.destinations_selected = len(kept)
+            if removed:
+                outcome.destinations_skipped_budget += removed
+            if not kept and outcome.stop_reason not in {"blocked_without_destinations", "no_queries"}:
+                outcome.stop_reason = "source_policy_no_valid_destinations"
         return outcome
 
     def _source_for_url(self, url: str) -> str | None:
@@ -60,6 +75,11 @@ class DedicatedSourceRoutingDiscoveryService(TerritoryAwareDiscoveryService):
             return None
         matches.sort(key=lambda item: len(item[0]), reverse=True)
         return matches[0][1]
+
+    @staticmethod
+    def _residential_only(request: CollectionRequest) -> bool:
+        requested = {str(item).strip() for item in request.intents if str(item).strip()}
+        return bool(requested) and requested.issubset(RESIDENTIAL_INTENTS)
 
     @staticmethod
     def _normalize_domain(value: str) -> str:
