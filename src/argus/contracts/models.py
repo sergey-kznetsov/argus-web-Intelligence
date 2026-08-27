@@ -179,6 +179,13 @@ class CollectionSummary(BaseModel):
     stage: str | None = None
     partial: bool
     error_count: int = Field(ge=0)
+    observation_count: int = Field(ge=0)
+    evidence_count: int = Field(ge=0)
+
+
+class CollectionListPage(BaseModel):
+    items: list[CollectionSummary]
+    next_cursor: str | None = None
 
 
 class CollectionAccepted(BaseModel):
@@ -187,12 +194,56 @@ class CollectionAccepted(BaseModel):
 
 
 class CollectionResult(BaseModel):
+    protocol_version: Literal["1.0.0"] = PROTOCOL_VERSION
     collection_id: str
     analysis_id: str
     consumer: str
     status: CollectionStatus
     partial: bool
-    observations: list[Observation] = Field(default_factory=list)
-    evidence: list[Evidence] = Field(default_factory=list)
-    coverage: list[SourceCoverage] = Field(default_factory=list)
-    errors: list[StructuredError] = Field(default_factory=list)
+    observations: list[Observation]
+    evidence: list[Evidence]
+    coverage: list[SourceCoverage]
+    errors: list[StructuredError]
+
+
+class ResultDeliveryLimits(BaseModel):
+    full_result_max_items: int = Field(ge=1)
+    full_result_max_bytes: int = Field(ge=1024)
+    page_max_size: int = Field(ge=1)
+    page_max_bytes: int = Field(ge=1024)
+
+
+class CollectionResultSummary(BaseModel):
+    protocol_version: Literal["1.0.0"] = PROTOCOL_VERSION
+    collection_id: str
+    analysis_id: str
+    consumer: str
+    status: CollectionStatus
+    partial: bool
+    observation_count: int = Field(ge=0)
+    evidence_count: int = Field(ge=0)
+    stored_bytes: int = Field(ge=0)
+    full_result_available: bool
+    delivery_limits: ResultDeliveryLimits
+    coverage: list[SourceCoverage]
+    errors: list[StructuredError]
+
+
+class ObservationPage(BaseModel):
+    protocol_version: Literal["1.0.0"] = PROTOCOL_VERSION
+    collection_id: str
+    status: CollectionStatus
+    total_count: int = Field(ge=0)
+    page_stored_bytes: int = Field(ge=0)
+    items: list[Observation]
+    next_cursor: str | None = None
+
+
+class EvidencePage(BaseModel):
+    protocol_version: Literal["1.0.0"] = PROTOCOL_VERSION
+    collection_id: str
+    status: CollectionStatus
+    total_count: int = Field(ge=0)
+    page_stored_bytes: int = Field(ge=0)
+    items: list[Evidence]
+    next_cursor: str | None = None
