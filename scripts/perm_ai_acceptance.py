@@ -68,6 +68,10 @@ def _overview(profile_id: str, report: dict[str, object]) -> dict[str, object]:
         "runtime_covered_intents": checkpoint.get("final_covered_intents", []),
         "runtime_uncovered_intents": checkpoint.get("final_uncovered_intents", []),
         "runtime_intent_source_counts": checkpoint.get("final_intent_source_counts", {}),
+        "execution_budget_version": checkpoint.get("execution_budget_version"),
+        "research_queue_priority_version": checkpoint.get("research_queue_priority_version"),
+        "research_queue_candidate_count": checkpoint.get("research_queue_candidate_count"),
+        "research_queue_next": checkpoint.get("research_queue_next", []),
         "planner_notes": checkpoint.get("planner_notes", []),
         "discovery_queries": checkpoint.get("discovery_queries", []),
         "research_supervisor": checkpoint.get("research_supervisor", {}),
@@ -123,6 +127,12 @@ def _acceptance_failures(overview: list[dict[str, object]]) -> list[str]:
             failures.append(
                 f"{profile}: malformed/service-shaped discovery query escaped sanitization"
             )
+
+        supervisor = item.get("research_supervisor")
+        if uncovered and not isinstance(supervisor, dict):
+            failures.append(f"{profile}: factual gaps remained but research supervisor never ran")
+        elif uncovered and not supervisor:
+            failures.append(f"{profile}: factual gaps remained but research supervisor never ran")
 
         if profile == "kraken":
             if "reviews" not in covered:
