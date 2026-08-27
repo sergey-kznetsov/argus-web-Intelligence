@@ -20,12 +20,13 @@ def observation(
     source_kind: str = "web_page",
     goals: list[str] | None = None,
     quality: dict[str, object] | None = None,
+    text: str = "Ижевск, Пушкинская, 277. Public source-backed content",
 ) -> Observation:
     data: dict[str, object] = {"name": "Кофейня Север"}
     if goals is not None:
         data["research_goals"] = goals
     return Observation(
-        observation_id=f"obs-{abs(hash(url))}",
+        observation_id=f"obs-{abs(hash((url, text)))}",
         collection_id="c1",
         analysis_id="map-source-analysis",
         consumer="map-source-test",
@@ -36,7 +37,7 @@ def observation(
         entity_id="entity-1",
         title="Кофейня Север",
         data=data,
-        text="Public source-backed content",
+        text=text,
         content_hash="a" * 64,
         provenance={},
         quality=quality or {},
@@ -111,6 +112,19 @@ def test_two_independent_map_review_sources_close_curated_review_gap():
     assert planner.queries(request("reviews"), observations=observations, limit=3) == []
 
 
+def test_structural_review_from_another_address_does_not_close_map_gap():
+    planner = PublicMapSourceResearchPlanner(target_sources_per_intent=1)
+    unrelated = observation(
+        url="https://2gis.ru/izhevsk/firm/999/tab/reviews",
+        entity_type="review",
+        source_kind="microdata",
+        text="Ижевск, улица Ленина, 10. Отличное место.",
+    )
+
+    assert planner.coverage_counts(request("reviews"), [unrelated]) == {"reviews": 0}
+    assert planner.remaining_intents(request("reviews"), [unrelated]) == ["reviews"]
+
+
 def test_tracking_variants_of_same_map_page_do_not_fake_two_sources():
     planner = PublicMapSourceResearchPlanner(target_sources_per_intent=2)
     observations = [
@@ -164,7 +178,7 @@ def test_source_metadata_declares_public_web_not_paid_api():
     planner = PublicMapSourceResearchPlanner()
     metadata = planner.source_metadata()
 
-    assert planner.version == "public-map-sources/2"
+    assert planner.version == "public-map-sources/3"
     assert {item["source_id"] for item in metadata} == {
         "yandex_maps_web",
         "2gis_web",
