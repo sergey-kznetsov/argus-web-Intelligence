@@ -12,6 +12,31 @@ from argus.research.planner import ResearchPlan, ResearchPlanner
 _QUERY_KEYS = ("query", "search_query", "search_string", "queries")
 _SERVICE_ONLY_PREFIXES = ("metadata:", "notes:", "query:", "queries:", "search_string:")
 _MAX_CONTAINER_DEPTH = 4
+_GENERIC_ADDRESS_TOKENS = {
+    "street",
+    "st",
+    "road",
+    "rd",
+    "avenue",
+    "ave",
+    "boulevard",
+    "blvd",
+    "lane",
+    "ln",
+    "улица",
+    "ул",
+    "проспект",
+    "пр-кт",
+    "переулок",
+    "пер",
+    "проезд",
+    "шоссе",
+    "бульвар",
+    "наб",
+    "набережная",
+    "площадь",
+    "пл",
+}
 
 
 def sanitize_research_queries(
@@ -93,7 +118,7 @@ class QuerySafeResearchPlanner:
                 max_query_chars=self.max_query_chars,
             )
         plan.queries = queries
-        plan.notes = [*plan.notes, "query_safety=query-safety/1"]
+        plan.notes = [*plan.notes, "query_safety=query-safety/2"]
         return plan
 
 
@@ -147,7 +172,7 @@ class QuerySafeFollowupResearchPlanner:
                 seen_queries=seen_queries,
             )
         plan.queries = queries
-        plan.notes = [*plan.notes, "query_safety=query-safety/1"]
+        plan.notes = [*plan.notes, "query_safety=query-safety/2"]
         return plan
 
 
@@ -199,14 +224,30 @@ def _contains_territory_anchor(query: str, request: CollectionRequest) -> bool:
     haystack = _normalize_token(query)
     if not haystack:
         return False
-    values = [request.territory.city or "", request.territory.address or ""]
-    for raw in values:
-        normalized = _normalize_token(raw)
-        if normalized and normalized in haystack:
-            return True
-        tokens = _meaningful_tokens(raw)
-        if tokens and any(token in haystack.split() for token in tokens):
-            return True
+    haystack_tokens = set(_meaningful_tokens(query))
+
+    city = (request.territory.city or "").strip()
+    address = (request.territory.address or "").strip()
+    city_tokens = _meaningful_tokens(city)
+
+    if address:
+        address_tokens = _meaningful_tokens(address)
+        house_tokens = [token for token in address_tokens if token.isdigit()]
+        street_tokens = [
+            token
+            for token in address_tokens
+            if not token.isdigit()
+            and token not in _GENERIC_ADDRESS_TOKENS
+            and token not in city_tokens
+        ]
+        city_match = not city_tokens or all(token in haystack_tokens for token in city_tokens)
+        house_match = not house_tokens or any(token in haystack_tokens for token in house_tokens)
+        street_match = not street_tokens or any(token in haystack_tokens for token in street_tokens)
+        return city_match and house_match and street_match
+
+    if city_tokens:
+        return all(token in haystack_tokens for token in city_tokens)
+
     if request.territory.point is not None:
         latitude = f"{request.territory.point.latitude:.4f}"
         longitude = f"{request.territory.point.longitude:.4f}"
