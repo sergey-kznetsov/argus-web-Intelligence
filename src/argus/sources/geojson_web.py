@@ -59,7 +59,7 @@ class GeoJsonAwareWebAdapter(SchemaAwareSemanticWebAdapter):
                 non_point_features += 1
                 continue
             coordinates = geometry.get("coordinates")
-            point = self._point(coordinates)
+            point = GeoJsonAwareWebAdapter._point(coordinates)
             if point is None:
                 invalid_points += 1
                 continue
@@ -257,8 +257,3 @@ class GeoJsonAwareWebAdapter(SchemaAwareSemanticWebAdapter):
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return None
-
-    async def health(self) -> dict[str, object]:
-        payload = dict(await super().health())
-        payload["geojson_point_normalization"] = True
-        return payload
