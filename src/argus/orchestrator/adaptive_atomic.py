@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
+
 from argus.contracts.models import Observation
 from argus.orchestrator.area_atomic import AreaAwareAtomicCollectionOrchestrator
 from argus.research.entity_hypotheses import OllamaEntityHypothesisExtractor
@@ -13,7 +15,7 @@ from argus.sources.base import SourceTask
 class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrchestrator):
     """Iteratively expand research until requested coverage or collection budgets stop it."""
 
-    research_queue_priority_version = "research-queue-priority/2"
+    research_queue_priority_version = "research-queue-priority/3"
 
     def __init__(
         self,
@@ -432,36 +434,140 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
         }
 
     def _prioritize_pending(self, record, pending: list[SourceTask]) -> None:
-        """Run deterministic factual-gap branches before general research and depth crawl.
+        """Prioritize safe tasks without allowing one requested goal to starve the others.
 
-        Sorting never promotes a candidate into Evidence and never changes dedupe identity. It
-        only decides which already-safe queued URL gets one of the remaining execution slots.
-        Curated public-map/historical branches are generated specifically for unresolved factual
-        coverage and therefore outrank broader adaptive follow-up candidates.
+        Branch quality remains the primary ordering dimension: curated factual-gap work outranks
+        general follow-up, area expansion and ordinary depth crawl. Within an equivalent branch
+        and depth tier, requested goals are interleaved round-robin. This prevents a large link
+        fan-out for one intent from consuming the complete page budget while other requested
+        intents already have executable factual candidates waiting.
+
+        Queue ordering never promotes a candidate into Evidence and never changes task identity.
         """
 
         if not pending:
             return
-        requested = {
-            str(intent).strip().casefold()
-            for intent in record.request.intents
-            if str(intent).strip()
-        }
-        pending.sort(key=lambda item: self._pending_priority(item, requested))
+
+        requested_order: list[str] = []
+        seen_requested: set[str] = set()
+        for raw in record.request.intents:
+            intent = str(raw).strip().casefold()
+            if not intent or intent in seen_requested:
+                continue
+            seen_requested.add(intent)
+            requested_order.append(intent)
+        requested = set(requested_order)
+
+        base_sorted = sorted(pending, key=lambda item: self._pending_priority(item, requested))
+        cursor = self._queue_fairness_cursor(record, len(requested_order))
+        pending[:] = self._interleave_priority_tiers(
+            base_sorted,
+            requested_order=requested_order,
+            cursor=cursor,
+        )
+
+        selected_goal = self._task_requested_goal(pending[0], requested_order)
+        next_cursor = cursor
+        if selected_goal is not None and requested_order:
+            next_cursor = (requested_order.index(selected_goal) + 1) % len(requested_order)
+
         record.checkpoint = {
             **record.checkpoint,
             "research_queue_priority_version": self.research_queue_priority_version,
             "research_queue_candidate_count": len(pending),
+            "research_queue_fairness_cursor": next_cursor,
+            "research_queue_next_goal": selected_goal,
             "research_queue_next": [
                 {
                     "source_id": item.source_id,
                     "goal": item.goal,
                     "depth": item.depth,
                     "focused_branch": self._focused_branch(item),
+                    "fairness_goal": self._task_requested_goal(item, requested_order),
                 }
                 for item in pending[:5]
             ],
         }
+
+    @classmethod
+    def _interleave_priority_tiers(
+        cls,
+        base_sorted: list[SourceTask],
+        *,
+        requested_order: list[str],
+        cursor: int,
+    ) -> list[SourceTask]:
+        if len(requested_order) <= 1 or len(base_sorted) <= 1:
+            return list(base_sorted)
+
+        requested = set(requested_order)
+        rotated = [
+            *requested_order[cursor:],
+            *requested_order[:cursor],
+        ]
+        result: list[SourceTask] = []
+        start = 0
+        while start < len(base_sorted):
+            first_priority = cls._pending_priority(base_sorted[start], requested)
+            tier_key = first_priority[:3]
+            end = start + 1
+            while end < len(base_sorted):
+                priority = cls._pending_priority(base_sorted[end], requested)
+                if priority[:3] != tier_key:
+                    break
+                end += 1
+
+            lanes: dict[str, deque[SourceTask]] = {
+                goal: deque() for goal in requested_order
+            }
+            unassigned: deque[SourceTask] = deque()
+            for item in base_sorted[start:end]:
+                goal = cls._task_requested_goal(item, requested_order)
+                if goal is None:
+                    unassigned.append(item)
+                else:
+                    lanes[goal].append(item)
+
+            while any(lanes[goal] for goal in rotated):
+                for goal in rotated:
+                    lane = lanes[goal]
+                    if lane:
+                        result.append(lane.popleft())
+            result.extend(unassigned)
+            start = end
+
+        return result
+
+    @staticmethod
+    def _queue_fairness_cursor(record, goal_count: int) -> int:
+        if goal_count <= 0:
+            return 0
+        raw = record.checkpoint.get("research_queue_fairness_cursor", 0)
+        try:
+            return max(0, int(raw)) % goal_count
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _task_requested_goal(
+        task: SourceTask,
+        requested_order: list[str],
+    ) -> str | None:
+        requested = set(requested_order)
+        goal = str(task.goal).strip().casefold()
+        if goal in requested:
+            return goal
+        raw_goals = task.metadata.get("research_goals")
+        if isinstance(raw_goals, list):
+            normalized = {
+                str(value).strip().casefold()
+                for value in raw_goals
+                if str(value).strip()
+            }
+            for requested_goal in requested_order:
+                if requested_goal in normalized:
+                    return requested_goal
+        return None
 
     @classmethod
     def _pending_priority(
