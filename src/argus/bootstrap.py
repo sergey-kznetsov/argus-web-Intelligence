@@ -30,6 +30,7 @@ from argus.research.historical_sources import HistoricalSourceResearchPlanner
 from argus.research.intent_coverage import IntentCoverageEvaluator
 from argus.research.intent_evidence import OllamaIntentEvidenceClassifier
 from argus.research.planner import OllamaResearchPlanner
+from argus.research.query_safety import QuerySafeFollowupResearchPlanner, QuerySafeResearchPlanner
 from argus.research.searxng import SearxngDiscoveryProvider
 from argus.research.supervisor import HeuristicResearchSupervisor, OllamaResearchSupervisor
 from argus.research.task_context import ResearchInputDiscoveryService, ResearchInputPlanner
@@ -221,8 +222,25 @@ def build_services(settings: Settings) -> ServiceContainer:
         registry.register(OverpassSourceAdapter(overpass_provider, snapshots, geocoder))
     if settings.wayback_cdx_url:
         registry.register(WaybackSourceAdapter(WaybackCDXProvider(settings), snapshots))
-    planner = ResearchInputPlanner(OllamaResearchPlanner(settings))
+
+    ollama_planner = OllamaResearchPlanner(settings)
+    planner = ResearchInputPlanner(
+        QuerySafeResearchPlanner(
+            ollama_planner,
+            fallback=ollama_planner.fallback,
+            max_queries=settings.discovery_max_queries,
+        )
+    )
     followup_fallback = EvidenceAwareHeuristicFollowupResearchPlanner(coverage=coverage)
+    ollama_followup = OllamaFollowupResearchPlanner(
+        settings,
+        fallback=followup_fallback,
+        coverage=coverage,
+    )
+    followup_planner = QuerySafeFollowupResearchPlanner(
+        ollama_followup,
+        fallback=followup_fallback,
+    )
     supervisor_fallback = HeuristicResearchSupervisor(
         target_sources_per_intent=2,
         coverage=coverage,
@@ -236,11 +254,7 @@ def build_services(settings: Settings) -> ServiceContainer:
         historical_branch_planner=HistoricalBranchPlanner(),
         historical_source_planner=historical_source_planner,
         area_entity_planner=AreaEntityResearchPlanner(),
-        followup_planner=OllamaFollowupResearchPlanner(
-            settings,
-            fallback=followup_fallback,
-            coverage=coverage,
-        ),
+        followup_planner=followup_planner,
         research_supervisor=OllamaResearchSupervisor(
             settings,
             fallback=supervisor_fallback,
