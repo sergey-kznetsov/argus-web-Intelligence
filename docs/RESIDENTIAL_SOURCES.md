@@ -13,7 +13,9 @@ The current factual source is the public web interface of `dom.mingkh.ru`, repre
 
 This is an intent-to-source policy, not a consumer-specific branch. ARGUS does not check whether the caller is Janus, Kraken or another module. Any consumer requesting these intents receives the same source contract.
 
-For a residential-only collection, discovery is fail-closed to `dom.mingkh.ru`. Search providers may be used to locate the corresponding public house page, but search results are navigation only and never Evidence. ARGUS does not fall back to unrelated housing sites for these two intents.
+For every residential request with usable territory text, the curated planner creates a direct same-domain house-search task using `https://dom.mingkh.ru/search?address=...&searchtype=house`. This makes the configured factual site itself the primary entry point instead of requiring a search engine to have indexed the requested building.
+
+Residential discovery is fail-closed to `dom.mingkh.ru`. Search providers may additionally be used to locate a corresponding public house detail page, but search results are navigation only and never Evidence. ARGUS does not fall back to unrelated housing sites for these two intents.
 
 Mixed collections preserve normal ARGUS research for their other intents. Generic semantic classification is explicitly prevented from proving the source-scoped residential intents, so an alternative web page cannot accidentally satisfy their factual coverage.
 
@@ -47,7 +49,7 @@ If multiple different values are exposed for one intent on the same page, ARGUS 
 
 The interaction path is the existing `OllamaRecipeAgent -> deterministic SiteRecipe -> Playwright replay` pipeline. The model never receives direct browser control. It can select only controls already extracted from the fetched DOM, form values are restricted to bounded research inputs derived from the requested territory, GET/search/filter actions remain same-domain, and the resulting path is browser-replayed before factual extraction.
 
-Search-provider queries and snippets are never form values. When a discovered `dom.mingkh.ru` URL is routed to `mingkh_residential`, ARGUS replaces generic discovery input metadata with a bounded `territory_context` input scope derived only from the current `CollectionRequest` city/address. The adapter repeats the same rebasing immediately before guided navigation, so inherited or stale discovery strings cannot reach the model as allowed form input.
+Search-provider queries and snippets are never form values. When a discovered `dom.mingkh.ru` URL is routed to `mingkh_residential`, ARGUS replaces generic discovery input metadata with a bounded `territory_context` input scope derived only from the current `CollectionRequest` city/address. The direct source task uses the same input scope. The adapter repeats the rebasing immediately before guided navigation, so inherited or stale discovery strings cannot reach the model as allowed form input.
 
 Persisted SiteRecipes containing literal `fill` values are also request-scoped at replay time. Such a recipe may run only when every stored fill value is present in the current task's allowed territory-derived research inputs. A mismatch suppresses replay without counting the recipe as broken. Recipes without literal fills remain reusable across requests.
 
