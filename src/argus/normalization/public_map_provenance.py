@@ -4,7 +4,7 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 
 _PROVIDER_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
-    ("yandex_maps_web", ("yandex.ru",), ("/maps",)),
+    ("yandex_maps_web", ("yandex.ru", "yandex.com"), ("/maps",)),
     ("2gis_web", ("2gis.ru",), ("/",)),
     ("google_maps_web", ("google.com",), ("/maps",)),
 )
