@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 
 from argus.contracts.models import CollectionStatus, SourceCoverage, StructuredError
+from argus.crawler.errors import CrawlerRequestSkippedError
 from argus.history.snapshots import stage_snapshots
 from argus.orchestrator.service import (
     CollectionOrchestrator,
@@ -203,6 +204,33 @@ class AtomicCollectionOrchestrator(CollectionOrchestrator):
 
             except asyncio.CancelledError:
                 raise
+            except CrawlerRequestSkippedError as exc:
+                robots_blocked = exc.robots_txt
+                await self._record_task_failure(
+                    record,
+                    task=task,
+                    coverage=coverage,
+                    error_code=(
+                        "SOURCE_ROBOTS_TXT_BLOCKED"
+                        if robots_blocked
+                        else "SOURCE_REQUEST_SKIPPED"
+                    ),
+                    message=(
+                        "Source URL is disallowed by robots.txt; ARGUS did not fetch or bypass it."
+                        if robots_blocked
+                        else f"Crawler skipped the source request before navigation ({exc.reason})."
+                    ),
+                    pending=pending,
+                    visited=visited,
+                    historical_branch_queries=historical_branch_queries,
+                    processed=processed,
+                    total_budget=total_budget,
+                    retryable=not robots_blocked,
+                    blocked=robots_blocked,
+                )
+                visited.add(key)
+                processed += 1
+                continue
             except TimeoutError:
                 if collection_deadline_bounds_task:
                     pending.insert(0, task)
@@ -352,23 +380,26 @@ class AtomicCollectionOrchestrator(CollectionOrchestrator):
         historical_branch_queries: set[str],
         processed: int,
         total_budget: int,
+        retryable: bool = True,
+        blocked: bool = False,
     ) -> None:
-        coverage.status = "error"
+        coverage.status = "blocked" if blocked else "error"
+        coverage.blocked = blocked
         coverage.error_code = error_code
         coverage.error_message = message
         record.errors.append(
             StructuredError(
                 code=error_code,
                 message=message,
-                retryable=True,
+                retryable=retryable,
                 source_id=task.source_id,
             )
         )
         logger.warning(
-            "source collection failed",
+            "source blocked" if blocked else "source collection failed",
             extra=_log_extra(
                 record,
-                "source_error",
+                "source_blocked" if blocked else "source_error",
                 source_id=task.source_id,
                 error_code=error_code,
             ),
