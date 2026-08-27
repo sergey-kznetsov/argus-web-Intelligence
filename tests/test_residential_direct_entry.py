@@ -18,11 +18,11 @@ class _Delegate:
         return ResearchPlan(queries=["delegate query"])
 
 
-def _request(*intents: str) -> CollectionRequest:
+def _request(*intents: str, address: str | None = "Комсомольский проспект, 27") -> CollectionRequest:
     return CollectionRequest(
         consumer="residential-direct-entry-test",
         analysis_id="residential-direct-entry-test",
-        territory={"city": "Пермь", "address": "Комсомольский проспект, 27"},
+        territory={"city": "Пермь", "address": address},
         intents=list(intents),
     )
 
@@ -44,7 +44,7 @@ async def test_residential_plan_contains_direct_same_domain_house_search_task():
     assert parsed.hostname == "dom.mingkh.ru"
     assert parsed.path == "/search"
     assert parse_qs(parsed.query) == {
-        "address": ["Пермь, Комсомольский проспект, 27"],
+        "address": ["Комсомольский проспект, 27"],
         "searchtype": ["house"],
     }
     assert task.source_id == "mingkh_residential"
@@ -58,8 +58,23 @@ async def test_residential_plan_contains_direct_same_domain_house_search_task():
 
     assert len(plan.queries) == 2
     assert all(query.startswith("site:dom.mingkh.ru") for query in plan.queries)
+    assert all("Пермь, Комсомольский проспект, 27" in query for query in plan.queries)
     assert any("Количество жителей" in query for query in plan.queries)
     assert any("Количество квартир" in query for query in plan.queries)
+
+
+@pytest.mark.asyncio
+async def test_residential_source_planner_fails_closed_without_building_address():
+    delegate = _Delegate()
+    planner = CuratedResidentialResearchPlanner(delegate)
+
+    plan = await planner.plan(_request("residential_population", address=None))
+
+    assert delegate.calls == []
+    assert plan.tasks == []
+    assert plan.queries == []
+    assert any("building_address_required=true" in note for note in plan.notes)
+    assert any("direct_entry=false" in note for note in plan.notes)
 
 
 @pytest.mark.asyncio
