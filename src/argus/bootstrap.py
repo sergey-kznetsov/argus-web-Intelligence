@@ -32,11 +32,13 @@ from argus.research.intent_evidence import OllamaIntentEvidenceClassifier
 from argus.research.planner import OllamaResearchPlanner
 from argus.research.query_safety import QuerySafeFollowupResearchPlanner, QuerySafeResearchPlanner
 from argus.research.residential_sources import (
+    RESIDENTIAL_INTENTS,
     CuratedResidentialFollowupResearchPlanner,
     CuratedResidentialResearchPlanner,
 )
 from argus.research.searxng import SearxngDiscoveryProvider
 from argus.research.source_routing import DedicatedSourceRoutingDiscoveryService
+from argus.research.source_scoped_intents import SourceScopedIntentEvidenceClassifier
 from argus.research.supervisor import HeuristicResearchSupervisor, OllamaResearchSupervisor
 from argus.research.task_context import ResearchInputPlanner
 from argus.security.runtime_posture import enforce_runtime_security
@@ -175,7 +177,11 @@ def build_services(settings: Settings) -> ServiceContainer:
     geocoder = build_geocoder(settings)
     map_registry = build_map_registry(settings)
     structured_extractor = build_structured_data_extractor(settings)
-    intent_evidence_classifier = OllamaIntentEvidenceClassifier(settings)
+    base_intent_evidence_classifier = OllamaIntentEvidenceClassifier(settings)
+    intent_evidence_classifier = SourceScopedIntentEvidenceClassifier(
+        base_intent_evidence_classifier,
+        source_scoped_intents=RESIDENTIAL_INTENTS,
+    )
     historical_source_planner = HistoricalSourceResearchPlanner(
         catalog_file=settings.historical_source_catalog_file
     )
