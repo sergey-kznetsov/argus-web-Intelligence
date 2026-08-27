@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/live-perm-ai-acceptance.yml
+      - scripts/perm_ai_acceptance.py
 
 permissions:
   contents: read
