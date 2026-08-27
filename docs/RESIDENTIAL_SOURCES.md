@@ -47,6 +47,10 @@ If multiple different values are exposed for one intent on the same page, ARGUS 
 
 The interaction path is the existing `OllamaRecipeAgent -> deterministic SiteRecipe -> Playwright replay` pipeline. The model never receives direct browser control. It can select only controls already extracted from the fetched DOM, form values are restricted to bounded research inputs derived from the requested territory, GET/search/filter actions remain same-domain, and the resulting path is browser-replayed before factual extraction.
 
+Search-provider queries and snippets are never form values. When a discovered `dom.mingkh.ru` URL is routed to `mingkh_residential`, ARGUS replaces generic discovery input metadata with a bounded `territory_context` input scope derived only from the current `CollectionRequest` city/address. The adapter repeats the same rebasing immediately before guided navigation, so inherited or stale discovery strings cannot reach the model as allowed form input.
+
+Persisted SiteRecipes containing literal `fill` values are also request-scoped at replay time. Such a recipe may run only when every stored fill value is present in the current task's allowed territory-derived research inputs. A mismatch suppresses replay without counting the recipe as broken. Recipes without literal fills remain reusable across requests.
+
 A same-domain deterministic house link is preferred before AGENT navigation. A page that explicitly contains residential values for another house is treated as a factual territory mismatch, not as an interface from which the model may navigate away.
 
 A newly generated SiteRecipe remains a candidate until deterministic residential extraction produces Evidence for the recipe goal from the replayed page. Only then may the shared recipe lifecycle promote it. A replay that reveals no supporting fact is not sufficient to persist the route.
