@@ -50,6 +50,20 @@ class _Snapshots:
 
 
 class _Web:
+    def __init__(self, guided: FetchResult | None = None) -> None:
+        self.guided = guided
+        self.navigation_calls = 0
+        self.finalized: list[tuple[SourceTask, object]] = []
+
+    async def navigate_with_agent(self, task, *, context_fetch):
+        del context_fetch
+        self.navigation_calls += 1
+        return self.guided
+
+    async def finalize_navigation_goal(self, task, request, result):
+        del request
+        self.finalized.append((task, result))
+
     async def health(self):
         return {"status": "ok"}
 
@@ -64,25 +78,38 @@ def _request(*intents: str, address: str = "Комсомольский прос�
     )
 
 
-def _task() -> SourceTask:
+def _task(
+    *,
+    goal: str = "residential_premises_count",
+    url: str = "https://dom.mingkh.ru/perm/perm/123456",
+) -> SourceTask:
     return SourceTask(
         source_id="mingkh_residential",
-        goal="residential_premises_count",
-        url="https://dom.mingkh.ru/perm/perm/123456",
+        goal=goal,
+        url=url,
         metadata={"collection_id": "collection-1"},
     )
 
 
-def _fetched(html: str, *, blocked: bool = False) -> FetchResult:
+def _fetched(
+    html: str,
+    *,
+    blocked: bool = False,
+    url: str = "https://dom.mingkh.ru/perm/perm/123456",
+    links: list[str] | None = None,
+    metadata: dict[str, object] | None = None,
+) -> FetchResult:
     return FetchResult(
-        url="https://dom.mingkh.ru/perm/perm/123456",
-        final_url="https://dom.mingkh.ru/perm/perm/123456",
+        url=url,
+        final_url=url,
         status_code=200,
         content_type="text/html; charset=utf-8",
         text=html,
         title="Дом",
+        links=list(links or []),
         blocked=blocked,
         runtime="browser",
+        metadata=dict(metadata or {}),
     )
 
 
@@ -144,7 +171,8 @@ async def test_mixed_followup_delegates_only_nonresidential_intents():
 
 @pytest.mark.asyncio
 async def test_extracts_only_explicit_labeled_residential_facts():
-    adapter = MingkhResidentialAdapter(_Web(), _Snapshots())
+    web = _Web()
+    adapter = MingkhResidentialAdapter(web, _Snapshots())
     html = """
     <html><body>
       <h1>Пермь, Комсомольский проспект, 27</h1>
@@ -171,11 +199,14 @@ async def test_extracts_only_explicit_labeled_residential_facts():
         "Количество квартир: 32",
         "Количество жителей: 81",
     }
+    assert web.navigation_calls == 0
+    assert web.finalized[-1][1] is result
 
 
 @pytest.mark.asyncio
 async def test_population_is_not_estimated_from_apartment_count():
-    adapter = MingkhResidentialAdapter(_Web(), _Snapshots())
+    web = _Web()
+    adapter = MingkhResidentialAdapter(web, _Snapshots())
     html = """
     <html><body>
       <h1>Пермь, Комсомольский проспект, 27</h1>
@@ -191,11 +222,87 @@ async def test_population_is_not_estimated_from_apartment_count():
     facts = {item.data["intent"]: item.data["value"] for item in result.observations}
     assert facts == {"residential_premises_count": 32}
     assert "residential_population" not in facts
+    assert web.navigation_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_accessible_interface_can_reveal_fact_through_one_verified_navigation_round():
+    target_url = "https://dom.mingkh.ru/perm/perm/123456"
+    guided = _fetched(
+        """
+        <html><body>
+          <h1>Пермь, Комсомольский проспект, 27</h1>
+          <div>Количество жителей: 81</div>
+        </body></html>
+        """,
+        url=target_url,
+        metadata={
+            "agent_backend": "test-agent",
+            "recipe_id": "recipe-candidate-1",
+            "recipe_version": 2,
+        },
+    )
+    web = _Web(guided)
+    adapter = MingkhResidentialAdapter(web, _Snapshots())
+    task = _task(
+        goal="residential_population",
+        url="https://dom.mingkh.ru/search",
+    )
+    initial = _fetched(
+        """
+        <html><body>
+          <h1>Поиск дома</h1>
+          <form method="get"><label>Адрес<input name="address"></label></form>
+        </body></html>
+        """,
+        url=task.url,
+    )
+
+    result = await adapter.extract(
+        task,
+        initial,
+        _request("residential_population"),
+    )
+
+    assert web.navigation_calls == 1
+    assert len(result.observations) == 1
+    fact = result.observations[0]
+    assert fact.data["intent"] == "residential_population"
+    assert fact.data["value"] == 81
+    assert fact.provenance["recipe_id"] == "recipe-candidate-1"
+    interface = fact.provenance["interface_navigation"]
+    assert interface["verified_browser_replay"] is True
+    assert interface["agent_output_is_evidence"] is False
+    assert task.metadata["mingkh_interface_navigation_result"] == "source_fact_revealed"
+    assert "Пермь, Комсомольский проспект, 27" in task.metadata[
+        "research_input_candidates"
+    ]
+    assert web.finalized[-1][1] is result
+
+
+@pytest.mark.asyncio
+async def test_same_domain_house_links_are_preferred_before_agent_navigation():
+    web = _Web()
+    adapter = MingkhResidentialAdapter(web, _Snapshots())
+    task = _task(goal="residential_population", url="https://dom.mingkh.ru/search")
+    initial = _fetched(
+        "<html><body><h1>Результаты поиска</h1></body></html>",
+        url=task.url,
+        links=["https://dom.mingkh.ru/perm/perm/123456"],
+    )
+
+    result = await adapter.extract(task, initial, _request("residential_population"))
+
+    assert web.navigation_calls == 0
+    assert [item.url for item in result.discovered_tasks] == [
+        "https://dom.mingkh.ru/perm/perm/123456"
+    ]
 
 
 @pytest.mark.asyncio
 async def test_russian_access_challenge_is_blocked_not_solved():
-    adapter = MingkhResidentialAdapter(_Web(), _Snapshots())
+    web = _Web()
+    adapter = MingkhResidentialAdapter(web, _Snapshots())
     html = """
     <html><body>
       <h1>Хотим убедиться, что вы не робот</h1>
@@ -212,11 +319,13 @@ async def test_russian_access_challenge_is_blocked_not_solved():
     assert result.observations == []
     assert result.evidence == []
     assert [error.code for error in result.errors] == ["MINGKH_ACCESS_CHALLENGE"]
+    assert web.navigation_calls == 0
 
 
 @pytest.mark.asyncio
-async def test_wrong_house_never_becomes_residential_evidence():
-    adapter = MingkhResidentialAdapter(_Web(), _Snapshots())
+async def test_wrong_house_never_becomes_residential_evidence_or_agent_navigation():
+    web = _Web()
+    adapter = MingkhResidentialAdapter(web, _Snapshots())
     html = """
     <html><body>
       <h1>Пермь, Комсомольский проспект, 29</h1>
@@ -232,3 +341,4 @@ async def test_wrong_house_never_becomes_residential_evidence():
     assert result.observations == []
     assert result.evidence == []
     assert [error.code for error in result.errors] == ["MINGKH_TERRITORY_MISMATCH"]
+    assert web.navigation_calls == 0
