@@ -48,6 +48,30 @@ class _ResidentialRecipeBrowser:
         )
 
 
+class _NonGoalResidentialRecipeBrowser(_ResidentialRecipeBrowser):
+    async def fetch(self, url: str, recipe=None) -> FetchResult:
+        self.calls.append((url, recipe))
+        assert recipe is not None
+        return FetchResult(
+            url=url,
+            final_url="https://dom.mingkh.ru/perm/perm/123456",
+            status_code=200,
+            content_type="text/html; charset=utf-8",
+            text=(
+                "<html><body>"
+                "<h1>Пермь, Комсомольский проспект, 27</h1>"
+                "<div>Количество квартир: 32</div>"
+                "</body></html>"
+            ),
+            title="Дом",
+            runtime="browser_recipe",
+            metadata={
+                "recipe_id": recipe.recipe_id,
+                "recipe_version": recipe.version,
+            },
+        )
+
+
 class _RecipeAgent:
     name = "test-recipe-agent"
 
@@ -77,12 +101,12 @@ class _Snapshots:
         return SimpleNamespace(snapshot_id="snapshot-residential-recipe")
 
 
-def _request() -> CollectionRequest:
+def _request(*intents: str) -> CollectionRequest:
     return CollectionRequest(
         consumer="consumer-neutral-test",
         analysis_id="analysis-residential-recipe",
         territory={"city": "Пермь", "address": "Комсомольский проспект, 27"},
-        intents=["residential_population"],
+        intents=list(intents or ("residential_population",)),
     )
 
 
@@ -115,18 +139,8 @@ def _initial_page() -> FetchResult:
     )
 
 
-@pytest.mark.asyncio
-async def test_residential_recipe_becomes_active_only_after_source_fact(tmp_path: Path):
-    repository = LifecycleAtomicSQLiteRepository(tmp_path / "argus.sqlite")
-    await repository.initialize()
-    browser = _ResidentialRecipeBrowser()
-    recipes = RecipeManager(
-        repository,
-        failure_threshold=3,
-        max_age_days=30,
-        keep_versions=10,
-    )
-    web = LifecycleRecipeWebAdapter(
+def _web(repository, browser, recipes):
+    return LifecycleRecipeWebAdapter(
         repository=repository,
         fast=_FastUnused(),
         browser=browser,
@@ -141,6 +155,20 @@ async def test_residential_recipe_becomes_active_only_after_source_fact(tmp_path
             memory_mb=128,
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_residential_recipe_becomes_active_only_after_source_fact(tmp_path: Path):
+    repository = LifecycleAtomicSQLiteRepository(tmp_path / "argus.sqlite")
+    await repository.initialize()
+    browser = _ResidentialRecipeBrowser()
+    recipes = RecipeManager(
+        repository,
+        failure_threshold=3,
+        max_age_days=30,
+        keep_versions=10,
+    )
+    web = _web(repository, browser, recipes)
     adapter = MingkhResidentialAdapter(web, _Snapshots())
     task = _task()
 
@@ -165,4 +193,44 @@ async def test_residential_recipe_becomes_active_only_after_source_fact(tmp_path
     candidates = verification["candidates"]
     assert candidates[-1]["goal_verified"] is True
     assert candidates[-1]["status"] == "active"
+    await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_non_goal_residential_fact_does_not_activate_population_recipe(tmp_path: Path):
+    repository = LifecycleAtomicSQLiteRepository(tmp_path / "argus-non-goal.sqlite")
+    await repository.initialize()
+    browser = _NonGoalResidentialRecipeBrowser()
+    recipes = RecipeManager(
+        repository,
+        failure_threshold=3,
+        max_age_days=30,
+        keep_versions=10,
+    )
+    web = _web(repository, browser, recipes)
+    adapter = MingkhResidentialAdapter(web, _Snapshots())
+    task = _task()
+
+    result = await adapter.extract(
+        task,
+        _initial_page(),
+        _request("residential_population", "residential_premises_count"),
+    )
+
+    assert len(browser.calls) == 1
+    assert {
+        item.data["intent"]: item.data["value"] for item in result.observations
+    } == {"residential_premises_count": 32}
+    assert task.metadata["mingkh_interface_navigation_result"] == (
+        "non_goal_source_fact_revealed"
+    )
+
+    stored = await repository.get_recipe("dom.mingkh.ru", "residential_population")
+    assert stored is None
+    verification = task.metadata["recipe_goal_verification"]
+    assert verification["source_backed"] is False
+    candidates = verification["candidates"]
+    assert candidates[-1]["goal_verified"] is False
+    assert candidates[-1]["status"] == "rejected"
+    assert candidates[-1]["reason"] == "semantic_goal_not_satisfied"
     await repository.close()
