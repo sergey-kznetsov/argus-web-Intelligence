@@ -19,9 +19,21 @@ def test_two_gis_card_resolves_to_reviews_tab():
     ) == "https://2gis.ru/moscow/firm/70000001044357973/tab/reviews"
 
 
+def test_two_gis_geo_card_resolves_to_reviews_tab():
+    url = "https://2gis.ru/perm/geo/2252435468868331?m=56.2%2C58.0"
+
+    assert public_map_surface_kind(url) == "entity"
+    assert preferred_public_map_review_url(url) == (
+        "https://2gis.ru/perm/geo/2252435468868331/tab/reviews"
+    )
+
+
 def test_existing_two_gis_review_view_is_not_reopened():
     assert preferred_public_map_review_url(
         "https://2gis.ru/moscow/firm/70000001044357973/tab/reviews"
+    ) is None
+    assert preferred_public_map_review_url(
+        "https://2gis.ru/perm/geo/2252435468868331/tab/reviews"
     ) is None
 
 
@@ -46,6 +58,9 @@ def test_map_search_surfaces_are_distinct_from_entity_cards():
         "https://2gis.ru/perm/firm/70000001000000000"
     ) == "entity"
     assert public_map_surface_kind(
+        "https://2gis.ru/perm/geo/2252435468868331"
+    ) == "entity"
+    assert public_map_surface_kind(
         "https://yandex.ru/maps/org/prikamye/123456789/reviews/"
     ) == "entity"
     assert public_map_surface_kind(
@@ -59,5 +74,8 @@ def test_lookalike_and_malformed_card_urls_are_not_rewritten():
     ) is None
     assert preferred_public_map_review_url(
         "https://2gis.ru/moscow/firm/not-a-public-id"
+    ) is None
+    assert preferred_public_map_review_url(
+        "https://2gis.ru/moscow/geo/not-a-public-id"
     ) is None
     assert public_map_surface_kind("https://2gis.ru.evil.test/perm/search/example") is None
