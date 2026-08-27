@@ -22,6 +22,7 @@ from argus.recipes.service import RecipeManager
 from argus.research.browser_serp import DuckDuckGoBrowserDiscoveryProvider
 from argus.research.coverage import EvidenceAwareHeuristicFollowupResearchPlanner
 from argus.research.discovery import DiscoveryService
+from argus.research.discovery_relevance import TerritoryAwareDiscoveryService
 from argus.research.entities import AreaEntityResearchPlanner
 from argus.research.entity_hypotheses import OllamaEntityHypothesisExtractor
 from argus.research.followup import OllamaFollowupResearchPlanner
@@ -33,7 +34,7 @@ from argus.research.planner import OllamaResearchPlanner
 from argus.research.query_safety import QuerySafeFollowupResearchPlanner, QuerySafeResearchPlanner
 from argus.research.searxng import SearxngDiscoveryProvider
 from argus.research.supervisor import HeuristicResearchSupervisor, OllamaResearchSupervisor
-from argus.research.task_context import ResearchInputDiscoveryService, ResearchInputPlanner
+from argus.research.task_context import ResearchInputPlanner
 from argus.security.runtime_posture import enforce_runtime_security
 from argus.security.urls import UrlGuard
 from argus.services import ServiceContainer
@@ -88,7 +89,7 @@ def build_discovery(
         providers.append(DuckDuckGoBrowserDiscoveryProvider(settings, browser))
     if not providers:
         return None
-    return ResearchInputDiscoveryService(
+    return TerritoryAwareDiscoveryService(
         providers=providers,
         url_guard=guard,
         max_queries=settings.discovery_max_queries,
