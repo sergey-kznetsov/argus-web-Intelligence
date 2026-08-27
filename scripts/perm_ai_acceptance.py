@@ -14,6 +14,14 @@ ADDRESS = "Комсомольский проспект, 27"
 CITY = "Пермь"
 PROFILE_IDS = ("kraken", "janus", "historical")
 ACCEPTABLE_STATUSES = {"completed", "partial"}
+_QUERY_CHECKPOINT_KEYS = (
+    "queries",
+    "discovery_queries",
+    "adaptive_followup_queries",
+    "curated_historical_queries",
+    "curated_public_map_queries",
+    "llm_entity_hypothesis_queries",
+)
 
 
 def _request(profile_id: str, profile: dict[str, object]) -> CollectionRequest:
@@ -54,11 +62,20 @@ def _overview(profile_id: str, report: dict[str, object]) -> dict[str, object]:
         "observation_count": len(observations) if isinstance(observations, list) else 0,
         "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
         "error_count": len(errors) if isinstance(errors, list) else 0,
+        "runtime_terminal_status_version": checkpoint.get("final_terminal_status_version"),
+        "runtime_coverage_version": checkpoint.get("final_intent_coverage_version"),
+        "runtime_fully_covered": checkpoint.get("final_fully_covered"),
+        "runtime_covered_intents": checkpoint.get("final_covered_intents", []),
+        "runtime_uncovered_intents": checkpoint.get("final_uncovered_intents", []),
+        "runtime_intent_source_counts": checkpoint.get("final_intent_source_counts", {}),
+        "planner_notes": checkpoint.get("planner_notes", []),
+        "discovery_queries": checkpoint.get("discovery_queries", []),
         "research_supervisor": checkpoint.get("research_supervisor", {}),
         "adaptive_followup_queries": checkpoint.get("adaptive_followup_queries", []),
         "historical_queries": checkpoint.get("curated_historical_queries", []),
         "public_map_queries": checkpoint.get("curated_public_map_queries", []),
-        "entity_hypothesis_queries": checkpoint.get("entity_hypothesis_queries", []),
+        "entity_hypothesis_queries": checkpoint.get("llm_entity_hypothesis_queries", []),
+        "query_shape_violations": _query_shape_violations(checkpoint),
     }
 
 
@@ -72,12 +89,40 @@ def _acceptance_failures(overview: list[dict[str, object]]) -> list[str]:
             for value in item.get("covered_intents", [])
             if str(value).strip()
         }
+        uncovered = {
+            str(value).strip().casefold()
+            for value in item.get("uncovered_intents", [])
+            if str(value).strip()
+        }
         if status not in ACCEPTABLE_STATUSES:
             failures.append(f"{profile}: terminal status is {status or 'missing'}")
         if int(item.get("observation_count") or 0) <= 0:
             failures.append(f"{profile}: no factual observations")
         if int(item.get("evidence_count") or 0) <= 0:
             failures.append(f"{profile}: no evidence")
+
+        runtime_version = str(item.get("runtime_terminal_status_version") or "").strip()
+        if runtime_version:
+            runtime_covered = {
+                str(value).strip().casefold()
+                for value in item.get("runtime_covered_intents", [])
+                if str(value).strip()
+            }
+            runtime_uncovered = {
+                str(value).strip().casefold()
+                for value in item.get("runtime_uncovered_intents", [])
+                if str(value).strip()
+            }
+            if runtime_covered != covered or runtime_uncovered != uncovered:
+                failures.append(
+                    f"{profile}: production runtime coverage disagrees with independent probe"
+                )
+
+        query_violations = item.get("query_shape_violations")
+        if isinstance(query_violations, list) and query_violations:
+            failures.append(
+                f"{profile}: malformed/service-shaped discovery query escaped sanitization"
+            )
 
         if profile == "kraken":
             if "reviews" not in covered:
@@ -91,6 +136,38 @@ def _acceptance_failures(overview: list[dict[str, object]]) -> list[str]:
         elif profile == "historical" and "historical_context" not in covered:
             failures.append("historical: historical_context is not factually covered")
     return failures
+
+
+def _query_shape_violations(checkpoint: dict[str, object]) -> list[dict[str, str]]:
+    violations: list[dict[str, str]] = []
+    for key in _QUERY_CHECKPOINT_KEYS:
+        raw = checkpoint.get(key)
+        if not isinstance(raw, list):
+            continue
+        for value in raw:
+            query = " ".join(str(value).split()).strip()
+            lowered = query.casefold()
+            if not query:
+                continue
+            reason = ""
+            if query[:1] in {"{", "["}:
+                reason = "serialized_container"
+            elif any(
+                marker in lowered
+                for marker in (
+                    "metadata:",
+                    "'metadata'",
+                    '"metadata"',
+                    "'queries'",
+                    '"queries"',
+                    "'search_string'",
+                    '"search_string"',
+                )
+            ):
+                reason = "service_schema_leak"
+            if reason:
+                violations.append({"checkpoint": key, "query": query[:512], "reason": reason})
+    return violations
 
 
 async def _run_profile(profile_id: str) -> tuple[dict[str, object], list[str]]:
