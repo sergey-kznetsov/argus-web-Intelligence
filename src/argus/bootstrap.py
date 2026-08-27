@@ -31,7 +31,10 @@ from argus.research.intent_coverage import IntentCoverageEvaluator
 from argus.research.intent_evidence import OllamaIntentEvidenceClassifier
 from argus.research.planner import OllamaResearchPlanner
 from argus.research.query_safety import QuerySafeFollowupResearchPlanner, QuerySafeResearchPlanner
-from argus.research.residential_sources import CuratedResidentialResearchPlanner
+from argus.research.residential_sources import (
+    CuratedResidentialFollowupResearchPlanner,
+    CuratedResidentialResearchPlanner,
+)
 from argus.research.searxng import SearxngDiscoveryProvider
 from argus.research.source_routing import DedicatedSourceRoutingDiscoveryService
 from argus.research.supervisor import HeuristicResearchSupervisor, OllamaResearchSupervisor
@@ -249,9 +252,17 @@ def build_services(settings: Settings) -> ServiceContainer:
         fallback=followup_fallback,
         coverage=coverage,
     )
-    followup_planner = QuerySafeFollowupResearchPlanner(
+    residential_followup = CuratedResidentialFollowupResearchPlanner(
         ollama_followup,
-        fallback=followup_fallback,
+        coverage=coverage,
+    )
+    residential_followup_fallback = CuratedResidentialFollowupResearchPlanner(
+        followup_fallback,
+        coverage=coverage,
+    )
+    followup_planner = QuerySafeFollowupResearchPlanner(
+        residential_followup,
+        fallback=residential_followup_fallback,
     )
     supervisor_fallback = HeuristicResearchSupervisor(
         target_sources_per_intent=2,
