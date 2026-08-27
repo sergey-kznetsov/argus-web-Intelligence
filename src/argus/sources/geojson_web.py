@@ -59,7 +59,7 @@ class GeoJsonAwareWebAdapter(SchemaAwareSemanticWebAdapter):
                 non_point_features += 1
                 continue
             coordinates = geometry.get("coordinates")
-            point = GeoJsonAwareWebAdapter._point(coordinates)
+            point = GeoJsonAwareWebAdapter._geojson_point(coordinates)
             if point is None:
                 invalid_points += 1
                 continue
@@ -230,7 +230,7 @@ class GeoJsonAwareWebAdapter(SchemaAwareSemanticWebAdapter):
         return f"{source_url}#geojson-feature-{index}"
 
     @staticmethod
-    def _point(coordinates: object) -> Point | None:
+    def _geojson_point(coordinates: object) -> Point | None:
         if not isinstance(coordinates, list) or len(coordinates) not in {2, 3}:
             return None
         longitude = GeoJsonAwareWebAdapter._coordinate(coordinates[0])
