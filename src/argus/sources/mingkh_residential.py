@@ -119,6 +119,7 @@ class MingkhResidentialAdapter:
                         "research_input_candidates": list(input_candidates),
                         "research_input_candidates_navigation_only": True,
                         "research_input_candidates_are_evidence": False,
+                        "research_input_scope": "territory_context",
                     },
                 )
             )
@@ -354,6 +355,7 @@ class MingkhResidentialAdapter:
                 "accessible_pages_only": True,
                 "max_rounds_per_task": 1,
                 "candidate_requires_source_fact": True,
+                "research_input_scope": "territory_context",
                 "challenge_bypass": False,
             },
             "upstream_web_runtime": upstream,
@@ -549,12 +551,10 @@ class MingkhResidentialAdapter:
         task: SourceTask,
         request: CollectionRequest,
     ) -> None:
-        raw_existing = task.metadata.get("research_input_candidates", [])
-        existing = raw_existing if isinstance(raw_existing, list) else []
-        values = research_input_candidates(request, extra_values=existing)
-        task.metadata["research_input_candidates"] = values
+        task.metadata["research_input_candidates"] = research_input_candidates(request)
         task.metadata["research_input_candidates_navigation_only"] = True
         task.metadata["research_input_candidates_are_evidence"] = False
+        task.metadata["research_input_scope"] = "territory_context"
         task.metadata["allowed_domains"] = [self.domain]
 
     @staticmethod
@@ -688,6 +688,7 @@ class MingkhResidentialAdapter:
                         "research_input_candidates": list(input_candidates),
                         "research_input_candidates_navigation_only": True,
                         "research_input_candidates_are_evidence": False,
+                        "research_input_scope": "territory_context",
                         "dedicated_source_followup": True,
                     },
                 )
