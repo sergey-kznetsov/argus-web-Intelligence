@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from argus.contracts.models import CollectionRequest
 from argus.research.discovery import DiscoveryOutcome
 from argus.research.discovery_relevance import TerritoryAwareDiscoveryService
+from argus.research.input_candidates import research_input_candidates
 from argus.research.residential_sources import RESIDENTIAL_INTENTS
 
 
@@ -21,7 +22,7 @@ class DedicatedSourceRoutingDiscoveryService(TerritoryAwareDiscoveryService):
     sources. This keeps residential facts on the explicitly configured public source.
     """
 
-    routing_version = "dedicated-source-routing/2"
+    routing_version = "dedicated-source-routing/3"
 
     def __init__(self, *args, domain_source_routes: dict[str, str] | None = None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -50,6 +51,8 @@ class DedicatedSourceRoutingDiscoveryService(TerritoryAwareDiscoveryService):
                 "navigation_only": True,
                 "is_evidence": False,
             }
+            if source_id == "mingkh_residential":
+                self._scope_mingkh_navigation_inputs(task, request)
 
         if self._residential_only(request):
             kept = [task for task in outcome.tasks if task.source_id == "mingkh_residential"]
@@ -61,6 +64,22 @@ class DedicatedSourceRoutingDiscoveryService(TerritoryAwareDiscoveryService):
             if not kept and outcome.stop_reason not in {"blocked_without_destinations", "no_queries"}:
                 outcome.stop_reason = "source_policy_no_valid_destinations"
         return outcome
+
+    @staticmethod
+    def _scope_mingkh_navigation_inputs(task, request: CollectionRequest) -> None:
+        """Keep public form values separate from discovery/search query strings.
+
+        Search-provider queries are useful for locating a ``dom.mingkh.ru`` destination,
+        but they are not valid values for the site's address/search controls. The dedicated
+        residential route therefore exposes only bounded values derived from TerritoryContext
+        to AGENT/SiteRecipe navigation.
+        """
+
+        task.metadata["research_input_candidates"] = research_input_candidates(request)
+        task.metadata["research_input_candidates_navigation_only"] = True
+        task.metadata["research_input_candidates_are_evidence"] = False
+        task.metadata["research_input_scope"] = "territory_context"
+        task.metadata["allowed_domains"] = ["dom.mingkh.ru"]
 
     def _source_for_url(self, url: str) -> str | None:
         host = self._normalize_domain(urlparse(url).hostname or "")
