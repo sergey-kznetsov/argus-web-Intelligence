@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from argus.contracts.models import Evidence, EvidenceSource, Observation, utcnow
+from argus.contracts.models import CollectionRequest, Evidence, EvidenceSource, Observation, utcnow
 from argus.crawler.models import FetchResult
 from argus.sources.base import SourceResult, SourceTask
 from argus.sources.public_map_web import PublicMapProvenanceWebAdapter
@@ -10,6 +10,18 @@ def adapter_with_agent() -> PublicMapProvenanceWebAdapter:
     adapter = object.__new__(PublicMapProvenanceWebAdapter)
     adapter.agent = object()
     return adapter
+
+
+def request(*, address: str | None = None) -> CollectionRequest:
+    territory: dict[str, object] = {"city": "Ижевск"}
+    if address is not None:
+        territory["address"] = address
+    return CollectionRequest(
+        consumer="test",
+        analysis_id="analysis-1",
+        territory=territory,
+        intents=["reviews", "comments", "complaints", "discussions"],
+    )
 
 
 def task(*goals: str) -> SourceTask:
@@ -32,9 +44,9 @@ def fetched(url: str = "https://2gis.ru/izhevsk/firm/example") -> FetchResult:
     )
 
 
-def observation(entity_type: str) -> Observation:
+def observation(entity_type: str, *, text: str = "Ижевск. Public content") -> Observation:
     return Observation(
-        observation_id=f"obs-{entity_type}",
+        observation_id=f"obs-{entity_type}-{abs(hash(text))}",
         collection_id="collection-1",
         analysis_id="analysis-1",
         consumer="test",
@@ -42,7 +54,7 @@ def observation(entity_type: str) -> Observation:
         source_kind="web_page" if entity_type == "document" else "json_ld",
         url="https://2gis.ru/izhevsk/firm/example",
         entity_type=entity_type,
-        text="public content",
+        text=text,
         data={},
         content_hash="a" * 64,
         provenance={},
@@ -54,7 +66,9 @@ def test_public_map_review_goal_escalates_when_browser_has_no_review_fact():
     adapter = adapter_with_agent()
     result = SourceResult(observations=[observation("document")])
 
-    assert adapter._should_semantically_escalate(task("reviews"), fetched(), result) is True
+    assert adapter._should_semantically_escalate(
+        task("reviews"), fetched(), result, request=request()
+    ) is True
 
 
 def test_public_map_review_goal_does_not_escalate_after_source_declared_review():
@@ -63,7 +77,9 @@ def test_public_map_review_goal_does_not_escalate_after_source_declared_review()
         observations=[observation("document"), observation("review")]
     )
 
-    assert adapter._should_semantically_escalate(task("reviews"), fetched(), result) is False
+    assert adapter._should_semantically_escalate(
+        task("reviews"), fetched(), result, request=request()
+    ) is False
 
 
 def test_public_map_review_goal_accepts_exact_excerpt_semantic_evidence():
@@ -72,8 +88,10 @@ def test_public_map_review_goal_accepts_exact_excerpt_semantic_evidence():
     item.quality["intent_evidence"] = {"reviews": True}
     result = SourceResult(observations=[item])
 
-    assert adapter._semantic_goal_fact_count(result, ["reviews"]) == 1
-    assert adapter._should_semantically_escalate(task("reviews"), fetched(), result) is False
+    assert adapter._semantic_goal_fact_count(result, ["reviews"], request=request()) == 1
+    assert adapter._should_semantically_escalate(
+        task("reviews"), fetched(), result, request=request()
+    ) is False
 
 
 def test_public_map_non_review_semantic_goal_uses_same_coverage_evaluator():
@@ -83,8 +101,25 @@ def test_public_map_non_review_semantic_goal_uses_same_coverage_evaluator():
     result = SourceResult(observations=[item])
 
     assert adapter._semantic_goals(task("complaints")) == ["complaints"]
-    assert adapter._semantic_goal_fact_count(result, ["complaints"]) == 1
-    assert adapter._should_semantically_escalate(task("complaints"), fetched(), result) is False
+    assert adapter._semantic_goal_fact_count(result, ["complaints"], request=request()) == 1
+    assert adapter._should_semantically_escalate(
+        task("complaints"), fetched(), result, request=request()
+    ) is False
+
+
+def test_structural_review_from_other_address_does_not_stop_map_agent():
+    adapter = adapter_with_agent()
+    item = observation(
+        "review",
+        text="Ижевск, улица Ленина, 10. Отличное место.",
+    )
+    result = SourceResult(observations=[item])
+    scoped = request(address="Пушкинская, 277")
+
+    assert adapter._semantic_goal_fact_count(result, ["reviews"], request=scoped) == 0
+    assert adapter._should_semantically_escalate(
+        task("reviews"), fetched(), result, request=scoped
+    ) is True
 
 
 def test_incidents_remain_generic_web_research_not_public_map_escalation():
@@ -92,7 +127,9 @@ def test_incidents_remain_generic_web_research_not_public_map_escalation():
     result = SourceResult(observations=[observation("document")])
 
     assert adapter._semantic_goals(task("incidents")) == []
-    assert adapter._should_semantically_escalate(task("incidents"), fetched(), result) is False
+    assert adapter._should_semantically_escalate(
+        task("incidents"), fetched(), result, request=request()
+    ) is False
 
 
 def test_blocked_deterministic_review_view_suppresses_agent_bypass():
@@ -101,7 +138,9 @@ def test_blocked_deterministic_review_view_suppresses_agent_bypass():
     source_task.metadata["semantic_agent_retry_suppressed"] = "review_view_blocked"
     result = SourceResult(observations=[observation("document")])
 
-    assert adapter._should_semantically_escalate(source_task, fetched(), result) is False
+    assert adapter._should_semantically_escalate(
+        source_task, fetched(), result, request=request()
+    ) is False
 
 
 def test_agent_recipe_is_bound_to_the_dom_url_it_analyzed():
@@ -128,6 +167,7 @@ def test_public_map_semantic_escalation_is_not_used_for_unrelated_web_pages():
         task("reviews"),
         fetched("https://example.org/place"),
         result,
+        request=request(),
     ) is False
 
 
