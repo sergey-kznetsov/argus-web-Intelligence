@@ -34,6 +34,7 @@ def _request(profile_id: str, profile: dict[str, object]) -> CollectionRequest:
         constraints=CollectionConstraints(
             max_pages=min(int(profile.get("max_pages", 18)), 18),
             max_depth=min(int(profile.get("max_depth", 2)), 3),
+            max_duration_seconds=720.0,
             output_language="ru",
         ),
         allow_partial=True,
@@ -69,6 +70,7 @@ def _overview(profile_id: str, report: dict[str, object]) -> dict[str, object]:
         "runtime_uncovered_intents": checkpoint.get("final_uncovered_intents", []),
         "runtime_intent_source_counts": checkpoint.get("final_intent_source_counts", {}),
         "execution_budget_version": checkpoint.get("execution_budget_version"),
+        "execution_budget": checkpoint.get("execution_budget", {}),
         "research_queue_priority_version": checkpoint.get("research_queue_priority_version"),
         "research_queue_candidate_count": checkpoint.get("research_queue_candidate_count"),
         "research_queue_next": checkpoint.get("research_queue_next", []),
