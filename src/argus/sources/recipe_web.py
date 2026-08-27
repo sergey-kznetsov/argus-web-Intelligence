@@ -45,6 +45,35 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
         except Exception:
             return await self._browser_or_agent(task)
 
+    async def navigate_with_agent(
+        self,
+        task: SourceTask,
+        *,
+        context_fetch: FetchResult,
+    ) -> FetchResult | None:
+        """Attempt one bounded, deterministic interaction round on an accessible page.
+
+        Dedicated source adapters may use this contract when their factual source exposes
+        data behind a public GET/search/filter interface. The supplied DOM is navigation
+        context only. A generated action path is compiled and browser-replayed before this
+        method returns; it is still only a recipe *candidate* until factual extraction calls
+        :meth:`finalize_navigation_goal`.
+        """
+
+        if context_fetch.blocked:
+            return None
+        return await self._agent_guided_fetch(task, context_fetch=context_fetch)
+
+    async def finalize_navigation_goal(
+        self,
+        task: SourceTask,
+        request: CollectionRequest,
+        result: SourceResult,
+    ) -> None:
+        """Promote/reject a replayed navigation path from source-backed goal evidence."""
+
+        await self._finalize_recipe_goal_verification(task, request, result)
+
     async def _browser_or_agent(
         self,
         task: SourceTask,
