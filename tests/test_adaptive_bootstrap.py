@@ -27,6 +27,7 @@ def test_bootstrap_enables_area_and_adaptive_followup_research(tmp_path: Path):
     assert isinstance(services.orchestrator.area_entity_planner, AreaEntityResearchPlanner)
     assert isinstance(services.orchestrator.followup_planner, OllamaFollowupResearchPlanner)
     assert services.orchestrator.max_followup_rounds == 3
+    assert services.orchestrator.source_task_timeout_seconds == 45.0
 
 
 def test_bootstrap_injects_configured_historical_source_catalog(tmp_path: Path):
