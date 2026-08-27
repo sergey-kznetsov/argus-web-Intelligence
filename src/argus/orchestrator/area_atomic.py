@@ -9,6 +9,8 @@ from argus.sources.base import SourceTask
 class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator):
     """Atomic orchestrator that recursively researches factual entities found in the area."""
 
+    execution_budget_version = "execution-budget/1"
+
     def __init__(
         self,
         *args,
@@ -37,6 +39,19 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
             seen_queries,
         )
 
+    def _remaining_execution_budget(self, record, visited: set[str]) -> int:
+        """Return executable page slots after the current task.
+
+        ``pending`` is intentionally excluded. A queued URL is only a candidate and has not
+        consumed the page budget until the orchestrator actually processes it. Counting queue
+        length here allowed broad depth-crawl discovery to starve focused research branches.
+        """
+
+        return max(
+            0,
+            int(record.request.constraints.max_pages) - len(visited) - 1,
+        )
+
     async def _expand_area_entities(
         self,
         record,
@@ -57,10 +72,7 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
             return
 
         seen_queries = set(record.checkpoint.get("area_entity_queries", []))
-        remaining_page_budget = max(
-            0,
-            int(record.request.constraints.max_pages) - len(visited) - len(pending) - 1,
-        )
+        remaining_page_budget = self._remaining_execution_budget(record, visited)
         if remaining_page_budget <= 0:
             return
         query_limit = min(
@@ -110,4 +122,5 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
         record.checkpoint = {
             **record.checkpoint,
             "area_entity_queries": sorted(seen_queries),
+            "execution_budget_version": self.execution_budget_version,
         }
