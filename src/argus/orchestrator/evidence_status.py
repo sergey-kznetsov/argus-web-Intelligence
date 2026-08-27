@@ -17,6 +17,7 @@ class EvidenceStatusAdaptiveResearchOrchestrator(AdaptiveResearchAtomicCollectio
     """
 
     coverage_status_version = "evidence-aware-terminal-status/1"
+    production_source_task_timeout_seconds = 45.0
 
     def __init__(
         self,
@@ -24,6 +25,10 @@ class EvidenceStatusAdaptiveResearchOrchestrator(AdaptiveResearchAtomicCollectio
         intent_coverage: IntentCoverageEvaluator | None = None,
         **kwargs,
     ) -> None:
+        kwargs.setdefault(
+            "source_task_timeout_seconds",
+            self.production_source_task_timeout_seconds,
+        )
         super().__init__(*args, **kwargs)
         self.intent_coverage = intent_coverage or IntentCoverageEvaluator()
 
