@@ -41,6 +41,18 @@ Supported population labels currently include:
 
 If multiple different values are exposed for one intent on the same page, ARGUS returns `MINGKH_RESIDENTIAL_VALUE_CONFLICT` instead of choosing one.
 
+## Public interface navigation
+
+`dom.mingkh.ru` is not treated as a static HTML-only source. When an already accessible public page exposes search, address, filter, tab or expandable controls and the requested fact is still not evidenced, `mingkh_residential` may request one bounded navigation round from the shared ARGUS web runtime.
+
+The interaction path is the existing `OllamaRecipeAgent -> deterministic SiteRecipe -> Playwright replay` pipeline. The model never receives direct browser control. It can select only controls already extracted from the fetched DOM, form values are restricted to bounded research inputs derived from the requested territory, GET/search/filter actions remain same-domain, and the resulting path is browser-replayed before factual extraction.
+
+A same-domain deterministic house link is preferred before AGENT navigation. A page that explicitly contains residential values for another house is treated as a factual territory mismatch, not as an interface from which the model may navigate away.
+
+A newly generated SiteRecipe remains a candidate until deterministic residential extraction produces Evidence for the recipe goal from the replayed page. Only then may the shared recipe lifecycle promote it. A replay that reveals no supporting fact is not sufficient to persist the route.
+
+This makes interface learning reusable without allowing model output to become data: the model chooses a navigation path, while only the final source page can establish the fact.
+
 ## No population inference
 
 ARGUS never derives resident count from apartment count, residential area, average household size or an LLM estimate. If the public source declares the number of apartments but does not declare resident count, only `residential_premises_count` is evidenced and `residential_population` remains uncovered.
@@ -53,7 +65,7 @@ CAPTCHA and anti-bot verification are access-control boundaries, not research ta
 
 When a challenge is present, ARGUS returns `MINGKH_ACCESS_CHALLENGE` with `blocked=true`. It does not solve the challenge, submit an answer, use an LLM to bypass it, or silently replace the mandatory source with a different factual provider.
 
-This policy does not prevent normal BROWSER/AGENT navigation when the public site is accessible without an access challenge. The same FAST → BROWSER → AGENT infrastructure and SiteRecipe system remain available for legitimate UI interaction.
+Interface navigation is attempted only from an accessible fetched page. A blocked page is never passed to the guided-navigation contract, so the AGENT/recipe layer cannot be used as a fallback around an access challenge.
 
 ## Provenance
 
@@ -64,4 +76,4 @@ Successful values are stored as `residential_building_fact` Observation/Evidence
 - source label;
 - `estimated=false`.
 
-Provenance includes the temporal Snapshot id, extractor version and territory-relevance basis. Observation/Evidence ids are deterministic within the collection, preserving replay safety after worker recovery.
+Provenance includes the temporal Snapshot id, extractor version and territory-relevance basis. When a fact was revealed by verified SiteRecipe replay, provenance also retains the recipe id/version and records that the AGENT output was navigation only, not Evidence. Observation/Evidence ids are deterministic within the collection, preserving replay safety after worker recovery.
