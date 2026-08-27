@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from argus.security.urls import UnsafeUrlError
 
-class CrawlerRequestSkippedError(RuntimeError):
+
+class CrawlerRequestSkippedError(UnsafeUrlError):
     """Raised when Crawlee intentionally skips a queued request before navigation.
 
-    This is a transport/runtime outcome, not a fabricated HTTP response. In particular,
-    ``robots_txt`` means ARGUS respected the remote site's declared crawl policy and did
-    not fetch the target URL. Callers may map the reason to their own structured status.
+    This is a transport/runtime access-policy outcome, not a fabricated HTTP response.
+    It derives from ``UnsafeUrlError`` so existing FAST -> BROWSER -> AGENT escalation
+    boundaries do not attempt to route around an explicit crawler access decision. In
+    particular, ``robots_txt`` means ARGUS respected the remote site's declared crawl
+    policy and did not fetch the target URL. Higher layers still inspect this concrete
+    type to report the exact structured reason instead of a generic unsafe-URL failure.
     """
 
     def __init__(self, url: str, reason: object) -> None:
