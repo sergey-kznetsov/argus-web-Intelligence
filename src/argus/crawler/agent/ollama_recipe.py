@@ -513,14 +513,19 @@ class OllamaRecipeAgent:
     def _safe_click_control(self, element: Tag) -> bool:
         if element.find_parent("form") is not None or element.get("form") is not None:
             return False
+        if element.has_attr("disabled"):
+            return False
+        aria_disabled = str(element.get("aria-disabled") or "").strip().casefold()
+        if aria_disabled == "true":
+            return False
         element_type = str(element.get("type") or "").strip().casefold()
         if element_type in {"submit", "reset"}:
             return False
         role = str(element.get("role") or "").strip().casefold()
         if element.name != "button":
-            return role == "tab" or element.has_attr("aria-expanded") or element.has_attr(
-                "aria-controls"
-            )
+            return role in {"tab", "button"} or element.has_attr(
+                "aria-expanded"
+            ) or element.has_attr("aria-controls")
         return True
 
     def _selector(self, element: Tag) -> str | None:
@@ -530,6 +535,14 @@ class OllamaRecipeAgent:
             if isinstance(value, str) and value.strip():
                 return f'{tag}[{key}={self._css_string(value.strip())}]'
         label = self._label(element)
+        role = str(element.get("role") or "").strip().casefold()
+        if (
+            label
+            and len(label) <= 120
+            and element.name not in {"input", "select"}
+            and role in {"button", "tab"}
+        ):
+            return f'{tag}[role={self._css_string(role)}]:has-text({self._css_string(label)})'
         if label and len(label) <= 120 and element.name not in {"input", "select"}:
             return f'{tag}:has-text({self._css_string(label)})'
         return None
