@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from argus.contracts.models import CollectionRequest
+from argus.contracts.models import CollectionRequest, Observation
+from argus.research.followup import FollowupPlan, FollowupResearchPlanner
+from argus.research.intent_coverage import IntentCoverageEvaluator
 from argus.research.planner import ResearchPlan, ResearchPlanner
 
 RESIDENTIAL_INTENTS = frozenset(
@@ -115,7 +117,7 @@ class CuratedResidentialResearchPlanner:
             request,
             limit=min(len(residential), self.max_queries),
         )
-        queries = self._merge(source_queries, delegated.queries)
+        queries = _merge_queries(source_queries, delegated.queries, limit=self.max_queries)
         notes = [
             *delegated.notes,
             (
@@ -131,16 +133,91 @@ class CuratedResidentialResearchPlanner:
             notes=notes,
         )
 
-    def _merge(self, primary: list[str], secondary: list[str]) -> list[str]:
-        result: list[str] = []
-        seen: set[str] = set()
-        for raw in [*primary, *secondary]:
-            value = " ".join(str(raw).split()).strip()[:512].rstrip()
-            key = value.casefold()
-            if not value or key in seen:
-                continue
-            seen.add(key)
-            result.append(value)
-            if len(result) >= self.max_queries:
-                break
-        return result
+
+class CuratedResidentialFollowupResearchPlanner:
+    """Keep adaptive residential gap research on the same mandatory source.
+
+    The delegate never sees the source-scoped residential intents, so an LLM or heuristic
+    follow-up planner cannot propose alternative factual sources for them. One independent
+    ``dom.mingkh.ru`` fact is sufficient for each of these explicitly single-source intents.
+    """
+
+    def __init__(
+        self,
+        delegate: FollowupResearchPlanner,
+        *,
+        coverage: IntentCoverageEvaluator | None = None,
+        source_planner: MingkhResidentialSourceResearchPlanner | None = None,
+    ) -> None:
+        self.delegate = delegate
+        self.coverage = coverage or IntentCoverageEvaluator()
+        self.source_planner = source_planner or MingkhResidentialSourceResearchPlanner()
+
+    async def plan_followups(
+        self,
+        request: CollectionRequest,
+        observations: list[Observation],
+        *,
+        seen_queries: set[str],
+        max_queries: int,
+    ) -> FollowupPlan:
+        if max_queries <= 0:
+            return FollowupPlan()
+        residential = [intent for intent in request.intents if intent in RESIDENTIAL_INTENTS]
+        if not residential:
+            return await self.delegate.plan_followups(
+                request,
+                observations,
+                seen_queries=seen_queries,
+                max_queries=max_queries,
+            )
+
+        other_intents = [intent for intent in request.intents if intent not in RESIDENTIAL_INTENTS]
+        if other_intents:
+            delegated_request = request.model_copy(update={"intents": other_intents})
+            delegated = await self.delegate.plan_followups(
+                delegated_request,
+                observations,
+                seen_queries=seen_queries,
+                max_queries=max_queries,
+            )
+        else:
+            delegated = FollowupPlan()
+
+        counts = self.coverage.counts(observations, request=request)
+        gaps = [intent for intent in residential if int(counts.get(intent, 0)) < 1]
+        source_queries: list[str] = []
+        if gaps:
+            gap_request = request.model_copy(update={"intents": gaps})
+            source_queries = self.source_planner.queries(
+                gap_request,
+                limit=min(len(gaps), max_queries),
+            )
+        seen = {" ".join(str(item).split()).strip().casefold() for item in seen_queries}
+        source_queries = [
+            query for query in source_queries if " ".join(query.split()).casefold() not in seen
+        ]
+        queries = _merge_queries(source_queries, delegated.queries, limit=max_queries)
+        notes = list(delegated.notes)
+        if gaps:
+            notes.append(
+                "residential_followup_source="
+                f"{self.source_planner.source.source_id};"
+                f"gaps={','.join(gaps)};fallback_sources=false"
+            )
+        return FollowupPlan(queries=queries, notes=notes)
+
+
+def _merge_queries(primary: list[str], secondary: list[str], *, limit: int) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in [*primary, *secondary]:
+        value = " ".join(str(raw).split()).strip()[:512].rstrip()
+        key = value.casefold()
+        if not value or key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+        if len(result) >= max(0, int(limit)):
+            break
+    return result
