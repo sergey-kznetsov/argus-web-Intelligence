@@ -51,6 +51,26 @@ def test_existing_territorial_query_is_not_prefixed_twice():
     ) == [query]
 
 
+def test_house_number_alone_cannot_approve_geographically_drifted_llm_query():
+    query = "public records around Peremysk district, 27"
+
+    assert sanitize_research_queries(
+        [query],
+        perm_request("public_mentions"),
+        max_queries=2,
+    ) == ['"Пермь, Комсомольский проспект, 27" public records around Peremysk district, 27']
+
+
+def test_city_and_house_without_specific_street_token_are_reanchored():
+    query = "Пермь public comments near avenue 27"
+
+    assert sanitize_research_queries(
+        [query],
+        perm_request("comments"),
+        max_queries=2,
+    ) == ['"Пермь, Комсомольский проспект, 27" Пермь public comments near avenue 27']
+
+
 def test_bare_custom_intent_is_rejected_and_seen_query_is_deduplicated():
     queries = sanitize_research_queries(
         ["parking_capacity", "парковка вместимость"],
@@ -85,7 +105,7 @@ async def test_research_planner_uses_deterministic_fallback_when_llm_output_has_
     plan = await planner.plan(perm_request("reviews"))
 
     assert plan.queries == ['"Пермь, Комсомольский проспект, 27" отзывы']
-    assert plan.notes[-1] == "query_safety=query-safety/1"
+    assert plan.notes[-1] == "query_safety=query-safety/2"
 
 
 class BadFollowupPlanner:
@@ -115,4 +135,4 @@ async def test_followup_planner_uses_fallback_when_only_bare_intent_survives_sha
     )
 
     assert plan.queries == ['"Пермь, Комсомольский проспект, 27" новости СМИ']
-    assert plan.notes[-1] == "query_safety=query-safety/1"
+    assert plan.notes[-1] == "query_safety=query-safety/2"
