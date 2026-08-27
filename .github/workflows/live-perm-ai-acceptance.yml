@@ -10,6 +10,7 @@ on:
       - src/argus/bootstrap.py
       - src/argus/contracts/**
       - src/argus/crawler/**
+      - src/argus/normalization/**
       - src/argus/orchestrator/**
       - src/argus/research/**
       - src/argus/sources/**
