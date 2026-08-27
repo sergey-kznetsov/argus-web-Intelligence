@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from argus.contracts.models import CollectionStatus, StructuredError
 from argus.orchestrator.adaptive_atomic import AdaptiveResearchAtomicCollectionOrchestrator
 from argus.orchestrator.service import now
@@ -18,6 +20,7 @@ class EvidenceStatusAdaptiveResearchOrchestrator(AdaptiveResearchAtomicCollectio
 
     coverage_status_version = "evidence-aware-terminal-status/1"
     production_source_task_timeout_seconds = 45.0
+    research_expansion_timeout_seconds = 8.0
 
     def __init__(
         self,
@@ -35,6 +38,48 @@ class EvidenceStatusAdaptiveResearchOrchestrator(AdaptiveResearchAtomicCollectio
     async def _process_tasks(self, record, pending) -> None:
         await super()._process_tasks(record, pending)
         await self._apply_evidence_aware_terminal_status(record.collection_id)
+
+    async def _expand_historical(
+        self,
+        record,
+        task,
+        observations,
+        pending,
+        visited,
+        seen_queries,
+    ) -> None:
+        """Bound optional branch expansion without discarding already extracted facts."""
+
+        try:
+            async with asyncio.timeout(self.research_expansion_timeout_seconds):
+                await super()._expand_historical(
+                    record,
+                    task,
+                    observations,
+                    pending,
+                    visited,
+                    seen_queries,
+                )
+        except TimeoutError:
+            count = int(record.checkpoint.get("research_expansion_timeout_count", 0) or 0) + 1
+            record.checkpoint = {
+                **record.checkpoint,
+                "research_expansion_timeout_count": count,
+                "research_expansion_timeout_seconds": self.research_expansion_timeout_seconds,
+            }
+            if not any(error.code == "RESEARCH_EXPANSION_TIMEOUT" for error in record.errors):
+                record.errors.append(
+                    StructuredError(
+                        code="RESEARCH_EXPANSION_TIMEOUT",
+                        message=(
+                            "Optional research branch expansion exceeded its bounded "
+                            f"timeout of {self.research_expansion_timeout_seconds:g} seconds; "
+                            "already extracted factual results are retained."
+                        ),
+                        retryable=True,
+                        source_id=task.source_id,
+                    )
+                )
 
     async def _apply_evidence_aware_terminal_status(self, collection_id: str) -> None:
         record = await self.repository.get_collection(collection_id)
