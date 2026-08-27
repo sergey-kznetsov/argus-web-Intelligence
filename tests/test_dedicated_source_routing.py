@@ -64,6 +64,16 @@ async def test_residential_only_discovery_is_fail_closed_to_mingkh():
     assert task.source_id == "mingkh_residential"
     assert task.url.startswith("https://dom.mingkh.ru/")
     assert task.metadata["dedicated_source_route"]["is_evidence"] is False
+    assert task.metadata["research_input_candidates"] == [
+        "Пермь, Комсомольский проспект, 27",
+        "Комсомольский проспект, 27",
+        "Пермь",
+    ]
+    assert task.metadata["research_input_scope"] == "territory_context"
+    assert task.metadata["allowed_domains"] == ["dom.mingkh.ru"]
+    joined_inputs = " ".join(task.metadata["research_input_candidates"])
+    assert "site:dom.mingkh.ru" not in joined_inputs
+    assert "Количество квартир" not in joined_inputs
 
 
 @pytest.mark.asyncio
@@ -83,3 +93,10 @@ async def test_mixed_request_keeps_normal_sources_for_other_intents():
         "mingkh_residential",
         "generic_web",
     }
+    mingkh = next(task for task in outcome.tasks if task.source_id == "mingkh_residential")
+    assert mingkh.metadata["research_input_scope"] == "territory_context"
+    assert mingkh.metadata["research_input_candidates"] == [
+        "Пермь, Комсомольский проспект, 27",
+        "Комсомольский проспект, 27",
+        "Пермь",
+    ]
