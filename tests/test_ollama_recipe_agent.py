@@ -97,7 +97,8 @@ async def test_controls_exclude_denied_cross_domain_and_state_changing_actions()
           <button type="submit" aria-label="Показать">Показать</button>
         </form>
         <button type="button" aria-label="Отправить">Отправить</button>
-        <div role="button" data-testid="vote">Подробнее</div>
+        <div role="button" data-testid="delete">Удалить</div>
+        <div role="button">Show parking info</div>
         <div role="tab" data-testid="reviews-tab">Отзывы посетителей</div>
         <a href="/details">Подробнее</a>
         <a href="https://outside.test/details">Подробнее снаружи</a>
@@ -109,11 +110,30 @@ async def test_controls_exclude_denied_cross_domain_and_state_changing_actions()
     assert [item.label for item in controls] == [
         "Отзывы",
         "Подробнее",
+        "Show parking info",
         "Отзывы посетителей",
     ]
     assert controls[0].kind == "click"
     assert controls[1].url == "https://example.com/details"
-    assert controls[2].selector == 'div[data-testid="reviews-tab"]'
+    assert controls[2].selector == 'div[role="button"]:has-text("Show parking info")'
+    assert controls[3].selector == 'div[data-testid="reviews-tab"]'
+
+
+@pytest.mark.asyncio
+async def test_disabled_public_role_button_is_not_exposed():
+    agent = build_agent()
+    controls = await agent._controls(
+        """
+        <div role="button" aria-disabled="true">Show parking info</div>
+        <div role="button">Show parking info</div>
+        """,
+        page_url="https://example.com/place",
+        allowed_domains=["example.com"],
+    )
+
+    assert len(controls) == 1
+    assert controls[0].label == "Show parking info"
+    assert controls[0].selector == 'div[role="button"]:has-text("Show parking info")'
 
 
 @pytest.mark.asyncio
