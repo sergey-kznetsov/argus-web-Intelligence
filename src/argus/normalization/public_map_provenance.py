@@ -72,11 +72,7 @@ def public_map_surface_kind(url: str) -> str | None:
         return "map"
 
     if provider == "2gis_web":
-        try:
-            firm_index = segments.index("firm")
-        except ValueError:
-            firm_index = -1
-        if firm_index >= 0 and firm_index + 1 < len(segments) and segments[firm_index + 1].isdigit():
+        if _two_gis_entity_index(segments) is not None:
             return "entity"
         if "search" in segments:
             return "search"
@@ -134,17 +130,24 @@ def _yandex_review_path(segments: list[str]) -> str | None:
 
 
 def _two_gis_review_path(segments: list[str]) -> str | None:
-    try:
-        firm_index = segments.index("firm")
-    except ValueError:
+    entity_index = _two_gis_entity_index([segment.casefold() for segment in segments])
+    if entity_index is None:
         return None
-    if firm_index == 0 or firm_index + 1 >= len(segments):
-        return None
-    firm_id = segments[firm_index + 1]
-    if not firm_id.isdigit():
-        return None
-    base = segments[: firm_index + 2]
+    base = segments[: entity_index + 2]
     return "/" + "/".join([*base, "tab", "reviews"])
+
+
+def _two_gis_entity_index(segments: list[str]) -> int | None:
+    for marker in ("firm", "geo"):
+        try:
+            index = segments.index(marker)
+        except ValueError:
+            continue
+        if index <= 0 or index + 1 >= len(segments):
+            continue
+        if segments[index + 1].isdigit():
+            return index
+    return None
 
 
 def _host_matches(host: str, root: str) -> bool:
