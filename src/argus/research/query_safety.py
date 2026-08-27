@@ -156,8 +156,10 @@ def _extract_query_values(value: object, *, depth: int = 0) -> Iterable[str]:
         return
     if isinstance(value, str):
         stripped = value.strip()
-        parsed = _parse_container(stripped)
-        if parsed is not None:
+        if stripped[:1] in "[{":
+            parsed = _parse_container(stripped)
+            if parsed is None:
+                return
             yield from _extract_query_values(parsed, depth=depth + 1)
             return
         if stripped:
