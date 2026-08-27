@@ -127,7 +127,7 @@ def test_llm_supervisor_cannot_remove_deterministic_gaps_or_repeat_queries():
             "priority_intents": ["reviews", "invented_intent"],
             "query_hints": [
                 "уже использованный запрос",
-                '"Комсомольский проспект, 27" жалобы жители',
+                '"Пермь, Комсомольский проспект, 27" жалобы жители',
             ],
             "flags": ["source_diversity_low"],
             "rationale_ru": "Нужно проверить другой тип источников.",
@@ -139,8 +139,35 @@ def test_llm_supervisor_cannot_remove_deterministic_gaps_or_repeat_queries():
 
     assert decision.continue_research is True
     assert decision.priority_intents == ["reviews", "complaints"]
-    assert decision.query_hints == ['"Комсомольский проспект, 27" жалобы жители']
+    assert decision.query_hints == ['"Пермь, Комсомольский проспект, 27" жалобы жители']
     assert "invented_intent" not in decision.priority_intents
     assert "source_diversity_low" in decision.flags
     assert decision.model_assisted is True
     assert decision.rationale_ru == "Нужно проверить другой тип источников."
+    assert decision.version == "research-supervisor-ollama/2"
+
+
+def test_llm_supervisor_query_hints_cannot_drift_from_exact_territory():
+    supervisor = OllamaResearchSupervisor(Settings(browser_serp_enabled=False))
+    baseline = type("Decision", (), {})()
+    baseline.continue_research = True
+    baseline.priority_intents = ["complaints"]
+    baseline.flags = ["coverage_gap"]
+    baseline.rationale_ru = "Есть разрыв покрытия."
+
+    decision = supervisor._validated_decision(
+        {
+            "priority_intents": ["complaints"],
+            "query_hints": [
+                "complaints near Peremysk district 27",
+                "{'queries': ['broken serialized query']",
+            ],
+        },
+        baseline,
+        request("complaints"),
+        set(),
+    )
+
+    assert decision.query_hints == [
+        '"Пермь, Комсомольский проспект, 27" complaints near Peremysk district 27'
+    ]
