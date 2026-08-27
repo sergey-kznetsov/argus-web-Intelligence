@@ -13,20 +13,27 @@ from argus.sources.historical_web import HistoricalTimelineWebAdapter
 
 
 class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
-    """Attach public-map provenance and resolve semantic goals without paid APIs.
+    """Attach public-map provenance and resolve factual goals without paid APIs.
 
     Public map pages are frequently interactive applications. A technically successful
-    FAST/BROWSER response is not enough when the requested factual goal has not actually
+    FAST/BROWSER response is not enough when a requested factual goal has not actually
     been evidenced. ARGUS therefore evaluates source-backed, request-aware intent coverage,
-    prefers a deterministic public review view when the provider exposes one, and only then
-    may use bounded AGENT -> verified browser replay rounds. Agent output is never Evidence.
+    prefers a deterministic public review view for compatible social goals, and may then
+    use bounded AGENT -> verified browser replay for unresolved public-map facts. Agent
+    output is navigation only and is never Evidence.
     """
 
-    semantic_escalation_version = "public-map-goal-escalation/5"
+    semantic_escalation_version = "public-map-goal-escalation/6"
+    # Kept as the deterministic/social priority set for compatibility and diagnostics.
+    # Custom or future factual goals are no longer required to be enumerated here before
+    # bounded public-map AGENT navigation can attempt to reveal them.
     semantic_escalation_goals = frozenset(
         {"reviews", "comments", "discussions", "complaints"}
     )
     deterministic_review_view_goals = semantic_escalation_goals
+    generic_web_only_goals = frozenset({"incidents"})
+    max_semantic_goals = 8
+    max_semantic_goal_chars = 128
     max_semantic_agent_rounds = 2
     intent_coverage = IntentCoverageEvaluator()
 
@@ -220,13 +227,30 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
         return self._semantic_goal_fact_count(result, goals, request=request) == 0
 
     def _semantic_goals(self, task: SourceTask) -> list[str]:
-        return sorted(
-            {
-                goal
-                for goal in self._research_goals(task)
-                if goal in self.semantic_escalation_goals
-            }
-        )
+        """Return bounded factual map goals without consumer-specific whitelists.
+
+        Research goals originate from the request/planner and are navigation metadata, not
+        Evidence. Public-map AGENT may attempt to reveal any such factual goal except intents
+        explicitly reserved for generic-web research. The downstream exact-excerpt classifier
+        still decides whether the verified page actually proves a goal.
+        """
+
+        result: list[str] = []
+        seen: set[str] = set()
+        for raw in self._research_goals(task):
+            goal = " ".join(str(raw).split()).strip().casefold()
+            if (
+                not goal
+                or len(goal) > self.max_semantic_goal_chars
+                or goal in self.generic_web_only_goals
+                or goal in seen
+            ):
+                continue
+            seen.add(goal)
+            result.append(goal)
+            if len(result) >= self.max_semantic_goals:
+                break
+        return sorted(result)
 
     def _semantic_goal_fact_count(
         self,
@@ -304,10 +328,14 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
                 "browser_verified": True,
                 "before_agent": True,
                 "agent_recipe_bound_to_analyzed_view": True,
+                "goals": sorted(self.deterministic_review_view_goals),
             },
             "semantic_goal_escalation": {
                 "version": self.semantic_escalation_version,
-                "goals": sorted(self.semantic_escalation_goals),
+                "goal_policy": "bounded_task_research_goals",
+                "priority_social_goals": sorted(self.semantic_escalation_goals),
+                "generic_web_only_goals": sorted(self.generic_web_only_goals),
+                "max_goals": self.max_semantic_goals,
                 "requires_agent_backend": True,
                 "agent_output_is_evidence": False,
                 "verified_browser_replay": True,
