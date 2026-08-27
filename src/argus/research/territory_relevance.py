@@ -24,7 +24,7 @@ class TerritoryRelevanceEvaluator:
     evaluator uses source-backed text/data or explicit source coordinates only.
     """
 
-    version = "territory-relevance/2"
+    version = "territory-relevance/3"
     point_tolerance_meters = 250
     max_address_anchor_distance_tokens = 8
     max_data_chars = 30_000
@@ -65,6 +65,41 @@ class TerritoryRelevanceEvaluator:
         "город",
         "г",
     }
+    _CYRILLIC_TO_LATIN = {
+        "а": "a",
+        "б": "b",
+        "в": "v",
+        "г": "g",
+        "д": "d",
+        "е": "e",
+        "ё": "yo",
+        "ж": "zh",
+        "з": "z",
+        "и": "i",
+        "й": "y",
+        "к": "k",
+        "л": "l",
+        "м": "m",
+        "н": "n",
+        "о": "o",
+        "п": "p",
+        "р": "r",
+        "с": "s",
+        "т": "t",
+        "у": "u",
+        "ф": "f",
+        "х": "kh",
+        "ц": "ts",
+        "ч": "ch",
+        "ш": "sh",
+        "щ": "shch",
+        "ъ": "",
+        "ы": "y",
+        "ь": "",
+        "э": "e",
+        "ю": "yu",
+        "я": "ya",
+    }
 
     def matches(self, request: CollectionRequest, observation: Observation) -> bool:
         return self.evaluate(request, observation).matched
@@ -98,6 +133,19 @@ class TerritoryRelevanceEvaluator:
 
             if nearby:
                 return TerritoryRelevanceResult(True, "street_and_house_number", nearby)
+
+            latin_aliases = self._latin_address_aliases(lexical_tokens)
+            nearby_latin = self._nearby_address_anchors(
+                haystack,
+                latin_aliases,
+                number_tokens,
+            )
+            if nearby_latin:
+                return TerritoryRelevanceResult(
+                    True,
+                    "street_and_house_number_transliterated",
+                    nearby_latin,
+                )
 
             if not number_tokens:
                 matched_lexical = [
@@ -157,6 +205,30 @@ class TerritoryRelevanceEvaluator:
             result.append(token)
             if len(result) >= self.max_tokens:
                 break
+        return result
+
+    def _latin_address_aliases(self, lexical_tokens: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for token in lexical_tokens:
+            if re.search(r"[а-яё]", token, flags=re.IGNORECASE) is None:
+                continue
+            transliterated = "".join(
+                self._CYRILLIC_TO_LATIN.get(char, char)
+                for char in token.casefold()
+            )
+            variants = [transliterated]
+            if transliterated.endswith("skiy"):
+                variants.append(f"{transliterated[:-4]}sky")
+            if transliterated.endswith("iy"):
+                variants.append(f"{transliterated[:-2]}y")
+            if transliterated.endswith("yy"):
+                variants.append(f"{transliterated[:-2]}y")
+            for value in variants:
+                if len(value) < 3 or value in seen:
+                    continue
+                seen.add(value)
+                result.append(value)
         return result
 
     def _nearby_address_anchors(
