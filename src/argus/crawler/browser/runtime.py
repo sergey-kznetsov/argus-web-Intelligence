@@ -29,7 +29,7 @@ class BrowserCrawlerRuntime:
         await self._ensure_started()
         from crawlee import Request
 
-        key, future = self._broker.create()
+        key, future = self._broker.create(url)
         if recipe is not None:
             self._recipes[key] = recipe
         try:
@@ -78,7 +78,7 @@ class BrowserCrawlerRuntime:
             if self._crawler is not None and self._run_task is not None and not self._run_task.done():
                 return
             try:
-                from crawlee import ConcurrencySettings
+                from crawlee import ConcurrencySettings, SkippedReason
                 from crawlee.crawlers import (
                     BasicCrawlingContext,
                     PlaywrightCrawler,
@@ -112,6 +112,10 @@ class BrowserCrawlerRuntime:
                 configure_logging=False,
                 **self.security_options(),
             )
+
+            @crawler.on_skipped_request
+            async def skipped_request_handler(url: str, reason: SkippedReason) -> None:
+                self._broker.reject_skipped(url, reason)
 
             @crawler.pre_navigation_hook
             async def secure_subrequests(context: PlaywrightPreNavCrawlingContext) -> None:
