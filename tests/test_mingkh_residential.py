@@ -6,8 +6,12 @@ import pytest
 
 from argus.contracts.models import CollectionRequest
 from argus.crawler.models import FetchResult
+from argus.research.followup import FollowupPlan
 from argus.research.planner import ResearchPlan
-from argus.research.residential_sources import CuratedResidentialResearchPlanner
+from argus.research.residential_sources import (
+    CuratedResidentialFollowupResearchPlanner,
+    CuratedResidentialResearchPlanner,
+)
 from argus.sources.base import SourceTask
 from argus.sources.mingkh_residential import MingkhResidentialAdapter
 
@@ -24,6 +28,20 @@ class _RecordingPlanner:
     async def plan(self, request: CollectionRequest) -> ResearchPlan:
         self.intents = list(request.intents)
         return ResearchPlan(queries=['"Пермь" новости'])
+
+
+class _FailFollowupPlanner:
+    async def plan_followups(self, request, observations, *, seen_queries, max_queries):
+        raise AssertionError(f"delegate must not receive residential-only request: {request.intents}")
+
+
+class _RecordingFollowupPlanner:
+    def __init__(self) -> None:
+        self.intents: list[str] = []
+
+    async def plan_followups(self, request, observations, *, seen_queries, max_queries):
+        self.intents = list(request.intents)
+        return FollowupPlan(queries=['"Пермь" местные новости'])
 
 
 class _Snapshots:
@@ -91,6 +109,37 @@ async def test_mixed_plan_hides_residential_intents_from_general_planner():
     assert delegate.intents == ["local_news"]
     assert plan.queries[0].startswith("site:dom.mingkh.ru")
     assert '"Пермь" новости' in plan.queries
+
+
+@pytest.mark.asyncio
+async def test_residential_followup_never_asks_general_planner_for_residential_gap():
+    planner = CuratedResidentialFollowupResearchPlanner(_FailFollowupPlanner())
+    plan = await planner.plan_followups(
+        _request("residential_population"),
+        [],
+        seen_queries=set(),
+        max_queries=4,
+    )
+
+    assert len(plan.queries) == 1
+    assert plan.queries[0].startswith("site:dom.mingkh.ru")
+    assert "Количество жителей" in plan.queries[0]
+
+
+@pytest.mark.asyncio
+async def test_mixed_followup_delegates_only_nonresidential_intents():
+    delegate = _RecordingFollowupPlanner()
+    planner = CuratedResidentialFollowupResearchPlanner(delegate)
+    plan = await planner.plan_followups(
+        _request("residential_premises_count", "local_news"),
+        [],
+        seen_queries=set(),
+        max_queries=4,
+    )
+
+    assert delegate.intents == ["local_news"]
+    assert plan.queries[0].startswith("site:dom.mingkh.ru")
+    assert '"Пермь" местные новости' in plan.queries
 
 
 @pytest.mark.asyncio
