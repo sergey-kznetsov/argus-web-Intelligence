@@ -13,7 +13,7 @@ from argus.sources.base import SourceTask
 class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrchestrator):
     """Iteratively expand research until requested coverage or collection budgets stop it."""
 
-    research_queue_priority_version = "research-queue-priority/1"
+    research_queue_priority_version = "research-queue-priority/2"
 
     def __init__(
         self,
@@ -191,22 +191,16 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             record.request,
             all_observations,
         )
-        coverage_checkpoint = {
-            "curated_public_map_coverage": coverage_counts,
-            "curated_public_map_gap_intents": remaining_intents,
-            "curated_public_map_target_sources_per_intent": (
-                self.public_map_source_planner.target_sources_per_intent
-            ),
-            "curated_public_map_coverage_version": self.public_map_source_planner.coverage.version,
-            "curated_public_map_source_version": self.public_map_source_planner.version,
-            "execution_budget_version": self.execution_budget_version,
-        }
+        self._checkpoint_public_map_coverage(
+            record,
+            coverage_counts=coverage_counts,
+            remaining_intents=remaining_intents,
+            exhausted=False,
+        )
         if not remaining_intents:
             record.checkpoint = {
                 **record.checkpoint,
-                **coverage_checkpoint,
                 "curated_public_map_complete": True,
-                "curated_public_map_exhausted_for_current_anchors": False,
             }
             return
 
@@ -215,15 +209,13 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             for bucket in (
                 record.checkpoint.get("queries", []),
                 record.checkpoint.get("discovery_queries", []),
-                record.checkpoint.get("area_entity_queries", []),
-                record.checkpoint.get("adaptive_followup_queries", []),
-                record.checkpoint.get("curated_public_map_queries", []),
+                record.checkpoint.get("public_map_queries", []),
             )
             if isinstance(bucket, list)
             for query in bucket
             if isinstance(query, str) and query.strip()
         }
-        query_limit = min(3, remaining_page_budget)
+        query_limit = min(4, remaining_page_budget)
         queries = self.public_map_source_planner.queries(
             record.request,
             observations=all_observations,
@@ -231,13 +223,14 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             limit=query_limit,
         )
         if not queries:
-            record.checkpoint = {
-                **record.checkpoint,
-                **coverage_checkpoint,
-                "curated_public_map_complete": False,
-                "curated_public_map_exhausted_for_current_anchors": True,
-                "curated_public_map_last_candidates": 0,
-            }
+            # Current anchors cannot produce another useful map query. Keep the research
+            # incomplete so a later newly discovered entity/address can reopen this branch.
+            self._checkpoint_public_map_coverage(
+                record,
+                coverage_counts=coverage_counts,
+                remaining_intents=remaining_intents,
+                exhausted=True,
+            )
             return
 
         seen.update(queries)
@@ -251,28 +244,45 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             }
         )
         outcome = await self.discovery.discover(queries, branch_request)
-        for error in outcome.errors:
-            if error.code != "DISCOVERY_NO_RESULTS":
-                record.errors.append(error)
-
         additions: list[SourceTask] = []
         for branch_task in outcome.tasks[:remaining_page_budget]:
             if branch_task.dedupe_key in visited:
                 continue
             branch_task.metadata["curated_public_map_round"] = round_count + 1
             branch_task.metadata["curated_public_map_from"] = task.url
-            branch_task.metadata["curated_public_map_queries"] = list(queries)
-            branch_task.metadata["curated_public_map_gap_intents"] = list(remaining_intents)
+            branch_task.metadata["public_map_queries"] = list(queries)
             additions.append(branch_task)
         self._merge_tasks(pending, additions, record.collection_id)
         record.checkpoint = {
             **record.checkpoint,
-            **coverage_checkpoint,
-            "curated_public_map_complete": False,
-            "curated_public_map_exhausted_for_current_anchors": False,
             "curated_public_map_rounds": round_count + 1,
-            "curated_public_map_queries": sorted(seen),
+            "public_map_queries": sorted(seen),
             "curated_public_map_last_candidates": len(additions),
+            "public_map_source_version": self.public_map_source_planner.version,
+            "execution_budget_version": self.execution_budget_version,
+        }
+
+    def _checkpoint_public_map_coverage(
+        self,
+        record,
+        *,
+        coverage_counts: dict[str, int],
+        remaining_intents: list[str],
+        exhausted: bool,
+    ) -> None:
+        record.checkpoint = {
+            **record.checkpoint,
+            "curated_public_map_coverage": coverage_counts,
+            "curated_public_map_remaining_intents": list(remaining_intents),
+            "curated_public_map_target_source_count": (
+                self.public_map_source_planner.target_source_count
+            ),
+            "curated_public_map_coverage_evaluator_version": (
+                self.public_map_source_planner.coverage.version
+            ),
+            "public_map_source_version": self.public_map_source_planner.version,
+            "curated_public_map_exhausted_for_current_anchors": exhausted,
+            "execution_budget_version": self.execution_budget_version,
         }
 
     async def _expand_research_gaps(
@@ -283,81 +293,79 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
         pending: list[SourceTask],
         visited: set[str],
     ) -> None:
-        if self.discovery is None or self.followup_planner is None:
+        if (
+            self.discovery is None
+            or self.followup_planner is None
+            or self.max_followup_rounds <= 0
+        ):
             return
-        if self.max_followup_rounds <= 0:
-            return
-
         round_count = int(record.checkpoint.get("adaptive_followup_rounds", 0) or 0)
         if round_count >= self.max_followup_rounds:
             return
         remaining_page_budget = self._remaining_execution_budget(record, visited)
         if remaining_page_budget <= 0:
             return
+        if len(pending) > 2:
+            return
 
         committed = await self.repository.list_observations(record.collection_id)
         all_observations = [*committed, *observations]
-        seen = set(record.checkpoint.get("adaptive_followup_queries", []))
-        max_queries = min(
-            max(1, int(getattr(self.discovery, "max_queries", 8))),
-            remaining_page_budget,
-        )
-
         supervisor_decision = None
-        followup_request = record.request
-        supervisor_queries: list[str] = []
         if self.research_supervisor is not None:
-            supervisor_decision = await self.research_supervisor.assess(
+            supervisor_decision = await self.research_supervisor.decide(
                 record.request,
                 all_observations,
-                errors=record.errors,
-                seen_queries=seen,
-                pending_count=len(pending),
-                remaining_page_budget=remaining_page_budget,
+                pending_tasks=len(pending),
+                remaining_pages=remaining_page_budget,
             )
             record.checkpoint = {
                 **record.checkpoint,
-                "research_supervisor": supervisor_decision.as_dict(),
-                "execution_budget_version": self.execution_budget_version,
+                "research_supervisor": supervisor_decision.as_checkpoint(),
             }
             if not supervisor_decision.continue_research:
                 record.checkpoint = {
                     **record.checkpoint,
                     "adaptive_followup_complete": True,
-                    "adaptive_followup_notes": ["research_supervisor:no_factual_gap"],
                 }
                 return
-            if supervisor_decision.priority_intents:
-                followup_request = record.request.model_copy(
-                    update={"intents": list(supervisor_decision.priority_intents)}
-                )
-            supervisor_queries = list(supervisor_decision.query_hints)
 
+        seen = {
+            str(query)
+            for bucket in (
+                record.checkpoint.get("queries", []),
+                record.checkpoint.get("discovery_queries", []),
+                record.checkpoint.get("adaptive_followup_queries", []),
+            )
+            if isinstance(bucket, list)
+            for query in bucket
+            if isinstance(query, str) and query.strip()
+        }
+        max_queries = min(6, remaining_page_budget)
         entity_queries: list[str] = []
         if self.entity_hypothesis_extractor is not None:
-            hypotheses = await self.entity_hypothesis_extractor.extract(
-                followup_request,
+            hypothesis_plan = await self.entity_hypothesis_extractor.propose_queries(
+                record.request,
                 all_observations,
-            )
-            priority_intents = (
-                supervisor_decision.priority_intents
-                if supervisor_decision is not None
-                else followup_request.intents
-            )
-            entity_queries = self.entity_hypothesis_extractor.query_hints(
-                followup_request,
-                hypotheses,
-                priority_intents=priority_intents,
                 seen_queries=seen,
+                max_queries=max_queries,
             )
+            entity_queries = list(hypothesis_plan.queries)
             record.checkpoint = {
                 **record.checkpoint,
-                "llm_entity_hypothesis_version": self.entity_hypothesis_extractor.version,
-                "llm_entity_hypotheses": [item.as_dict() for item in hypotheses],
-                "llm_entity_hypothesis_queries": list(entity_queries),
-                "llm_entity_hypotheses_are_evidence": False,
+                "entity_hypothesis_version": hypothesis_plan.version,
+                "entity_hypothesis_queries": list(entity_queries),
+                "entity_hypothesis_model_output_is_evidence": False,
             }
 
+        supervisor_queries = (
+            list(supervisor_decision.query_hints) if supervisor_decision is not None else []
+        )
+        uncovered_intents = (
+            list(supervisor_decision.priority_intents)
+            if supervisor_decision is not None and supervisor_decision.priority_intents
+            else list(record.request.intents)
+        )
+        followup_request = record.request.model_copy(update={"intents": uncovered_intents})
         plan = await self.followup_planner.plan_followups(
             followup_request,
             all_observations,
@@ -424,10 +432,12 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
         }
 
     def _prioritize_pending(self, record, pending: list[SourceTask]) -> None:
-        """Run factual gap branches before generic depth-crawl candidates.
+        """Run deterministic factual-gap branches before general research and depth crawl.
 
         Sorting never promotes a candidate into Evidence and never changes dedupe identity. It
         only decides which already-safe queued URL gets one of the remaining execution slots.
+        Curated public-map/historical branches are generated specifically for unresolved factual
+        coverage and therefore outrank broader adaptive follow-up candidates.
         """
 
         if not pending:
@@ -460,14 +470,16 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
         requested: set[str],
     ) -> tuple[int, int, int, float, str]:
         branch = cls._focused_branch(task)
-        if branch in {"curated_public_map", "curated_historical", "adaptive_followup"}:
+        if branch in {"curated_public_map", "curated_historical"}:
             branch_rank = 0
-        elif branch == "area_entity":
+        elif branch == "adaptive_followup":
             branch_rank = 1
-        elif int(task.depth) <= 0:
+        elif branch == "area_entity":
             branch_rank = 2
-        else:
+        elif int(task.depth) <= 0:
             branch_rank = 3
+        else:
+            branch_rank = 4
 
         goals = {str(task.goal).strip().casefold()}
         raw_goals = task.metadata.get("research_goals")
