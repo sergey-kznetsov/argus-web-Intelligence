@@ -17,7 +17,7 @@ from argus.llm_health import OllamaRuntimeHealth
 from argus.maps.overpass import OverpassMapProvider
 from argus.maps.registry import MapProviderRegistry
 from argus.observability import OperationalMetrics
-from argus.orchestrator.adaptive_atomic import AdaptiveResearchAtomicCollectionOrchestrator
+from argus.orchestrator.evidence_status import EvidenceStatusAdaptiveResearchOrchestrator
 from argus.recipes.service import RecipeManager
 from argus.research.browser_serp import DuckDuckGoBrowserDiscoveryProvider
 from argus.research.coverage import EvidenceAwareHeuristicFollowupResearchPlanner
@@ -246,7 +246,7 @@ def build_services(settings: Settings) -> ServiceContainer:
         target_sources_per_intent=2,
         coverage=coverage,
     )
-    orchestrator = AdaptiveResearchAtomicCollectionOrchestrator(
+    orchestrator = EvidenceStatusAdaptiveResearchOrchestrator(
         repository=repository,
         registry=registry,
         planner=planner,
@@ -263,6 +263,7 @@ def build_services(settings: Settings) -> ServiceContainer:
             target_sources_per_intent=2,
         ),
         entity_hypothesis_extractor=OllamaEntityHypothesisExtractor(settings),
+        intent_coverage=coverage,
         max_followup_rounds=3,
         auto_execute=settings.execution_role == "embedded",
         metrics=metrics,
