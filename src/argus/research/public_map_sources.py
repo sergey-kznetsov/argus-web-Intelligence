@@ -31,7 +31,7 @@ class PublicMapSourceResearchPlanner:
     target. This keeps the planner aligned with ARGUS' evidence-first research lifecycle.
     """
 
-    version = "public-map-sources/2"
+    version = "public-map-sources/3"
     supported_intents = frozenset(
         {
             "reviews",
@@ -97,7 +97,7 @@ class PublicMapSourceResearchPlanner:
         request: CollectionRequest,
         observations: list[Observation],
     ) -> dict[str, int]:
-        """Count independent public-map factual sources for supported requested intents."""
+        """Count independent territorially relevant public-map factual sources."""
 
         requested = self._requested_intents(request)
         if not requested:
@@ -107,7 +107,7 @@ class PublicMapSourceResearchPlanner:
             for observation in observations
             if classify_public_map_url(observation.url) is not None
         ]
-        counts = self.coverage.counts(map_observations)
+        counts = self.coverage.counts(map_observations, request=request)
         return {intent: int(counts.get(intent, 0)) for intent in requested}
 
     def remaining_intents(
