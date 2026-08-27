@@ -93,5 +93,6 @@ jobs:
           path: |
             .argus/probes/perm-ai-acceptance
             /tmp/ollama.log
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
