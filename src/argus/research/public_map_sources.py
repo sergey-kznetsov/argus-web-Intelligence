@@ -54,6 +54,12 @@ class PublicMapSourceResearchPlanner:
         self.target_sources_per_intent = max(1, int(target_sources_per_intent))
         self.coverage = coverage or IntentCoverageEvaluator()
 
+    @property
+    def target_source_count(self) -> int:
+        """Stable checkpoint-facing alias for the per-intent factual source target."""
+
+        return self.target_sources_per_intent
+
     def queries(
         self,
         request: CollectionRequest,
