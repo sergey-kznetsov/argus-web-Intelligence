@@ -10,6 +10,7 @@ import httpx
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest, Observation, StructuredError
 from argus.research.intent_coverage import IntentCoverageEvaluator
+from argus.research.query_safety import sanitize_research_queries
 
 
 @dataclass(slots=True)
@@ -120,7 +121,7 @@ class HeuristicResearchSupervisor:
 class OllamaResearchSupervisor:
     """Local LLM watcher that guides research without becoming a factual authority."""
 
-    version = "research-supervisor-ollama/1"
+    version = "research-supervisor-ollama/2"
     max_query_hints = 3
     max_query_chars = 512
     max_observations = 50
@@ -236,19 +237,14 @@ class OllamaResearchSupervisor:
             if value not in priority:
                 priority.append(value)
 
-        seen = {item.casefold() for item in seen_queries}
-        query_hints: list[str] = []
         raw_queries = payload.get("query_hints")
-        if isinstance(raw_queries, list):
-            for raw in raw_queries:
-                value = " ".join(str(raw).split()).strip()[: self.max_query_chars].rstrip()
-                key = value.casefold()
-                if not value or key in seen:
-                    continue
-                seen.add(key)
-                query_hints.append(value)
-                if len(query_hints) >= self.max_query_hints:
-                    break
+        query_hints = sanitize_research_queries(
+            raw_queries if isinstance(raw_queries, list) else [],
+            request,
+            max_queries=self.max_query_hints,
+            max_query_chars=self.max_query_chars,
+            seen_queries=seen_queries,
+        )
 
         flags = list(baseline.flags)
         raw_flags = payload.get("flags")
