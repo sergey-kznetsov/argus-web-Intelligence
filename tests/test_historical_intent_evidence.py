@@ -11,12 +11,12 @@ from argus.research.intent_evidence import (
 from argus.sources.base import SourceResult
 
 
-def _request() -> CollectionRequest:
+def _request(*intents: str) -> CollectionRequest:
     return CollectionRequest(
         consumer="historical-test",
         analysis_id="historical-test",
         territory={"city": "Пермь", "address": "Комсомольский проспект, 27"},
-        intents=["historical_context"],
+        intents=list(intents or ("historical_context",)),
     )
 
 
@@ -93,6 +93,7 @@ async def test_historical_context_still_requires_territory_relevance(monkeypatch
 
     assert result.evidence == []
     assert item.quality["territory_relevant"] is False
+    assert item.quality["historical_territory_relevant"] is False
     assert "intent_evidence" not in item.quality
 
 
@@ -116,3 +117,55 @@ async def test_historical_context_evidence_is_exact_source_excerpt(monkeypatch):
     assert semantic[0].metadata["custom_intent"] is False
     assert semantic[0].metadata["exact_source_excerpt_verified"] is True
     assert semantic[0].metadata["model_output_is_evidence"] is False
+
+
+@pytest.mark.asyncio
+async def test_historical_street_context_can_back_exact_source_excerpt(monkeypatch):
+    classifier = OllamaIntentEvidenceClassifier(Settings(browser_serp_enabled=False))
+    excerpt = "История Комсомольского проспекта в Перми начинается в XIX веке."
+    item = _observation(
+        f"В Перми опубликован материал. {excerpt} До революции проспект назывался иначе."
+    )
+
+    async def findings(text, requested):
+        assert excerpt in text
+        assert requested == ["historical_context"]
+        return [IntentEvidenceFinding("historical_context", excerpt, "истор")]
+
+    monkeypatch.setattr(classifier, "_findings", findings)
+    result = await classifier.annotate(_request(), SourceResult(observations=[item]))
+
+    assert item.quality["territory_relevant"] is False
+    assert item.quality["historical_territory_relevant"] is True
+    assert item.provenance["historical_territory_relevance"]["basis"] == (
+        "historical_street_context"
+    )
+    semantic = [entry for entry in result.evidence if entry.type == "semantic_intent_excerpt"]
+    assert len(semantic) == 1
+    assert semantic[0].text == excerpt
+    assert semantic[0].metadata["territory_relevance_basis"] == "historical_street_context"
+    assert semantic[0].metadata["territory_relevance_version"] == (
+        classifier.historical_territory_relevance.version
+    )
+
+
+@pytest.mark.asyncio
+async def test_historical_street_context_does_not_scope_other_requested_intents(monkeypatch):
+    classifier = OllamaIntentEvidenceClassifier(Settings(browser_serp_enabled=False))
+    excerpt = "История Комсомольского проспекта в Перми начинается в XIX веке."
+    item = _observation(f"В Перми. {excerpt}")
+
+    async def findings(text, requested):
+        del text
+        assert requested == ["historical_context"]
+        return [IntentEvidenceFinding("historical_context", excerpt, "истор")]
+
+    monkeypatch.setattr(classifier, "_findings", findings)
+    await classifier.annotate(
+        _request("historical_context", "public_mentions", "complaints"),
+        SourceResult(observations=[item]),
+    )
+
+    assert item.quality["territory_relevant"] is False
+    assert item.quality["historical_territory_relevant"] is True
+    assert item.quality["intent_evidence"] == {"historical_context": True}
