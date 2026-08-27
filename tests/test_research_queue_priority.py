@@ -104,6 +104,123 @@ def test_prioritize_pending_moves_focused_branch_to_front_and_records_diagnostic
     orchestrator._prioritize_pending(record, pending)
 
     assert pending[0] is followup
-    assert record.checkpoint["research_queue_priority_version"] == "research-queue-priority/2"
+    assert record.checkpoint["research_queue_priority_version"] == "research-queue-priority/3"
     assert record.checkpoint["research_queue_candidate_count"] == 2
     assert record.checkpoint["research_queue_next"][0]["focused_branch"] == "adaptive_followup"
+    assert record.checkpoint["research_queue_next"][0]["fairness_goal"] == "reviews"
+
+
+def test_equal_priority_tasks_are_interleaved_across_requested_goals():
+    orchestrator = object.__new__(AdaptiveResearchAtomicCollectionOrchestrator)
+    intents = ["public_mentions", "historical_context", "historical_images"]
+    pending: list[SourceTask] = []
+    for index in range(4):
+        pending.append(
+            SourceTask(
+                source_id="generic_web",
+                goal="public_mentions",
+                url=f"https://mentions.example/{index}",
+                depth=1,
+                metadata={"discovery_navigation_score": 100 - index},
+            )
+        )
+    for index in range(4):
+        pending.append(
+            SourceTask(
+                source_id="generic_web",
+                goal="historical_context",
+                url=f"https://history.example/{index}",
+                depth=1,
+                metadata={"discovery_navigation_score": 10 - index},
+            )
+        )
+    for index in range(4):
+        pending.append(
+            SourceTask(
+                source_id="generic_web",
+                goal="historical_images",
+                url=f"https://images.example/{index}",
+                depth=1,
+                metadata={"discovery_navigation_score": 1 - index},
+            )
+        )
+    record = _record(intents=intents)
+
+    orchestrator._prioritize_pending(record, pending)
+
+    assert [item.goal for item in pending[:9]] == [
+        "public_mentions",
+        "historical_context",
+        "historical_images",
+        "public_mentions",
+        "historical_context",
+        "historical_images",
+        "public_mentions",
+        "historical_context",
+        "historical_images",
+    ]
+    # High navigation score still orders candidates inside each goal lane; it just cannot
+    # monopolize the entire execution budget anymore.
+    mention_urls = [item.url for item in pending if item.goal == "public_mentions"]
+    assert mention_urls == [
+        "https://mentions.example/0",
+        "https://mentions.example/1",
+        "https://mentions.example/2",
+        "https://mentions.example/3",
+    ]
+
+
+def test_queue_fairness_cursor_rotates_first_goal_after_reprioritization():
+    orchestrator = object.__new__(AdaptiveResearchAtomicCollectionOrchestrator)
+    record = _record(intents=["first", "second", "third"])
+    pending = [
+        SourceTask(
+            source_id="generic_web",
+            goal=goal,
+            url=f"https://example.org/{goal}/{index}",
+            depth=1,
+        )
+        for index in range(2)
+        for goal in ("first", "second", "third")
+    ]
+
+    orchestrator._prioritize_pending(record, pending)
+    assert pending[0].goal == "first"
+    assert record.checkpoint["research_queue_fairness_cursor"] == 1
+
+    pending.pop(0)
+    orchestrator._prioritize_pending(record, pending)
+    assert pending[0].goal == "second"
+    assert record.checkpoint["research_queue_fairness_cursor"] == 2
+
+    pending.pop(0)
+    orchestrator._prioritize_pending(record, pending)
+    assert pending[0].goal == "third"
+    assert record.checkpoint["research_queue_fairness_cursor"] == 0
+
+
+def test_fairness_never_demotes_curated_branch_below_generic_other_goal():
+    orchestrator = object.__new__(AdaptiveResearchAtomicCollectionOrchestrator)
+    record = _record(intents=["public_mentions", "historical_context"])
+    generic = SourceTask(
+        source_id="generic_web",
+        goal="public_mentions",
+        url="https://example.org/generic",
+        depth=1,
+        metadata={"discovery_navigation_score": 1000},
+    )
+    curated = SourceTask(
+        source_id="generic_web",
+        goal="historical_context",
+        url="https://archive.example/document",
+        depth=0,
+        metadata={
+            "curated_historical_round": 1,
+            "discovery_navigation_score": 0,
+        },
+    )
+    pending = [generic, curated]
+
+    orchestrator._prioritize_pending(record, pending)
+
+    assert pending[0] is curated
