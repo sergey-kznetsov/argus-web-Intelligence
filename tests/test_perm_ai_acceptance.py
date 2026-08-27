@@ -12,6 +12,7 @@ def base_overview() -> dict[str, object]:
         "runtime_terminal_status_version": "evidence-aware-terminal-status/1",
         "runtime_covered_intents": ["reviews", "public_mentions"],
         "runtime_uncovered_intents": ["complaints"],
+        "research_supervisor": {"continue_research": True},
         "query_shape_violations": [],
     }
 
@@ -29,6 +30,15 @@ def test_live_acceptance_accepts_matching_runtime_probe_coverage():
     failures = _acceptance_failures([base_overview()])
 
     assert failures == []
+
+
+def test_live_acceptance_rejects_uncovered_gaps_when_supervisor_never_ran():
+    item = base_overview()
+    item["research_supervisor"] = {}
+
+    failures = _acceptance_failures([item])
+
+    assert "kraken: factual gaps remained but research supervisor never ran" in failures
 
 
 def test_query_shape_check_detects_old_serialized_llm_plan_regression():
