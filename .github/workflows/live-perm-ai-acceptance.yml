@@ -14,6 +14,7 @@ on:
       - src/argus/orchestrator/**
       - src/argus/research/**
       - src/argus/sources/**
+      - src/argus/web/profiles.py
 
 permissions:
   contents: read
