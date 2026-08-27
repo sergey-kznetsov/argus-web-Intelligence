@@ -24,6 +24,15 @@ def request(*, address: str | None = None) -> CollectionRequest:
     )
 
 
+def custom_request(*intents: str) -> CollectionRequest:
+    return CollectionRequest(
+        consumer="test",
+        analysis_id="analysis-custom",
+        territory={"city": "Ижевск"},
+        intents=list(intents),
+    )
+
+
 def task(*goals: str) -> SourceTask:
     return SourceTask(
         source_id="generic_web",
@@ -104,6 +113,34 @@ def test_public_map_non_review_semantic_goal_uses_same_coverage_evaluator():
     assert adapter._semantic_goal_fact_count(result, ["complaints"], request=request()) == 1
     assert adapter._should_semantically_escalate(
         task("complaints"), fetched(), result, request=request()
+    ) is False
+
+
+def test_custom_public_map_goal_can_escalate_without_consumer_specific_whitelist():
+    adapter = adapter_with_agent()
+    result = SourceResult(observations=[observation("document")])
+    source_task = task("parking_supply")
+    scoped = custom_request("parking_supply")
+
+    assert adapter._semantic_goals(source_task) == ["parking_supply"]
+    assert adapter._should_semantically_escalate(
+        source_task, fetched(), result, request=scoped
+    ) is True
+
+
+def test_custom_public_map_goal_stops_after_exact_source_evidence():
+    adapter = adapter_with_agent()
+    item = observation("document")
+    item.quality["intent_evidence"] = {"parking_supply": True}
+    result = SourceResult(observations=[item])
+    source_task = task("parking_supply")
+    scoped = custom_request("parking_supply")
+
+    assert adapter._semantic_goal_fact_count(
+        result, ["parking_supply"], request=scoped
+    ) == 1
+    assert adapter._should_semantically_escalate(
+        source_task, fetched(), result, request=scoped
     ) is False
 
 
