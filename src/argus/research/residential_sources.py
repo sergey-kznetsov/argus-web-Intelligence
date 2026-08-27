@@ -36,12 +36,13 @@ class MingkhResidentialSourceResearchPlanner:
     """Build deterministic discovery/navigation for residential building facts.
 
     These intents have one mandatory factual source. ARGUS first creates a direct public
-    ``dom.mingkh.ru`` house-search task from the current address. Search engines remain a
-    navigation aid for locating a public house detail page; their snippets never become
-    Evidence. The planner deliberately does not add alternative residential sources.
+    ``dom.mingkh.ru`` house-search task from the current building address. Search engines
+    remain a navigation aid for locating a public house detail page; their snippets never
+    become Evidence. Without a building address this source planner fails closed instead of
+    selecting an arbitrary house from a city-level result set.
     """
 
-    version = "mingkh-residential-sources/3"
+    version = "mingkh-residential-sources/4"
     supported_intents = RESIDENTIAL_INTENTS
     source = MINGKH_RESIDENTIAL_SOURCE
 
@@ -99,21 +100,23 @@ class MingkhResidentialSourceResearchPlanner:
             "paid_api": self.source.paid_api,
             "mandatory_for_intents": sorted(self.supported_intents),
             "fallback_sources": False,
+            "building_address_required": True,
             "direct_entry": "/search?address=...&searchtype=house",
         }
 
     @staticmethod
     def _house_search_text(request: CollectionRequest) -> str:
-        address = (request.territory.address or "").strip()
-        return address
+        return (request.territory.address or "").strip()
 
     @staticmethod
     def _territory_text(request: CollectionRequest) -> str:
         city = (request.territory.city or "").strip()
         address = (request.territory.address or "").strip()
-        if city and address:
-            return address if city.casefold() in address.casefold() else f"{city}, {address}"
-        return address or city
+        if not address:
+            return ""
+        if city and city.casefold() not in address.casefold():
+            return f"{city}, {address}"
+        return address
 
 
 class CuratedResidentialResearchPlanner:
@@ -160,7 +163,8 @@ class CuratedResidentialResearchPlanner:
                 "curated_residential_source="
                 f"{self.source_planner.source.source_id};"
                 f"version={self.source_planner.version};"
-                f"direct_entry={str(bool(source_tasks)).lower()};fallback_sources=false"
+                f"direct_entry={str(bool(source_tasks)).lower()};"
+                "building_address_required=true;fallback_sources=false"
             ),
         ]
         return ResearchPlan(
