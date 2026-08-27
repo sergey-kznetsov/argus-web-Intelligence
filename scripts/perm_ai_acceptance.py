@@ -143,8 +143,13 @@ def _acceptance_failures(overview: list[dict[str, object]]) -> list[str]:
             if not covered.intersection(secondary):
                 failures.append("kraken: no secondary urban-information intent is covered")
         elif profile == "janus":
-            if not any(intent.startswith("parking_") for intent in covered):
-                failures.append("janus: no parking intent is factually covered")
+            required = {"residential_population", "residential_premises_count"}
+            missing = sorted(required - covered)
+            if missing:
+                failures.append(
+                    "janus: required residential intents are not factually covered: "
+                    + ", ".join(missing)
+                )
         elif profile == "historical" and "historical_context" not in covered:
             failures.append("historical: historical_context is not factually covered")
     return failures
