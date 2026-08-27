@@ -27,16 +27,14 @@ _TEST_PROFILES: dict[str, dict[str, object]] = {
     "janus": {
         "label": "Имитировать запрос Janus",
         "description": (
-            "Проверка публичного веб-контура парковочного предложения. Новые parking_* intents "
-            "обрабатываются как обычные consumer-neutral исследовательские вопросы."
+            "Проверка публичного веб-контура фактов многоквартирного дома: число жителей "
+            "и количество жилых помещений. Профиль только формирует CollectionRequest; "
+            "источник выбирается consumer-neutral маршрутизацией по intents."
         ),
         "consumer": "janus.simulation",
         "intents": [
-            "parking_supply",
-            "parking_capacity",
-            "parking_access",
-            "parking_pricing",
-            "parking_type",
+            "residential_population",
+            "residential_premises_count",
         ],
         "max_pages": 35,
         "max_depth": 2,
