@@ -469,15 +469,14 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
         else:
             branch_rank = 3
 
+        goals = {str(task.goal).strip().casefold()}
         raw_goals = task.metadata.get("research_goals")
-        goals = {
-            str(task.goal).strip().casefold(),
-            *(
+        if isinstance(raw_goals, list):
+            goals.update(
                 str(value).strip().casefold()
                 for value in raw_goals
-                if isinstance(raw_goals, list) and str(value).strip()
-            ),
-        }
+                if str(value).strip()
+            )
         goal_rank = 0 if goals.intersection(requested) else 1
         try:
             navigation_score = float(task.metadata.get("discovery_navigation_score", 0.0) or 0.0)
