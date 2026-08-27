@@ -84,7 +84,7 @@ class KmlAwareWebAdapter(GeoJsonAwareWebAdapter):
 
             coordinates_node = self._direct_child(point_node, "coordinates")
             coordinate_text = self._node_text(coordinates_node)
-            parsed = self._point(coordinate_text)
+            parsed = self._kml_point(coordinate_text)
             if parsed is None:
                 invalid_points += 1
                 continue
@@ -322,7 +322,7 @@ class KmlAwareWebAdapter(GeoJsonAwareWebAdapter):
         return value[:2_000] or None
 
     @staticmethod
-    def _point(raw: str | None) -> tuple[Point, list[float]] | None:
+    def _kml_point(raw: str | None) -> tuple[Point, list[float]] | None:
         if not raw:
             return None
         tuples = raw.split()
