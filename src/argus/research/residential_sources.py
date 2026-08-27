@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urlencode
 
 from argus.contracts.models import CollectionRequest, Observation
 from argus.research.followup import FollowupPlan, FollowupResearchPlanner
+from argus.research.input_candidates import research_input_candidates
 from argus.research.intent_coverage import IntentCoverageEvaluator
 from argus.research.planner import ResearchPlan, ResearchPlanner
+from argus.sources.base import SourceTask
 
 RESIDENTIAL_INTENTS = frozenset(
     {
@@ -30,16 +33,42 @@ MINGKH_RESIDENTIAL_SOURCE = ResidentialSourceProfile(
 
 
 class MingkhResidentialSourceResearchPlanner:
-    """Build deterministic discovery queries for residential building facts.
+    """Build deterministic discovery/navigation for residential building facts.
 
-    These intents have one mandatory factual source. Search engines are used only as
-    navigation to a public ``dom.mingkh.ru`` house page; their snippets never become
+    These intents have one mandatory factual source. ARGUS first creates a direct public
+    ``dom.mingkh.ru`` house-search task from the current territory. Search engines remain a
+    navigation aid for locating a public house detail page; their snippets never become
     Evidence. The planner deliberately does not add alternative residential sources.
     """
 
-    version = "mingkh-residential-sources/1"
+    version = "mingkh-residential-sources/2"
     supported_intents = RESIDENTIAL_INTENTS
     source = MINGKH_RESIDENTIAL_SOURCE
+
+    def tasks(self, request: CollectionRequest) -> list[SourceTask]:
+        requested = self.supported_intents.intersection(request.intents)
+        if not requested:
+            return []
+        anchor = self._territory_text(request)
+        if not anchor:
+            return []
+        query = urlencode({"address": anchor, "searchtype": "house"})
+        return [
+            SourceTask(
+                source_id=self.source.source_id,
+                goal=sorted(requested)[0],
+                url=f"https://{self.source.domain_scope}/search?{query}",
+                metadata={
+                    "research_goals": sorted(requested),
+                    "allowed_domains": [self.source.domain_scope],
+                    "research_input_candidates": research_input_candidates(request),
+                    "research_input_candidates_navigation_only": True,
+                    "research_input_candidates_are_evidence": False,
+                    "research_input_scope": "territory_context",
+                    "dedicated_source_direct_entry": True,
+                },
+            )
+        ]
 
     def queries(self, request: CollectionRequest, *, limit: int = 2) -> list[str]:
         if limit <= 0:
@@ -54,7 +83,7 @@ class MingkhResidentialSourceResearchPlanner:
         candidates: list[str] = []
         if "residential_premises_count" in requested:
             candidates.append(
-                f'site:{self.source.domain_scope} "{anchor}" "Количество квартир" "Жилых помещений"'
+                f'site:{self.source.domain_scope} "{anchor}" "Количество квартир"'
             )
         if "residential_population" in requested:
             candidates.append(
@@ -70,6 +99,7 @@ class MingkhResidentialSourceResearchPlanner:
             "paid_api": self.source.paid_api,
             "mandatory_for_intents": sorted(self.supported_intents),
             "fallback_sources": False,
+            "direct_entry": "/search?address=...&searchtype=house",
         }
 
     @staticmethod
@@ -84,10 +114,10 @@ class MingkhResidentialSourceResearchPlanner:
 class CuratedResidentialResearchPlanner:
     """Keep residential intents on their mandatory source without consumer branching.
 
-    Non-residential intents are delegated to the normal ARGUS planner. If a request
-    contains only residential intents, no general web queries are emitted: discovery is
-    constrained to ``dom.mingkh.ru``. Mixed requests preserve normal research for the
-    other intents while residential facts remain source-specific.
+    Non-residential intents are delegated to the normal ARGUS planner. Residential requests
+    always receive a direct ``dom.mingkh.ru`` source task when territory text is available.
+    Search-engine queries are retained only as a navigation aid. Mixed requests preserve
+    normal research for the other intents while residential facts remain source-specific.
     """
 
     def __init__(
@@ -117,6 +147,7 @@ class CuratedResidentialResearchPlanner:
             request,
             limit=min(len(residential), self.max_queries),
         )
+        source_tasks = self.source_planner.tasks(request)
         queries = _merge_queries(source_queries, delegated.queries, limit=self.max_queries)
         notes = [
             *delegated.notes,
@@ -124,12 +155,12 @@ class CuratedResidentialResearchPlanner:
                 "curated_residential_source="
                 f"{self.source_planner.source.source_id};"
                 f"version={self.source_planner.version};"
-                "fallback_sources=false"
+                "direct_entry=true;fallback_sources=false"
             ),
         ]
         return ResearchPlan(
             queries=queries,
-            tasks=list(delegated.tasks),
+            tasks=[*source_tasks, *delegated.tasks],
             notes=notes,
         )
 
