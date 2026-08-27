@@ -13,6 +13,8 @@ from argus.sources.base import SourceTask
 class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrchestrator):
     """Iteratively expand research until requested coverage or collection budgets stop it."""
 
+    research_queue_priority_version = "research-queue-priority/1"
+
     def __init__(
         self,
         *args,
@@ -70,6 +72,7 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             visited,
         )
         await self._expand_research_gaps(record, task, observations, pending, visited)
+        self._prioritize_pending(record, pending)
 
     async def _expand_curated_historical_sources(
         self,
@@ -88,10 +91,7 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
         round_count = int(record.checkpoint.get("curated_historical_rounds", 0) or 0)
         if round_count >= self.max_curated_historical_rounds:
             return
-        remaining_page_budget = max(
-            0,
-            int(record.request.constraints.max_pages) - len(visited) - len(pending) - 1,
-        )
+        remaining_page_budget = self._remaining_execution_budget(record, visited)
         if remaining_page_budget <= 0:
             return
 
@@ -121,6 +121,7 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
                 **record.checkpoint,
                 "curated_historical_complete": True,
                 "curated_historical_source_version": self.historical_source_planner.version,
+                "execution_budget_version": self.execution_budget_version,
             }
             return
 
@@ -150,6 +151,7 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             "curated_historical_queries": sorted(seen),
             "curated_historical_last_candidates": len(additions),
             "curated_historical_source_version": self.historical_source_planner.version,
+            "execution_budget_version": self.execution_budget_version,
         }
 
     async def _expand_curated_public_map_sources(
@@ -175,10 +177,7 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
         round_count = int(record.checkpoint.get("curated_public_map_rounds", 0) or 0)
         if round_count >= self.max_curated_public_map_rounds:
             return
-        remaining_page_budget = max(
-            0,
-            int(record.request.constraints.max_pages) - len(visited) - len(pending) - 1,
-        )
+        remaining_page_budget = self._remaining_execution_budget(record, visited)
         if remaining_page_budget <= 0:
             return
 
@@ -200,6 +199,7 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             ),
             "curated_public_map_coverage_version": self.public_map_source_planner.coverage.version,
             "curated_public_map_source_version": self.public_map_source_planner.version,
+            "execution_budget_version": self.execution_budget_version,
         }
         if not remaining_intents:
             record.checkpoint = {
@@ -287,16 +287,11 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             return
         if self.max_followup_rounds <= 0:
             return
-        if len(pending) > 2:
-            return
 
         round_count = int(record.checkpoint.get("adaptive_followup_rounds", 0) or 0)
         if round_count >= self.max_followup_rounds:
             return
-        remaining_page_budget = max(
-            0,
-            int(record.request.constraints.max_pages) - len(visited) - len(pending) - 1,
-        )
+        remaining_page_budget = self._remaining_execution_budget(record, visited)
         if remaining_page_budget <= 0:
             return
 
@@ -323,6 +318,7 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             record.checkpoint = {
                 **record.checkpoint,
                 "research_supervisor": supervisor_decision.as_dict(),
+                "execution_budget_version": self.execution_budget_version,
             }
             if not supervisor_decision.continue_research:
                 record.checkpoint = {
@@ -424,7 +420,89 @@ class AdaptiveResearchAtomicCollectionOrchestrator(AreaAwareAtomicCollectionOrch
             "adaptive_followup_queries": sorted(seen),
             "adaptive_followup_notes": notes,
             "adaptive_followup_last_candidates": len(additions),
+            "execution_budget_version": self.execution_budget_version,
         }
+
+    def _prioritize_pending(self, record, pending: list[SourceTask]) -> None:
+        """Run factual gap branches before generic depth-crawl candidates.
+
+        Sorting never promotes a candidate into Evidence and never changes dedupe identity. It
+        only decides which already-safe queued URL gets one of the remaining execution slots.
+        """
+
+        if not pending:
+            return
+        requested = {
+            str(intent).strip().casefold()
+            for intent in record.request.intents
+            if str(intent).strip()
+        }
+        pending.sort(key=lambda item: self._pending_priority(item, requested))
+        record.checkpoint = {
+            **record.checkpoint,
+            "research_queue_priority_version": self.research_queue_priority_version,
+            "research_queue_candidate_count": len(pending),
+            "research_queue_next": [
+                {
+                    "source_id": item.source_id,
+                    "goal": item.goal,
+                    "depth": item.depth,
+                    "focused_branch": self._focused_branch(item),
+                }
+                for item in pending[:5]
+            ],
+        }
+
+    @classmethod
+    def _pending_priority(
+        cls,
+        task: SourceTask,
+        requested: set[str],
+    ) -> tuple[int, int, int, float, str]:
+        branch = cls._focused_branch(task)
+        if branch in {"curated_public_map", "curated_historical", "adaptive_followup"}:
+            branch_rank = 0
+        elif branch == "area_entity":
+            branch_rank = 1
+        elif int(task.depth) <= 0:
+            branch_rank = 2
+        else:
+            branch_rank = 3
+
+        raw_goals = task.metadata.get("research_goals")
+        goals = {
+            str(task.goal).strip().casefold(),
+            *(
+                str(value).strip().casefold()
+                for value in raw_goals
+                if isinstance(raw_goals, list) and str(value).strip()
+            ),
+        }
+        goal_rank = 0 if goals.intersection(requested) else 1
+        try:
+            navigation_score = float(task.metadata.get("discovery_navigation_score", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            navigation_score = 0.0
+        return (
+            branch_rank,
+            goal_rank,
+            max(0, int(task.depth)),
+            -navigation_score,
+            task.url,
+        )
+
+    @staticmethod
+    def _focused_branch(task: SourceTask) -> str | None:
+        metadata = task.metadata
+        if metadata.get("curated_public_map_round"):
+            return "curated_public_map"
+        if metadata.get("curated_historical_round"):
+            return "curated_historical"
+        if metadata.get("adaptive_followup_round"):
+            return "adaptive_followup"
+        if metadata.get("area_branch_depth"):
+            return "area_entity"
+        return None
 
     @staticmethod
     def _merge_followup_queries(
