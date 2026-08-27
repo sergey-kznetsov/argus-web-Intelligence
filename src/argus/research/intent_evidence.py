@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import httpx
 
@@ -31,16 +33,25 @@ class OllamaIntentEvidenceClassifier:
     accepts model prose as Evidence: the excerpt must occur exactly in already extracted
     page text. Before the model is called, the page must deterministically match the requested
     territory. Search-result surfaces are navigation only and cannot supply attributable
-    semantic facts. Built-in intents may additionally require a compatible source shape; for
-    example, ordinary news text cannot become a review merely because a model labels it so.
-    Consumer-defined intents remain consumer-neutral and source-backed.
+    semantic facts. Built-in intents may additionally require a compatible source shape or
+    deterministic factual marker. Consumer-defined intents remain consumer-neutral and
+    source-backed.
     """
 
-    version = "exact-excerpt-intent-evidence/5"
+    version = "exact-excerpt-intent-evidence/6"
     builtin_intents = frozenset(
-        {"reviews", "comments", "discussions", "complaints", "incidents"}
+        {
+            "reviews",
+            "comments",
+            "discussions",
+            "complaints",
+            "incidents",
+            "historical_context",
+        }
     )
-    marker_required_intents = frozenset({"complaints", "incidents"})
+    marker_required_intents = frozenset(
+        {"complaints", "incidents", "historical_context"}
+    )
     max_requested_intents = 12
     max_intent_chars = 128
     max_text_chars = 24_000
@@ -48,6 +59,7 @@ class OllamaIntentEvidenceClassifier:
     min_excerpt_chars = 12
     max_findings = 4
     max_observations = 3
+    historical_year_min_age = 5
 
     _MARKERS = {
         "complaints": (
@@ -92,6 +104,34 @@ class OllamaIntentEvidenceClassifier:
             "flood",
             "evacuat",
             "injur",
+        ),
+        "historical_context": (
+            "истор",
+            "построен",
+            "возведен",
+            "возведён",
+            "основан",
+            "образован",
+            "учрежден",
+            "учреждён",
+            "открыт в",
+            "ранее",
+            "прежде",
+            "бывш",
+            "первоначально",
+            "до революц",
+            "дореволюц",
+            "в советск",
+            "history",
+            "historical",
+            "formerly",
+            "previously",
+            "former ",
+            "built in",
+            "founded",
+            "established",
+            "opened in",
+            "originally",
         ),
     }
 
@@ -168,12 +208,15 @@ class OllamaIntentEvidenceClassifier:
             "evaluation/opinion; a comment is a source-published user comment; a discussion is "
             "conversational public discussion; a complaint is a negative problem/complaint "
             "report; an incident is a concrete accident, fire, crash, flooding, evacuation, "
-            "injury or similar event. For a custom intent, use the literal intent label only as "
-            "a research question and return an excerpt only when the source directly states "
-            "information matching that label. Do not infer a value that the excerpt does not "
-            "state. Return strict JSON with key findings, an array of objects {intent, excerpt}. "
-            "Use only requested intents, preserve the requested intent spelling, at most 4 "
-            "findings, and return an empty array when the source text is insufficient.\n"
+            "injury or similar event; historical_context is a source-stated fact about the "
+            "territory or entity in the past, such as former use/name, construction/founding "
+            "date, past organization/event or documented historical change. For a custom "
+            "intent, use the literal intent label only as a research question and return an "
+            "excerpt only when the source directly states information matching that label. "
+            "Do not infer a value that the excerpt does not state. Return strict JSON with key "
+            "findings, an array of objects {intent, excerpt}. Use only requested intents, "
+            "preserve the requested intent spelling, at most 4 findings, and return an empty "
+            "array when the source text is insufficient.\n"
             f"Requested intents: {json.dumps(requested, ensure_ascii=False)}\n"
             f"SOURCE TEXT:\n{bounded_text}"
         )
@@ -390,4 +433,10 @@ class OllamaIntentEvidenceClassifier:
         for marker in cls._MARKERS.get(intent, ()):
             if marker in normalized:
                 return marker
+        if intent == "historical_context":
+            current_year = datetime.now(UTC).year
+            latest_historical_year = current_year - cls.historical_year_min_age
+            for raw_year in re.findall(r"(?<!\d)(1[5-9]\d{2}|20\d{2})(?!\d)", normalized):
+                if int(raw_year) <= latest_historical_year:
+                    return f"historical_year:{raw_year}"
         return None
