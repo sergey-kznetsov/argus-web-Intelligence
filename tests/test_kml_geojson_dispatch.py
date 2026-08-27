@@ -22,11 +22,20 @@ class BrowserStub:
         raise AssertionError(f"GeoJSON extraction must not require browser fallback: {url}")
 
 
+class LaterAdapterWithIncompatiblePointHelper(KmlAwareWebAdapter):
+    def _point(self):
+        raise AssertionError("GeoJSON parser must not dynamically dispatch a format helper")
+
+
 @pytest.mark.asyncio
-async def test_kml_aware_adapter_keeps_geojson_point_parser_isolated(tmp_path: Path):
+@pytest.mark.parametrize("adapter_class", [KmlAwareWebAdapter, LaterAdapterWithIncompatiblePointHelper])
+async def test_kml_aware_adapter_keeps_geojson_point_parser_isolated(
+    tmp_path: Path,
+    adapter_class,
+):
     repository = SQLiteRepository(tmp_path / "argus.sqlite")
     await repository.initialize()
-    adapter = KmlAwareWebAdapter(
+    adapter = adapter_class(
         fast=FastStub(),
         browser=BrowserStub(),
         snapshots=SnapshotService(repository),
