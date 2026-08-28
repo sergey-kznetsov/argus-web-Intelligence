@@ -14,6 +14,11 @@ ADDRESS = "Комсомольский проспект, 27"
 CITY = "Пермь"
 PROFILE_IDS = ("kraken", "janus", "historical")
 ACCEPTABLE_STATUSES = {"completed", "partial"}
+JANUS_SOURCE_BLOCK_CODES = {
+    "MINGKH_ACCESS_CHALLENGE",
+    "SOURCE_ROBOTS_ACCESS_BLOCKED",
+    "SOURCE_ROBOTS_UNREACHABLE",
+}
 _QUERY_CHECKPOINT_KEYS = (
     "queries",
     "discovery_queries",
@@ -200,8 +205,8 @@ def _mandatory_janus_source_blocked(
     if observation_count != 0 or evidence_count != 0:
         return False
     return any(
-        item.get("code") == "MINGKH_ACCESS_CHALLENGE"
-        and item.get("source_id") == "mingkh_residential"
+        item.get("code") in JANUS_SOURCE_BLOCK_CODES
+        and item.get("source_id") in {"mingkh_residential", "site_discovery"}
         for item in error_details
     )
 
