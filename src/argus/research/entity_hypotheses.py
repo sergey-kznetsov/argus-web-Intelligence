@@ -32,6 +32,13 @@ class EntityHypothesis:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class EntityHypothesisQueryPlan:
+    version: str
+    queries: tuple[str, ...] = ()
+    hypotheses: tuple[EntityHypothesis, ...] = ()
+
+
 class OllamaEntityHypothesisExtractor:
     """Find source-grounded navigation hypotheses for recursive ARGUS research.
 
@@ -42,6 +49,7 @@ class OllamaEntityHypothesisExtractor:
     """
 
     version = "entity-hypothesis-exact-excerpt/1"
+    query_plan_version = "entity-hypothesis-navigation/1"
     allowed_types = frozenset(
         {
             "organization",
@@ -93,6 +101,37 @@ class OllamaEntityHypothesisExtractor:
                 if len(result) >= self.max_hypotheses:
                     return result
         return result
+
+    async def propose_queries(
+        self,
+        request: CollectionRequest,
+        observations: Iterable[Observation],
+        *,
+        seen_queries: set[str] | None = None,
+        max_queries: int | None = None,
+    ) -> EntityHypothesisQueryPlan:
+        """Return bounded navigation queries from source-grounded entity hypotheses.
+
+        This is the public orchestration contract. The model still cannot create Evidence:
+        it only extracts exact source excerpts and converts the validated labels into search
+        anchors for the next fetch round.
+        """
+
+        limit = self.max_query_hints if max_queries is None else max(0, int(max_queries))
+        if limit <= 0:
+            return EntityHypothesisQueryPlan(version=self.query_plan_version)
+        hypotheses = await self.extract(request, observations)
+        queries = self.query_hints(
+            request,
+            hypotheses,
+            priority_intents=request.intents,
+            seen_queries=seen_queries,
+        )[:limit]
+        return EntityHypothesisQueryPlan(
+            version=self.query_plan_version,
+            queries=tuple(queries),
+            hypotheses=tuple(hypotheses),
+        )
 
     async def _extract_from_observation(
         self,
