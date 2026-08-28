@@ -75,4 +75,7 @@ def test_sitemap_keeps_territory_score_for_later_queue_ordering():
         rank=2,
     )
     assert metadata["discovery_navigation_score"] > 0
-    assert metadata["navigation_ranking_version"] == evaluator.navigation_ranking_version
+    assert (
+        metadata["navigation_ranking_version"]
+        == source.territory_relevance.navigation_ranking_version
+    )
