@@ -19,7 +19,7 @@ from argus.maps.registry import MapProviderRegistry
 from argus.observability import OperationalMetrics
 from argus.orchestrator.evidence_status import EvidenceStatusAdaptiveResearchOrchestrator
 from argus.recipes.service import RecipeManager
-from argus.research.browser_serp import DuckDuckGoBrowserDiscoveryProvider
+from argus.research.browser_serp import DuckDuckGoFastDiscoveryProvider
 from argus.research.coverage import EvidenceAwareHeuristicFollowupResearchPlanner
 from argus.research.discovery import DiscoveryService
 from argus.research.entities import AreaEntityResearchPlanner
@@ -61,7 +61,7 @@ def configured_discovery_provider_names(settings: Settings) -> list[str]:
     if settings.searxng_url:
         names.append("searxng")
     if settings.browser_serp_enabled:
-        names.append("duckduckgo_browser")
+        names.append("duckduckgo_fast")
     return names
 
 
@@ -88,13 +88,13 @@ def build_agent(settings: Settings, guard: UrlGuard) -> AgentBackend | None:
 def build_discovery(
     settings: Settings,
     guard: UrlGuard,
-    browser: BrowserCrawlerRuntime,
+    fast: FastCrawlerRuntime,
 ) -> DiscoveryService | None:
     providers = []
     if settings.searxng_url:
         providers.append(SearxngDiscoveryProvider(settings))
     if settings.browser_serp_enabled:
-        providers.append(DuckDuckGoBrowserDiscoveryProvider(settings, browser))
+        providers.append(DuckDuckGoFastDiscoveryProvider(settings, fast))
     if not providers:
         return None
     return DedicatedSourceRoutingDiscoveryService(
@@ -174,7 +174,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     metrics = OperationalMetrics()
     llm_health = OllamaRuntimeHealth(settings)
     agent = build_agent(settings, guard)
-    discovery = build_discovery(settings, guard, browser)
+    discovery = build_discovery(settings, guard, fast)
     geocoder = build_geocoder(settings)
     map_registry = build_map_registry(settings)
     structured_extractor = build_structured_data_extractor(settings)
