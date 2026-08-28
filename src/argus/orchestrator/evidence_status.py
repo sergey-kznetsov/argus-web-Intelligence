@@ -388,7 +388,7 @@ class EvidenceStatusAdaptiveResearchOrchestrator(AdaptiveResearchAtomicCollectio
         """Use shared round-robin fairness with evidence-aware source priorities.
 
         The adaptive orchestrator owns the queue algorithm. This production layer only
-        refines the priority of support-only sitemap work via ``_pending_priority`` below;
+        refines source-owned and support-only sitemap priorities via ``_pending_priority``;
         it must not replace the shared fairness implementation with a legacy plain sort.
         """
 
@@ -397,11 +397,12 @@ class EvidenceStatusAdaptiveResearchOrchestrator(AdaptiveResearchAtomicCollectio
     @classmethod
     def _pending_priority(cls, task, requested):
         base = super()._pending_priority(task, requested)
-        if (
-            task.source_id == "site_discovery"
-            and cls._focused_branch(task) is None
-            and not cls._is_source_owned_navigation(task)
-        ):
+        if cls._is_source_owned_navigation(task):
+            # A source-owned navigation chain is an explicit factual dependency. Complete
+            # its robots/sitemap/detail path before adaptive/search fallback tasks consume
+            # the same page budget.
+            return (-1, *base[1:])
+        if task.source_id == "site_discovery" and cls._focused_branch(task) is None:
             return (10, *base[1:])
         return base
 
@@ -415,13 +416,13 @@ class EvidenceStatusAdaptiveResearchOrchestrator(AdaptiveResearchAtomicCollectio
 
     @staticmethod
     def _is_source_owned_navigation(task) -> bool:
-        if task.source_id != "site_discovery":
-            return False
         metadata = task.metadata
         if metadata.get("source_owned_navigation") is not True:
             return False
         target = str(metadata.get("site_discovery_target_source_id") or "").strip()
-        return bool(target and target != "site_discovery")
+        if not target or target == "site_discovery":
+            return False
+        return task.source_id == "site_discovery" or task.source_id == target
 
     @staticmethod
     def _seen_research_queries(record) -> set[str]:
