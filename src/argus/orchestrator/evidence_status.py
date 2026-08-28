@@ -14,7 +14,7 @@ class EvidenceStatusAdaptiveResearchOrchestrator(AdaptiveResearchAtomicCollectio
 
     coverage_status_version = "evidence-aware-terminal-status/1"
     research_supervision_version = "factual-gap-supervision/1"
-    research_queue_priority_version = "research-queue-priority/4"
+    research_queue_priority_version = "research-queue-priority/5"
     production_source_task_timeout_seconds = 45.0
     research_expansion_timeout_seconds = 20.0
     research_supervisor_timeout_seconds = 5.0
@@ -35,6 +35,10 @@ class EvidenceStatusAdaptiveResearchOrchestrator(AdaptiveResearchAtomicCollectio
         self.intent_coverage = intent_coverage or IntentCoverageEvaluator()
 
     async def _process_tasks(self, record, pending) -> None:
+        # Establish deterministic/fair ordering before the first source task. Later
+        # successful factual tasks refresh the supervisor and reprioritize the queue from
+        # live Evidence coverage through ``_expand_historical``.
+        self._prioritize_pending(record, pending)
         await super()._process_tasks(record, pending)
         await self._apply_evidence_aware_terminal_status(record.collection_id)
 
@@ -385,14 +389,97 @@ class EvidenceStatusAdaptiveResearchOrchestrator(AdaptiveResearchAtomicCollectio
         }
 
     def _prioritize_pending(self, record, pending) -> None:
-        """Use shared round-robin fairness with evidence-aware source priorities.
+        """Prefer live factual gaps while preserving the shared deterministic queue order.
 
-        The adaptive orchestrator owns the queue algorithm. This production layer only
-        refines source-owned and support-only sitemap priorities via ``_pending_priority``;
-        it must not replace the shared fairness implementation with a legacy plain sort.
+        The adaptive orchestrator first establishes branch quality, navigation score and
+        round-robin fairness. This layer then performs one stable partition using the latest
+        deterministic supervisor coverage: tasks that can address a still-under-target
+        factual intent move ahead of tasks whose factual goals are already covered. The
+        partition does not turn planning metadata into Evidence and does not change identity.
         """
 
         super()._prioritize_pending(record, pending)
+        if not pending:
+            return
+
+        supervisor = record.checkpoint.get("research_supervisor")
+        supervisor = supervisor if isinstance(supervisor, dict) else {}
+        requested_order = self._requested_intents(record.request.intents)
+        requested = set(requested_order)
+        priority_intents = [
+            str(value).strip().casefold()
+            for value in supervisor.get("priority_intents", [])
+            if str(value).strip().casefold() in requested
+        ]
+        priority_set = set(priority_intents)
+
+        if priority_set:
+            # Stable partition: retain the existing quality/fairness order inside both
+            # groups while preventing already-covered goals from consuming a scarce page
+            # budget before executable candidates for factual gaps.
+            gap_tasks = [
+                item for item in pending if self._task_intents(item).intersection(priority_set)
+            ]
+            other_tasks = [
+                item for item in pending if not self._task_intents(item).intersection(priority_set)
+            ]
+            pending[:] = [*gap_tasks, *other_tasks]
+
+        selected_goal = self._task_priority_goal(pending[0], priority_intents)
+        if selected_goal is None:
+            selected_goal = self._task_requested_goal(pending[0], requested_order)
+        if selected_goal is not None and requested_order:
+            record.checkpoint["research_queue_fairness_cursor"] = (
+                requested_order.index(selected_goal) + 1
+            ) % len(requested_order)
+
+        factual_counts = supervisor.get("factual_coverage_counts", {})
+        factual_counts = factual_counts if isinstance(factual_counts, dict) else {}
+        record.checkpoint = {
+            **record.checkpoint,
+            "research_queue_priority_version": self.research_queue_priority_version,
+            "research_queue_priority_intents": priority_intents,
+            "research_queue_factual_coverage_counts": {
+                intent: int(factual_counts.get(intent, 0) or 0) for intent in requested_order
+            },
+            "research_queue_next_goal": selected_goal,
+            "research_queue_next": [
+                {
+                    "source_id": item.source_id,
+                    "goal": item.goal,
+                    "depth": item.depth,
+                    "focused_branch": self._focused_branch(item),
+                    "fairness_goal": self._task_requested_goal(item, requested_order),
+                    "factual_gap": bool(self._task_intents(item).intersection(priority_set)),
+                    "factual_gap_intents": [
+                        intent
+                        for intent in priority_intents
+                        if intent in self._task_intents(item)
+                    ],
+                }
+                for item in pending[:5]
+            ],
+        }
+
+    @staticmethod
+    def _task_intents(task) -> set[str]:
+        intents = {str(task.goal).strip().casefold()}
+        raw_goals = task.metadata.get("research_goals")
+        if isinstance(raw_goals, list):
+            intents.update(
+                str(value).strip().casefold()
+                for value in raw_goals
+                if str(value).strip()
+            )
+        return {intent for intent in intents if intent}
+
+    @classmethod
+    def _task_priority_goal(cls, task, priority_intents: list[str]) -> str | None:
+        task_intents = cls._task_intents(task)
+        for intent in priority_intents:
+            if intent in task_intents:
+                return intent
+        return None
 
     @classmethod
     def _pending_priority(cls, task, requested):
