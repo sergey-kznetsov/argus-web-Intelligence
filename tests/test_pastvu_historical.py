@@ -59,7 +59,12 @@ class _Geocoder:
         return {"provider": "test-geocoder", "status": "ok"}
 
 
-def _request(*, point: Point | None = None) -> CollectionRequest:
+def _request(
+    *,
+    point: Point | None = None,
+    intents: list[str] | None = None,
+    radius_meters: int | None = None,
+) -> CollectionRequest:
     return CollectionRequest(
         consumer="historical-test",
         analysis_id="historical-test",
@@ -67,8 +72,9 @@ def _request(*, point: Point | None = None) -> CollectionRequest:
             "city": "Пермь",
             "address": "Комсомольский проспект, 27",
             "point": point.model_dump(mode="json") if point else None,
+            "radius_meters": radius_meters,
         },
-        intents=["historical_images"],
+        intents=intents or ["historical_images"],
     )
 
 
@@ -82,6 +88,20 @@ def _response(payload: object) -> FetchResult:
         text=text,
         body=text.encode("utf-8"),
     )
+
+
+def _photo_payload(**overrides: object) -> dict[str, object]:
+    photo: dict[str, object] = {
+        "cid": 123456,
+        "title": "Комсомольский проспект",
+        "year": 1964,
+        "year2": 1965,
+        "geo": [58.0097, 56.2394],
+        "distance": None,
+        "file": "00/11/22/example.jpg",
+    }
+    photo.update(overrides)
+    return {"result": {"photos": [photo]}}
 
 
 @pytest.mark.asyncio
@@ -108,6 +128,7 @@ async def test_discover_uses_official_nearest_photo_api_with_existing_point():
     assert params["limit"] == 20
     assert isinstance(params["year2"], int)
     assert task.metadata["source_declared_historical_media"] is True
+    assert task.metadata["research_goals"] == ["historical_images"]
 
 
 @pytest.mark.asyncio
@@ -131,23 +152,24 @@ async def test_discover_without_point_or_geocoder_falls_back_cleanly():
 
 
 @pytest.mark.asyncio
+async def test_context_only_request_can_use_source_declared_pastvu_metadata():
+    adapter = PastVuHistoricalAdapter(_Fast(), _Snapshots())
+    request = _request(
+        point=Point(latitude=58.009636, longitude=56.239332),
+        intents=["historical_context"],
+    )
+
+    tasks = await adapter.discover(request)
+
+    assert len(tasks) == 1
+    assert tasks[0].goal == "historical_context"
+    assert tasks[0].metadata["research_goals"] == ["historical_context"]
+
+
+@pytest.mark.asyncio
 async def test_extract_emits_source_backed_historical_image_evidence():
     snapshots = _Snapshots()
-    payload = {
-        "result": {
-            "photos": [
-                {
-                    "cid": 123456,
-                    "title": "Комсомольский проспект",
-                    "year": 1964,
-                    "year2": 1965,
-                    "geo": [58.0097, 56.2394],
-                    "distance": 42.5,
-                    "file": "00/11/22/example.jpg",
-                }
-            ]
-        }
-    }
+    payload = _photo_payload(distance=42.5)
     adapter = PastVuHistoricalAdapter(_Fast(_response(payload)), snapshots)
     request = _request(point=Point(latitude=58.009636, longitude=56.239332))
     task = (await adapter.discover(request))[0]
@@ -175,13 +197,89 @@ async def test_extract_emits_source_backed_historical_image_evidence():
     assert observation.data["year"] == 1964
     assert observation.data["year2"] == 1965
     assert observation.quality["historical_image"] is True
+    assert observation.quality["historical_context_qualified"] is False
+    assert "historical_context" not in observation.quality["intent_evidence"]
     assert observation.provenance["historical_image"] is True
     assert observation.provenance["model_output_is_evidence"] is False
     assert result.evidence[0].metadata["source_declared"] is True
+    assert result.evidence[0].metadata["supported_intents"] == ["historical_images"]
     assert snapshots.calls
 
     coverage = IntentCoverageEvaluator().counts([observation], request=request)
     assert coverage["historical_images"] == 1
+    assert coverage.get("historical_context", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_dated_described_nearby_photo_supports_historical_context():
+    snapshots = _Snapshots()
+    payload = _photo_payload()
+    adapter = PastVuHistoricalAdapter(_Fast(_response(payload)), snapshots)
+    request = _request(
+        point=Point(latitude=58.009636, longitude=56.239332),
+        intents=["historical_context", "historical_images"],
+    )
+    task = (await adapter.discover(request))[0]
+    task.metadata["collection_id"] = "collection-context"
+
+    result = await adapter.extract(task, _response(payload), request)
+
+    observation = result.observations[0]
+    assert observation.quality["intent_evidence"] == {
+        "historical_images": True,
+        "historical_context": True,
+    }
+    context = observation.provenance["historical_context"]
+    assert context["version"] == "pastvu-historical-context/1"
+    assert context["source_declared_title"] == "Комсомольский проспект"
+    assert context["source_declared_year"] == 1964
+    assert context["within_research_radius"] is True
+    assert 0 <= context["computed_distance_meters"] <= 1000
+    assert context["navigation_geocoding_is_evidence"] is False
+    assert context["model_output_is_evidence"] is False
+    assert result.evidence[0].metadata["supported_intents"] == [
+        "historical_images",
+        "historical_context",
+    ]
+    assert result.evidence[0].metadata["historical_context"] == context
+
+    coverage = IntentCoverageEvaluator().counts([observation], request=request)
+    assert coverage["historical_images"] == 1
+    assert coverage["historical_context"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"year": None},
+        {"title": "Без названия"},
+        {"geo": [58.1097, 56.2394]},
+    ],
+)
+async def test_incomplete_or_out_of_radius_photo_does_not_fake_historical_context(
+    overrides: dict[str, object],
+):
+    payload = _photo_payload(**overrides)
+    adapter = PastVuHistoricalAdapter(_Fast(_response(payload)), _Snapshots())
+    request = _request(
+        point=Point(latitude=58.009636, longitude=56.239332),
+        intents=["historical_context", "historical_images"],
+        radius_meters=1000,
+    )
+    task = (await adapter.discover(request))[0]
+    task.metadata["collection_id"] = "collection-negative"
+
+    result = await adapter.extract(task, _response(payload), request)
+
+    observation = result.observations[0]
+    assert observation.quality["historical_images"] is True
+    assert observation.quality["historical_context_qualified"] is False
+    assert "historical_context" not in observation.quality["intent_evidence"]
+    assert "historical_context" not in observation.provenance
+    coverage = IntentCoverageEvaluator().counts([observation], request=request)
+    assert coverage["historical_images"] == 1
+    assert coverage.get("historical_context", 0) == 0
 
 
 @pytest.mark.asyncio

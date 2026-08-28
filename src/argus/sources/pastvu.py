@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode, urlsplit
@@ -29,21 +30,39 @@ class PastVuHistoricalAdapter:
     uses that API directly instead of relying on search-engine snippets. Address geocoding is
     optional; when no point can be resolved, the adapter emits no direct task and ordinary
     ARGUS discovery remains available as a fallback.
+
+    A PastVu image can additionally support ``historical_context`` only when the source itself
+    declares a meaningful title, a historical year and coordinates that ARGUS independently
+    verifies are inside the requested research radius. The image reference alone is never
+    enough to establish historical context.
     """
 
     source_id = "pastvu_historical"
-    intents = {"historical_images"}
+    intents = {"historical_context", "historical_images"}
     api_host = "api.pastvu.com"
     api_endpoint = "https://api.pastvu.com/api2"
     item_origin = "https://pastvu.com"
     image_origin = "https://img.pastvu.com"
     api_method = "photo.giveNearestPhotos"
-    extractor_version = "pastvu-nearest-photos/1"
+    extractor_version = "pastvu-nearest-photos/2"
+    historical_context_evidence_version = "pastvu-historical-context/1"
     max_items = 30
     default_items = 20
     default_distance_meters = 1_000
     max_distance_meters = 10_000
     historical_min_age_years = 5
+    _GENERIC_TITLES = frozenset(
+        {
+            "без названия",
+            "без названия.",
+            "фото",
+            "фотография",
+            "no title",
+            "photo",
+            "photograph",
+            "untitled",
+        }
+    )
 
     def __init__(
         self,
@@ -57,7 +76,12 @@ class PastVuHistoricalAdapter:
         self.geocoder = geocoder
 
     async def discover(self, request: CollectionRequest) -> list[SourceTask]:
-        if "historical_images" not in request.intents:
+        requested_goals = [
+            intent
+            for intent in ("historical_context", "historical_images")
+            if intent in request.intents
+        ]
+        if not requested_goals:
             return []
 
         point = request.territory.point
@@ -92,16 +116,21 @@ class PastVuHistoricalAdapter:
             "pastvu_distance_meters": distance,
             "pastvu_year2": year2,
             "pastvu_limit": self.default_items,
-            "research_goals": ["historical_images"],
+            "research_goals": requested_goals,
             "source_owned_navigation": True,
             "source_declared_historical_media": True,
         }
         if geocoding is not None:
             metadata["geocoding"] = geocoding
+        primary_goal = (
+            "historical_context"
+            if "historical_context" in requested_goals
+            else "historical_images"
+        )
         return [
             SourceTask(
                 source_id=self.source_id,
-                goal="historical_images",
+                goal=primary_goal,
                 url=url,
                 metadata=metadata,
                 task_key=(
@@ -232,6 +261,13 @@ class PastVuHistoricalAdapter:
             "api_endpoint": self.api_endpoint,
             "api_method": self.api_method,
             "historical_images": True,
+            "historical_context": {
+                "version": self.historical_context_evidence_version,
+                "requires_source_title": True,
+                "requires_source_year": True,
+                "requires_source_geo_inside_research_radius": True,
+                "image_reference_alone_is_context": False,
+            },
             "source_declared_only": True,
             "model_output_is_evidence": False,
             "max_items": self.max_items,
@@ -385,6 +421,19 @@ class PastVuHistoricalAdapter:
         geocoding = task.metadata.get("geocoding")
         if isinstance(geocoding, dict):
             provenance["geocoding"] = geocoding
+
+        intent_evidence: dict[str, bool] = {"historical_images": True}
+        supported_intents = ["historical_images"]
+        historical_context = self._historical_context_metadata(
+            photo,
+            request=request,
+            task=task,
+        )
+        if historical_context is not None:
+            intent_evidence["historical_context"] = True
+            supported_intents.append("historical_context")
+            provenance["historical_context"] = historical_context
+
         observation = Observation(
             observation_id=observation_id,
             collection_id=collection_id,
@@ -410,9 +459,20 @@ class PastVuHistoricalAdapter:
                 "source_declared_image": True,
                 "historical_image": True,
                 "image_binary_retrieved": False,
-                "intent_evidence": {"historical_images": True},
+                "intent_evidence": intent_evidence,
+                "historical_context_qualified": historical_context is not None,
             },
         )
+        evidence_metadata: dict[str, object] = {
+            "intent": "historical_images",
+            "supported_intents": supported_intents,
+            "source_declared": True,
+            "historical_image": True,
+            "snapshot_id": snapshot_id,
+            "api_url": api_url,
+        }
+        if historical_context is not None:
+            evidence_metadata["historical_context"] = historical_context
         evidence = Evidence(
             evidence_id=stable_evidence_id(
                 observation_id=observation_id,
@@ -429,15 +489,88 @@ class PastVuHistoricalAdapter:
                 collected_at=observation.collected_at,
                 source_id=self.source_id,
             ),
-            metadata={
-                "intent": "historical_images",
-                "source_declared": True,
-                "historical_image": True,
-                "snapshot_id": snapshot_id,
-                "api_url": api_url,
-            },
+            metadata=evidence_metadata,
         )
         return observation, evidence
+
+    def _historical_context_metadata(
+        self,
+        photo: dict[str, Any],
+        *,
+        request: CollectionRequest,
+        task: SourceTask,
+    ) -> dict[str, object] | None:
+        if "historical_context" not in request.intents:
+            return None
+        title = photo.get("title")
+        year = photo.get("year")
+        geo = photo.get("geo")
+        if not self._meaningful_historical_title(title):
+            return None
+        if not isinstance(year, int) or not isinstance(geo, Point):
+            return None
+
+        query_point = self._task_query_point(task)
+        if query_point is None:
+            return None
+        try:
+            max_distance = float(task.metadata.get("pastvu_distance_meters") or 0)
+        except (TypeError, ValueError):
+            return None
+        if max_distance <= 0:
+            return None
+
+        computed_distance = self._point_distance_meters(query_point, geo)
+        if computed_distance > max_distance:
+            return None
+        return {
+            "version": self.historical_context_evidence_version,
+            "source_declared_title": str(title),
+            "source_declared_year": year,
+            "source_declared_year2": photo.get("year2"),
+            "source_declared_geo": geo.model_dump(mode="json"),
+            "research_point": query_point.model_dump(mode="json"),
+            "computed_distance_meters": round(computed_distance, 1),
+            "max_distance_meters": max_distance,
+            "within_research_radius": True,
+            "qualification": "title+year+geo_inside_research_radius",
+            "navigation_geocoding_is_evidence": False,
+            "model_output_is_evidence": False,
+        }
+
+    @classmethod
+    def _meaningful_historical_title(cls, value: object) -> bool:
+        if not isinstance(value, str):
+            return False
+        normalized = " ".join(value.split()).strip()
+        if len(normalized) < 3:
+            return False
+        return normalized.casefold() not in cls._GENERIC_TITLES
+
+    @staticmethod
+    def _task_query_point(task: SourceTask) -> Point | None:
+        raw = task.metadata.get("pastvu_query_point")
+        if isinstance(raw, Point):
+            return raw
+        if not isinstance(raw, dict):
+            return None
+        try:
+            return Point.model_validate(raw)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _point_distance_meters(left: Point, right: Point) -> float:
+        earth_radius_meters = 6_371_008.8
+        lat1 = math.radians(left.latitude)
+        lat2 = math.radians(right.latitude)
+        delta_lat = lat2 - lat1
+        delta_lon = math.radians(right.longitude - left.longitude)
+        value = (
+            math.sin(delta_lat / 2) ** 2
+            + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lon / 2) ** 2
+        )
+        return earth_radius_meters * 2 * math.asin(min(1.0, math.sqrt(value)))
 
     @staticmethod
     def _display_text(photo: dict[str, Any]) -> str:
