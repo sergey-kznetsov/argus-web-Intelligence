@@ -35,10 +35,27 @@ async def test_russian_intents_generate_useful_search_terms():
     plan = await HeuristicResearchPlanner().plan(request)
     joined = " ".join(plan.queries)
 
-    assert '"Ижевск, Пушкинская, 277" отзывы' in plan.queries
+    assert "Ижевск, Пушкинская, 277 отзывы" in plan.queries
     assert "новости" in joined
     assert "происшествия" in joined
     assert "обсуждение форум" in joined
+
+
+@pytest.mark.asyncio
+async def test_public_mentions_address_is_not_forced_into_exact_phrase():
+    request = CollectionRequest(
+        consumer="test",
+        analysis_id="address-discovery",
+        territory={"city": "Ижевск", "address": "Ижевск, Пушкинская, 277"},
+        intents=["public_mentions"],
+    )
+    plan = await HeuristicResearchPlanner().plan(request)
+
+    assert plan.queries == [
+        "Ижевск, Пушкинская, 277",
+        "Ижевск, Пушкинская, 277 упоминания",
+    ]
+    assert all(not query.startswith('"') for query in plan.queries)
 
 
 @pytest.mark.asyncio
@@ -52,8 +69,8 @@ async def test_explicit_english_language_uses_english_terms():
     )
     plan = await HeuristicResearchPlanner().plan(request)
 
-    assert '"Helsinki" reviews' in plan.queries
-    assert '"Helsinki" incidents' in plan.queries
+    assert "Helsinki reviews" in plan.queries
+    assert "Helsinki incidents" in plan.queries
 
 
 @pytest.mark.asyncio
@@ -67,10 +84,10 @@ async def test_query_budget_covers_each_intent_before_secondary_variants():
     plan = await HeuristicResearchPlanner(max_queries=4).plan(request)
 
     assert plan.queries == [
-        '"Ижевск" отзывы',
-        '"Ижевск"',
-        '"Ижевск" новости',
-        '"Ижевск" происшествия',
+        "Ижевск отзывы",
+        "Ижевск",
+        "Ижевск новости",
+        "Ижевск происшествия",
     ]
 
 
@@ -85,10 +102,10 @@ async def test_curated_map_queries_use_only_budget_after_primary_intent_coverage
     plan = await HeuristicResearchPlanner(max_queries=7).plan(request)
 
     assert plan.queries[:4] == [
-        '"Ижевск" отзывы',
-        '"Ижевск" новости',
-        '"Ижевск" происшествия',
-        '"Ижевск" обсуждение форум',
+        "Ижевск отзывы",
+        "Ижевск новости",
+        "Ижевск происшествия",
+        "Ижевск обсуждение форум",
     ]
     assert plan.queries[4].startswith('site:yandex.ru/maps "Ижевск"')
     assert plan.queries[5].startswith('site:2gis.ru "Ижевск"')
@@ -106,7 +123,7 @@ async def test_duplicate_primary_query_does_not_hide_later_unique_round():
     )
     plan = await HeuristicResearchPlanner(max_queries=2).plan(request)
 
-    assert plan.queries == ['"Ижевск"', '"Ижевск" упоминания']
+    assert plan.queries == ["Ижевск", "Ижевск упоминания"]
 
 
 @pytest.mark.asyncio
