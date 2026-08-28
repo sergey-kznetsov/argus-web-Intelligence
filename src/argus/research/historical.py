@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from argus.contracts.models import CollectionRequest, Observation
+from argus.research.historical_relevance import HistoricalTerritoryRelevanceEvaluator
 
 
 class HistoricalBranchPlanner:
@@ -11,9 +12,11 @@ class HistoricalBranchPlanner:
     The planner never turns inferred entities into facts. It only uses conservative
     labels from source observations to seed another normal discovery/fetch/evidence
     cycle. Derived historical comparison rows are deliberately excluded so the
-    history layer cannot recursively research its own output.
+    history layer cannot recursively research its own output. New entity anchors must
+    also be backed by an observation that independently matches the requested territory.
     """
 
+    anchor_relevance_version = "historical-branch-anchor-relevance/1"
     _DATA_KEYS = ("name", "former_name", "old_name", "operator", "brand")
     _NON_ENTITY_SOURCE_KINDS = {
         "archive_capture_index",
@@ -25,9 +28,12 @@ class HistoricalBranchPlanner:
         self,
         max_queries_per_expansion: int = 3,
         max_total_queries: int = 12,
+        *,
+        territory_relevance: HistoricalTerritoryRelevanceEvaluator | None = None,
     ) -> None:
         self.max_queries_per_expansion = max(1, max_queries_per_expansion)
         self.max_total_queries = max(self.max_queries_per_expansion, max_total_queries)
+        self.territory_relevance = territory_relevance or HistoricalTerritoryRelevanceEvaluator()
 
     def expand(
         self,
@@ -57,7 +63,7 @@ class HistoricalBranchPlanner:
 
         queries: list[str] = []
         local_seen = set(seen_queries)
-        for entity in self._entities(observations, territory):
+        for entity in self._entities(request, observations, territory):
             for query in self._queries(entity, territory, language):
                 if query in local_seen:
                     continue
@@ -67,12 +73,19 @@ class HistoricalBranchPlanner:
                     return queries
         return queries
 
-    def _entities(self, observations: Iterable[Observation], territory: str) -> list[str]:
+    def _entities(
+        self,
+        request: CollectionRequest,
+        observations: Iterable[Observation],
+        territory: str,
+    ) -> list[str]:
         entities: list[str] = []
         seen: set[str] = set()
         territory_key = territory.casefold().strip()
         for observation in observations:
             if observation.source_kind in self._NON_ENTITY_SOURCE_KINDS:
+                continue
+            if not self.territory_relevance.evaluate(request, observation).matched:
                 continue
             candidates: list[object] = [observation.title]
             candidates.extend(observation.data.get(key) for key in self._DATA_KEYS)

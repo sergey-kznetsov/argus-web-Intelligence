@@ -37,7 +37,13 @@ class HistoricalSeedAdapter:
 
     async def extract(self, task, fetched, request):
         del fetched
-        text = "Дом купца Иванова"
+        entity = "Дом купца Иванова"
+        territory = ", ".join(
+            value
+            for value in (request.territory.city, request.territory.address)
+            if value
+        )
+        text = f"{territory}. {entity}" if territory else entity
         return SourceResult(
             observations=[
                 Observation(
@@ -48,7 +54,7 @@ class HistoricalSeedAdapter:
                     source_kind="historical_test",
                     url=task.url,
                     entity_type="document",
-                    title=text,
+                    title=entity,
                     text=text,
                     content_hash=sha256_text(text),
                 )
