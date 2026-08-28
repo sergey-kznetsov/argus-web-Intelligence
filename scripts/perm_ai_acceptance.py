@@ -167,8 +167,14 @@ def _acceptance_failures(overview: list[dict[str, object]]) -> list[str]:
                     "janus: required residential intents are not factually covered: "
                     + ", ".join(missing)
                 )
-        elif profile == "historical" and "historical_context" not in covered:
-            failures.append("historical: historical_context is not factually covered")
+        elif profile == "historical":
+            required = {"historical_context", "historical_images", "public_mentions"}
+            missing = sorted(required - covered)
+            if missing:
+                failures.append(
+                    "historical: required intents are not factually covered: "
+                    + ", ".join(missing)
+                )
     return failures
 
 
