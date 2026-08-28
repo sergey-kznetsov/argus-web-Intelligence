@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import urlencode
 
 from argus.contracts.models import CollectionRequest, Observation
 from argus.research.followup import FollowupPlan, FollowupResearchPlanner
@@ -35,14 +34,14 @@ MINGKH_RESIDENTIAL_SOURCE = ResidentialSourceProfile(
 class MingkhResidentialSourceResearchPlanner:
     """Build deterministic discovery/navigation for residential building facts.
 
-    These intents have one mandatory factual source. ARGUS first creates a direct public
-    ``dom.mingkh.ru`` house-search task from the current building address. Search engines
-    remain a navigation aid for locating a public house detail page; their snippets never
-    become Evidence. Without a building address this source planner fails closed instead of
-    selecting an arbitrary house from a city-level result set.
+    These intents have one mandatory factual source. ARGUS enters the source through its
+    public ``robots.txt`` and declared sitemap, then routes relevant same-domain pages to the
+    dedicated residential adapter. Search engines remain a secondary navigation aid; their
+    snippets never become Evidence. Without a building address this source planner fails
+    closed instead of selecting an arbitrary house from a city-level result set.
     """
 
-    version = "mingkh-residential-sources/4"
+    version = "mingkh-residential-sources/5"
     supported_intents = RESIDENTIAL_INTENTS
     source = MINGKH_RESIDENTIAL_SOURCE
 
@@ -50,16 +49,20 @@ class MingkhResidentialSourceResearchPlanner:
         requested = self.supported_intents.intersection(request.intents)
         if not requested:
             return []
-        search_text = self._house_search_text(request)
-        if not search_text:
+        if not self._house_search_text(request):
             return []
-        query = urlencode({"address": search_text, "searchtype": "house"})
+        origin = f"https://{self.source.domain_scope}"
         return [
             SourceTask(
-                source_id=self.source.source_id,
+                source_id="site_discovery",
                 goal=sorted(requested)[0],
-                url=f"https://{self.source.domain_scope}/search?{query}",
+                url=f"{origin}/robots.txt",
+                task_key=f"site_discovery:robots:{origin}",
                 metadata={
+                    "site_discovery_kind": "robots",
+                    "root_host": self.source.domain_scope,
+                    "root_origin": origin,
+                    "site_discovery_target_source_id": self.source.source_id,
                     "research_goals": sorted(requested),
                     "allowed_domains": [self.source.domain_scope],
                     "research_input_candidates": research_input_candidates(request),
@@ -67,6 +70,8 @@ class MingkhResidentialSourceResearchPlanner:
                     "research_input_candidates_are_evidence": False,
                     "research_input_scope": "territory_context",
                     "dedicated_source_direct_entry": True,
+                    "dedicated_source_navigation": "robots_sitemap",
+                    "source_policy": "mandatory_single_factual_source",
                 },
             )
         ]
@@ -101,7 +106,7 @@ class MingkhResidentialSourceResearchPlanner:
             "mandatory_for_intents": sorted(self.supported_intents),
             "fallback_sources": False,
             "building_address_required": True,
-            "direct_entry": "/search?address=...&searchtype=house",
+            "direct_entry": "/robots.txt -> declared sitemap -> same-domain page",
         }
 
     @staticmethod
@@ -123,9 +128,9 @@ class CuratedResidentialResearchPlanner:
     """Keep residential intents on their mandatory source without consumer branching.
 
     Non-residential intents are delegated to the normal ARGUS planner. Residential requests
-    with a building address receive a direct ``dom.mingkh.ru`` source task. Search-engine
-    queries are retained only as a navigation aid. Mixed requests preserve normal research
-    for the other intents while residential facts remain source-specific.
+    with a building address receive a source-owned robots/sitemap navigation task. Search-
+    engine queries are retained only as a secondary navigation aid. Mixed requests preserve
+    normal research for the other intents while residential facts remain source-specific.
     """
 
     def __init__(
@@ -164,6 +169,7 @@ class CuratedResidentialResearchPlanner:
                 f"{self.source_planner.source.source_id};"
                 f"version={self.source_planner.version};"
                 f"direct_entry={str(bool(source_tasks)).lower()};"
+                "navigation=robots_sitemap;"
                 "building_address_required=true;fallback_sources=false"
             ),
         ]
@@ -249,6 +255,8 @@ class CuratedResidentialFollowupResearchPlanner:
 
 
 def _merge_queries(primary: list[str], secondary: list[str], *, limit: int) -> list[str]:
+    if limit <= 0:
+        return []
     result: list[str] = []
     seen: set[str] = set()
     for raw in [*primary, *secondary]:
@@ -258,6 +266,6 @@ def _merge_queries(primary: list[str], secondary: list[str], *, limit: int) -> l
             continue
         seen.add(key)
         result.append(value)
-        if len(result) >= max(0, int(limit)):
+        if len(result) >= int(limit):
             break
     return result
