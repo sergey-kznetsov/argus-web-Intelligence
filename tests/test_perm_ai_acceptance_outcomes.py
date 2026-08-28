@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import pytest
+
 from scripts.perm_ai_acceptance import (
     _acceptance_failures,
     _mandatory_janus_source_blocked,
 )
 
 
-def test_explicit_mingkh_challenge_is_handled_source_block_not_code_failure():
-    error_details = [
-        {"code": "MINGKH_ACCESS_CHALLENGE", "source_id": "mingkh_residential"}
-    ]
+@pytest.mark.parametrize(
+    ("code", "source_id"),
+    [
+        ("MINGKH_ACCESS_CHALLENGE", "mingkh_residential"),
+        ("SOURCE_ROBOTS_ACCESS_BLOCKED", "site_discovery"),
+        ("SOURCE_ROBOTS_UNREACHABLE", "site_discovery"),
+    ],
+)
+def test_explicit_mandatory_source_block_is_handled_not_code_failure(
+    code: str,
+    source_id: str,
+):
+    error_details = [{"code": code, "source_id": source_id}]
     assert _mandatory_janus_source_blocked(
         profile_id="janus",
         status="blocked",
