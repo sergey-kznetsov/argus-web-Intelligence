@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from math import asin, cos, radians, sin, sqrt
 import re
+from urllib.parse import unquote, urlsplit
 
 from argus.contracts.models import CollectionRequest, Observation, Point
 
@@ -25,6 +26,7 @@ class TerritoryRelevanceEvaluator:
     """
 
     version = "territory-relevance/4"
+    navigation_ranking_version = "territory-url-ranking/1"
     point_tolerance_meters = 250
     max_address_anchor_distance_tokens = 8
     max_data_chars = 30_000
@@ -176,6 +178,55 @@ class TerritoryRelevanceEvaluator:
             return TerritoryRelevanceResult(False, "source_geo_missing")
         return TerritoryRelevanceResult(False, "territory_anchor_missing")
 
+    def navigation_url_score(self, url: str, request: CollectionRequest) -> float:
+        """Score a URL only for navigation ordering; the score is never factual evidence.
+
+        City matching dominates street/house hints so ``/permskiy-kray/perm/...`` outranks
+        an unrelated ``/altayskiy-kray/komsomolskiy/...`` page for a Perm request. A bounded
+        Latin prefix match handles common region slugs such as ``perm`` -> ``permskiy``.
+        """
+
+        path = unquote(urlsplit(str(url)).path).casefold()
+        url_tokens = [
+            token
+            for token in re.findall(r"[a-zа-яё0-9]+", path, flags=re.UNICODE)
+            if token
+        ]
+        if not url_tokens:
+            return 0.0
+
+        city_tokens = self.territory_tokens(request.territory.city or "")
+        city_aliases = self._navigation_aliases(city_tokens)
+
+        address_tokens = self.territory_tokens(request.territory.address or "")
+        city_set = set(city_tokens)
+        address_tokens = [token for token in address_tokens if token not in city_set]
+        number_tokens = [token for token in address_tokens if self._is_address_number(token)]
+        lexical_tokens = [token for token in address_tokens if token not in number_tokens]
+        address_aliases = self._navigation_aliases(lexical_tokens)
+
+        city_matches = self._navigation_match_count(city_aliases, url_tokens, prefix=True)
+        address_matches = self._navigation_match_count(address_aliases, url_tokens, prefix=True)
+        number_matches = self._navigation_match_count(number_tokens, url_tokens, prefix=False)
+
+        score = float(city_matches * 200 + address_matches * 40)
+        if city_matches:
+            score += 300.0
+        if city_matches and address_matches:
+            score += 200.0
+        if city_matches and address_matches and number_matches:
+            score += 100.0
+        elif number_matches and (city_matches or address_matches):
+            score += 10.0
+        elif number_matches:
+            # A bare house number must never outweigh the requested city/street.
+            score += 1.0
+
+        if city_matches or address_matches:
+            segment_count = len([segment for segment in path.split("/") if segment])
+            score += float(max(0, 4 - min(segment_count, 4)) * 5)
+        return score
+
     def observation_text(self, observation: Observation) -> str:
         parts = [observation.title or "", observation.text or ""]
         try:
@@ -237,6 +288,33 @@ class TerritoryRelevanceEvaluator:
                 seen.add(value)
                 result.append(value)
         return result
+
+    def _navigation_aliases(self, tokens: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in [*tokens, *self.latin_address_aliases(tokens)]:
+            normalized = value.casefold().strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+        return result
+
+    @staticmethod
+    def _navigation_match_count(
+        anchors: list[str],
+        url_tokens: list[str],
+        *,
+        prefix: bool,
+    ) -> int:
+        matched = 0
+        for anchor in anchors:
+            if any(token == anchor for token in url_tokens):
+                matched += 1
+                continue
+            if prefix and len(anchor) >= 4 and any(token.startswith(anchor) for token in url_tokens):
+                matched += 1
+        return matched
 
     def _nearby_address_anchors(
         self,
