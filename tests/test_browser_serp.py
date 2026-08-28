@@ -1,21 +1,22 @@
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest
-from argus.research.browser_serp import DuckDuckGoBrowserDiscoveryProvider
+from argus.research.browser_serp import DuckDuckGoFastDiscoveryProvider
 from argus.research.discovery import DiscoveryBlockedError
 
 
-class FakeBrowser:
+class FakeFast:
     def __init__(self, html: str, *, blocked: bool = False) -> None:
         self.html = html
         self.blocked = blocked
-        self.calls = []
+        self.calls: list[str] = []
 
-    async def fetch(self, url, recipe=None):
-        self.calls.append((url, recipe))
+    async def fetch(self, url: str):
+        self.calls.append(url)
         return SimpleNamespace(text=self.html, blocked=self.blocked)
 
 
@@ -29,7 +30,7 @@ def request():
 
 
 @pytest.mark.asyncio
-async def test_browser_serp_extracts_destination_urls_only():
+async def test_fast_serp_extracts_destination_urls_only():
     html = """
     <html><body>
       <a href="/l/?uddg=https%3A%2F%2Fexample.com%2Fa">Example A</a>
@@ -38,10 +39,10 @@ async def test_browser_serp_extracts_destination_urls_only():
       <a href="/l/?uddg=https%3A%2F%2Fexample.com%2Fa">Duplicate</a>
     </body></html>
     """
-    browser = FakeBrowser(html)
-    provider = DuckDuckGoBrowserDiscoveryProvider(
+    fast = FakeFast(html)
+    provider = DuckDuckGoFastDiscoveryProvider(
         Settings(browser_serp_max_results_per_query=5),
-        browser,
+        fast,
     )
     hits = await provider.discover(["Ижевск отзывы"], request())
     assert [hit.url for hit in hits] == [
@@ -49,16 +50,16 @@ async def test_browser_serp_extracts_destination_urls_only():
         "https://docs.python.org/3/",
     ]
     assert all(hit.query == "Ижевск отзывы" for hit in hits)
-    _, recipe = browser.calls[0]
-    assert recipe.steps[0].selector == 'input[name="q"]'
-    assert recipe.steps[0].value == "Ижевск отзывы"
+    assert all(hit.provider == "duckduckgo_fast" for hit in hits)
+    query = parse_qs(urlsplit(fast.calls[0]).query)
+    assert query["q"] == ["Ижевск отзывы"]
 
 
 @pytest.mark.asyncio
-async def test_browser_serp_reports_antibot_as_blocked():
-    browser = FakeBrowser(
+async def test_fast_serp_reports_antibot_as_blocked():
+    fast = FakeFast(
         "<html><body>Unfortunately, bots use DuckDuckGo too.</body></html>"
     )
-    provider = DuckDuckGoBrowserDiscoveryProvider(Settings(), browser)
+    provider = DuckDuckGoFastDiscoveryProvider(Settings(), fast)
     with pytest.raises(DiscoveryBlockedError):
         await provider.discover(["query"], request())
