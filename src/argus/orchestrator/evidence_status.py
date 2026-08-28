@@ -14,7 +14,7 @@ class EvidenceStatusAdaptiveResearchOrchestrator(AdaptiveResearchAtomicCollectio
 
     coverage_status_version = "evidence-aware-terminal-status/1"
     research_supervision_version = "factual-gap-supervision/1"
-    research_queue_priority_version = "research-queue-priority/3"
+    research_queue_priority_version = "research-queue-priority/4"
     production_source_task_timeout_seconds = 45.0
     research_expansion_timeout_seconds = 20.0
     research_supervisor_timeout_seconds = 5.0
@@ -385,45 +385,43 @@ class EvidenceStatusAdaptiveResearchOrchestrator(AdaptiveResearchAtomicCollectio
         }
 
     def _prioritize_pending(self, record, pending) -> None:
-        """Prefer currently uncovered factual goals and defer support-only site discovery."""
+        """Use shared round-robin fairness with evidence-aware source priorities.
 
-        if not pending:
-            return
-        supervisor = record.checkpoint.get("research_supervisor")
-        priority_intents = (
-            supervisor.get("priority_intents", []) if isinstance(supervisor, dict) else []
-        )
-        requested = {
-            str(intent).strip().casefold()
-            for intent in (priority_intents or record.request.intents)
-            if str(intent).strip()
-        }
-        pending.sort(key=lambda item: self._pending_priority(item, requested))
-        record.checkpoint = {
-            **record.checkpoint,
-            "research_queue_priority_version": self.research_queue_priority_version,
-            "research_queue_candidate_count": len(pending),
-            "research_queue_next": [
-                {
-                    "source_id": item.source_id,
-                    "goal": item.goal,
-                    "depth": item.depth,
-                    "focused_branch": self._focused_branch(item),
-                }
-                for item in pending[:5]
-            ],
-        }
+        The adaptive orchestrator owns the queue algorithm. This production layer only
+        refines the priority of support-only sitemap work via ``_pending_priority`` below;
+        it must not replace the shared fairness implementation with a legacy plain sort.
+        """
+
+        super()._prioritize_pending(record, pending)
 
     @classmethod
     def _pending_priority(cls, task, requested):
         base = super()._pending_priority(task, requested)
-        if task.source_id == "site_discovery" and cls._focused_branch(task) is None:
+        if (
+            task.source_id == "site_discovery"
+            and cls._focused_branch(task) is None
+            and not cls._is_source_owned_navigation(task)
+        ):
             return (10, *base[1:])
         return base
 
+    @classmethod
+    def _factual_pending_count(cls, pending) -> int:
+        return sum(
+            1
+            for item in pending
+            if item.source_id != "site_discovery" or cls._is_source_owned_navigation(item)
+        )
+
     @staticmethod
-    def _factual_pending_count(pending) -> int:
-        return sum(1 for item in pending if item.source_id != "site_discovery")
+    def _is_source_owned_navigation(task) -> bool:
+        if task.source_id != "site_discovery":
+            return False
+        metadata = task.metadata
+        if metadata.get("source_owned_navigation") is not True:
+            return False
+        target = str(metadata.get("site_discovery_target_source_id") or "").strip()
+        return bool(target and target != "site_discovery")
 
     @staticmethod
     def _seen_research_queries(record) -> set[str]:
