@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import zlib
-from urllib.parse import urldefrag, unquote, urljoin, urlsplit
+from urllib.parse import urldefrag, urljoin, urlsplit
 from xml.etree.ElementTree import Element, ParseError
 
 from defusedxml import ElementTree as DefusedET
@@ -99,6 +99,7 @@ class SitemapDiscoveryAdapter:
             "gzip_max_uncompressed_bytes": self.settings.max_response_bytes,
             "dedicated_source_routing": True,
             "territory_transliteration_ranking": True,
+            "territory_navigation_ranking": self.territory_relevance.navigation_ranking_version,
         }
 
     def _robots_tasks(
@@ -296,6 +297,7 @@ class SitemapDiscoveryAdapter:
                 metadata=self._downstream_metadata(
                     task,
                     request,
+                    url=url,
                     collection_id=collection_id,
                     rank=rank,
                 ),
@@ -307,27 +309,9 @@ class SitemapDiscoveryAdapter:
         ]
 
     def _rank_urls(self, urls: list[str], request: CollectionRequest) -> list[str]:
-        weighted_tokens: dict[str, int] = {}
-
-        def add_tokens(value: str, weight: int) -> None:
-            tokens = self.territory_relevance.territory_tokens(value)
-            lexical = [token for token in tokens if not token[:1].isdigit()]
-            aliases = self.territory_relevance.latin_address_aliases(lexical)
-            for token in [*tokens, *aliases]:
-                current = weighted_tokens.get(token, 0)
-                weighted_tokens[token] = max(current, weight if not token[:1].isdigit() else 1)
-
-        add_tokens(request.territory.city or "", 4)
-        add_tokens(request.territory.address or "", 5)
-        for intent in request.intents:
-            for token in re.findall(r"[a-z0-9_]{3,}", intent.casefold()):
-                weighted_tokens[token] = max(weighted_tokens.get(token, 0), 1)
-
-        def score(item: tuple[int, str]) -> tuple[int, int]:
+        def score(item: tuple[int, str]) -> tuple[float, int]:
             index, url = item
-            haystack = unquote(urlsplit(url).path + "?" + urlsplit(url).query).casefold()
-            url_tokens = set(re.findall(r"[a-zа-яё0-9]+", haystack, flags=re.UNICODE))
-            relevance = sum(weight for token, weight in weighted_tokens.items() if token in url_tokens)
+            relevance = self.territory_relevance.navigation_url_score(url, request)
             return (-relevance, index)
 
         return [url for _, url in sorted(enumerate(urls), key=score)]
@@ -337,6 +321,7 @@ class SitemapDiscoveryAdapter:
         task: SourceTask,
         request: CollectionRequest,
         *,
+        url: str,
         collection_id: str,
         rank: int,
     ) -> dict[str, object]:
@@ -349,6 +334,10 @@ class SitemapDiscoveryAdapter:
             "collection_id": collection_id,
             "discovery_provider": "sitemap",
             "discovery_rank": rank,
+            "discovery_navigation_score": self.territory_relevance.navigation_url_score(
+                url, request
+            ),
+            "navigation_ranking_version": self.territory_relevance.navigation_ranking_version,
             "allowed_domains": allowed_domains,
             "disable_site_discovery": True,
             "sitemap_navigation_only": True,
