@@ -145,5 +145,123 @@ def test_production_orchestrator_uses_round_robin_fairness_from_adaptive_queue()
         "historical_context",
         "historical_images",
     ]
-    assert record.checkpoint["research_queue_priority_version"] == "research-queue-priority/4"
+    assert record.checkpoint["research_queue_priority_version"] == "research-queue-priority/5"
     assert record.checkpoint["research_queue_next"][0]["fairness_goal"] == "public_mentions"
+    assert record.checkpoint["research_queue_priority_intents"] == []
+
+
+def test_live_factual_gap_outranks_already_covered_goals():
+    orchestrator = object.__new__(EvidenceStatusAdaptiveResearchOrchestrator)
+    record = _record("public_mentions", "historical_context", "historical_images")
+    record.checkpoint = {
+        "research_supervisor": {
+            "priority_intents": ["historical_context"],
+            "factual_coverage_counts": {
+                "public_mentions": 10,
+                "historical_context": 0,
+                "historical_images": 20,
+            },
+            "target_sources_per_intent": 2,
+        }
+    }
+    pending = [
+        SourceTask(
+            source_id="generic_web",
+            goal="public_mentions",
+            url=f"https://mentions.example/{index}",
+            depth=1,
+        )
+        for index in range(8)
+    ]
+    pending.extend(
+        [
+            SourceTask(
+                source_id="generic_web",
+                goal="historical_images",
+                url="https://images.example/covered",
+                depth=1,
+            ),
+            SourceTask(
+                source_id="generic_web",
+                goal="historical_context",
+                url="https://history.example/gap",
+                depth=1,
+            ),
+        ]
+    )
+
+    orchestrator._prioritize_pending(record, pending)
+
+    assert pending[0].url == "https://history.example/gap"
+    assert record.checkpoint["research_queue_next_goal"] == "historical_context"
+    assert record.checkpoint["research_queue_priority_intents"] == ["historical_context"]
+    assert record.checkpoint["research_queue_next"][0]["factual_gap"] is True
+    assert record.checkpoint["research_queue_factual_coverage_counts"] == {
+        "public_mentions": 10,
+        "historical_context": 0,
+        "historical_images": 20,
+    }
+
+
+def test_mixed_goal_task_is_prioritized_when_any_goal_is_a_live_gap():
+    orchestrator = object.__new__(EvidenceStatusAdaptiveResearchOrchestrator)
+    record = _record("public_mentions", "historical_context")
+    record.checkpoint = {
+        "research_supervisor": {
+            "priority_intents": ["historical_context"],
+            "factual_coverage_counts": {
+                "public_mentions": 4,
+                "historical_context": 0,
+            },
+            "target_sources_per_intent": 2,
+        }
+    }
+    covered = SourceTask(
+        source_id="generic_web",
+        goal="public_mentions",
+        url="https://example.org/covered",
+        depth=0,
+    )
+    mixed = SourceTask(
+        source_id="generic_web",
+        goal="public_mentions",
+        url="https://example.org/mixed",
+        depth=2,
+        metadata={"research_goals": ["public_mentions", "historical_context"]},
+    )
+    pending = [covered, mixed]
+
+    orchestrator._prioritize_pending(record, pending)
+
+    assert pending[0] is mixed
+    assert record.checkpoint["research_queue_next_goal"] == "historical_context"
+    assert record.checkpoint["research_queue_next"][0]["factual_gap_intents"] == [
+        "historical_context"
+    ]
+
+
+def test_all_covered_or_unsupervised_queue_keeps_shared_fair_order():
+    orchestrator = object.__new__(EvidenceStatusAdaptiveResearchOrchestrator)
+    record = _record("first", "second")
+    record.checkpoint = {
+        "research_supervisor": {
+            "priority_intents": [],
+            "factual_coverage_counts": {"first": 3, "second": 2},
+            "target_sources_per_intent": 2,
+        }
+    }
+    pending = [
+        SourceTask(
+            source_id="generic_web",
+            goal=goal,
+            url=f"https://example.org/{goal}/{index}",
+            depth=1,
+        )
+        for index in range(3)
+        for goal in ("first", "second")
+    ]
+
+    orchestrator._prioritize_pending(record, pending)
+
+    assert [task.goal for task in pending[:4]] == ["first", "second", "first", "second"]
+    assert all(not item["factual_gap"] for item in record.checkpoint["research_queue_next"])
