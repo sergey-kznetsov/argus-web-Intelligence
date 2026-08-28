@@ -1,31 +1,31 @@
 from __future__ import annotations
 
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest
-from argus.crawler.browser.runtime import BrowserCrawlerRuntime
-from argus.recipes.models import RecipeStep, SiteRecipe
+from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.research.discovery import DiscoveryBlockedError, DiscoveryHit
 
 
-class DuckDuckGoBrowserDiscoveryProvider:
-    """Low-volume browser fallback for public web discovery.
+class DuckDuckGoFastDiscoveryProvider:
+    """Low-volume HTTP discovery through DuckDuckGo's no-JS HTML endpoint.
 
-    The provider submits DuckDuckGo's no-JS HTML form through the existing
-    Playwright runtime. It never treats snippets as evidence and never attempts to
-    bypass an anti-bot challenge. Destination pages are fetched later by
-    GenericWebAdapter before any Observation/Evidence is created.
+    Search navigation stays in the FAST runtime because DuckDuckGo returns an
+    anti-bot challenge to headless Chromium for the same query. The provider never
+    treats snippets as Evidence and never attempts to bypass access challenges.
+    Destination pages are fetched later by GenericWebAdapter, which retains the
+    normal FAST -> BROWSER -> AGENT escalation policy.
     """
 
-    name = "duckduckgo_browser"
+    name = "duckduckgo_fast"
     base_url = "https://html.duckduckgo.com/html/"
 
-    def __init__(self, settings: Settings, browser: BrowserCrawlerRuntime) -> None:
+    def __init__(self, settings: Settings, fast: FastCrawlerRuntime) -> None:
         self.settings = settings
-        self.browser = browser
+        self.fast = fast
 
     async def discover(
         self,
@@ -39,29 +39,11 @@ class DuckDuckGoBrowserDiscoveryProvider:
             value = query.strip()[:499]
             if not value:
                 continue
-            recipe = SiteRecipe(
-                domain="html.duckduckgo.com",
-                goal="serp_discovery",
-                steps=[
-                    RecipeStep(action="fill", selector='input[name="q"]', value=value),
-                    RecipeStep(action="press", selector='input[name="q"]', value="Enter"),
-                    RecipeStep(
-                        action="wait",
-                        data={
-                            "state": "domcontentloaded",
-                            "timeout_ms": int(self.settings.browser_timeout_seconds * 1_000),
-                        },
-                    ),
-                    RecipeStep(
-                        action="wait",
-                        data={"milliseconds": self.settings.browser_serp_wait_ms},
-                    ),
-                ],
-            )
-            fetched = await self.browser.fetch(self.base_url, recipe=recipe)
+            url = f"{self.base_url}?{urlencode({'q': value})}"
+            fetched = await self.fast.fetch(url)
             if fetched.blocked or self._looks_blocked(fetched.text):
                 raise DiscoveryBlockedError(
-                    "DuckDuckGo browser discovery returned an anti-bot/access challenge"
+                    "DuckDuckGo FAST discovery returned an anti-bot/access challenge"
                 )
             for hit in self._extract_hits(
                 fetched.text,
