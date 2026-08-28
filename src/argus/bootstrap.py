@@ -48,6 +48,7 @@ from argus.sources.intent_evidence_web import IntentEvidenceWebAdapter
 from argus.sources.json_feed import JSONFeedAdapter
 from argus.sources.mingkh_residential import MingkhResidentialAdapter
 from argus.sources.overpass_map import OverpassSourceAdapter
+from argus.sources.pastvu import PastVuHistoricalAdapter
 from argus.sources.registry import SourceRegistry
 from argus.sources.rss import RSSAdapter
 from argus.sources.sitemap import SitemapDiscoveryAdapter
@@ -212,6 +213,13 @@ def build_services(settings: Settings) -> ServiceContainer:
     )
     registry.register(generic_web)
     registry.register(MingkhResidentialAdapter(generic_web, snapshots))
+    registry.register(
+        PastVuHistoricalAdapter(
+            fast,
+            snapshots,
+            geocoder=geocoder,
+        )
+    )
     registry.register(
         RSSAdapter(
             fast,
