@@ -12,6 +12,7 @@ from argus.config import Settings
 from argus.crawler.browser.windows_runtime import WindowsProactorBrowserRuntime
 from argus.platform_asyncio import (
     configure_windows_postgres_event_loop,
+    postgres_server_event_loop_factory,
     windows_postgres_selector_required,
 )
 from argus.security.urls import UrlGuard
@@ -102,6 +103,16 @@ def test_deployment_manifest_uses_runtime_entrypoint() -> None:
     assert all("argus.runtime_entrypoint" in command for command in process_commands)
 
 
+def test_api_loop_factory_is_scoped_to_windows_postgresql() -> None:
+    from argus.runtime_entrypoint import _POSTGRES_UVICORN_LOOP_FACTORY, _api_loop_factory
+
+    postgres = Settings(storage_backend="postgresql")
+    sqlite = Settings(storage_backend="sqlite")
+    assert _api_loop_factory(postgres, platform="win32") == _POSTGRES_UVICORN_LOOP_FACTORY
+    assert _api_loop_factory(sqlite, platform="win32") == "asyncio"
+    assert _api_loop_factory(postgres, platform="linux") == "asyncio"
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows event loops only")
 def test_windows_psycopg_async_accepts_selector_loop() -> None:
     import psycopg
@@ -115,6 +126,29 @@ def test_windows_psycopg_async_accepts_selector_loop() -> None:
             )
 
     asyncio.run(_connect())
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows event loops only")
+def test_windows_uvicorn_postgres_factory_is_selector() -> None:
+    from uvicorn import Config
+
+    loop = postgres_server_event_loop_factory()
+    try:
+        assert "Selector" in type(loop).__name__
+    finally:
+        loop.close()
+
+    config = Config(
+        "argus.api.app:app",
+        loop="argus.platform_asyncio:postgres_server_event_loop_factory",
+    )
+    factory = config.get_loop_factory()
+    assert factory is postgres_server_event_loop_factory
+    uvicorn_loop = factory()
+    try:
+        assert "Selector" in type(uvicorn_loop).__name__
+    finally:
+        uvicorn_loop.close()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows event loops only")

@@ -5,7 +5,12 @@ import asyncio
 import sys
 
 from argus.config import Settings, get_settings
-from argus.platform_asyncio import configure_windows_postgres_event_loop
+from argus.platform_asyncio import (
+    configure_windows_postgres_event_loop,
+    windows_postgres_selector_required,
+)
+
+_POSTGRES_UVICORN_LOOP_FACTORY = "argus.platform_asyncio:postgres_server_event_loop_factory"
 
 
 def _prepare_windows_runtime(settings: Settings) -> bool:
@@ -23,6 +28,12 @@ def _prepare_windows_runtime(settings: Settings) -> bool:
 
     browser_runtime_module.BrowserCrawlerRuntime = WindowsProactorBrowserRuntime
     return True
+
+
+def _api_loop_factory(settings: Settings, *, platform: str | None = None) -> str:
+    if windows_postgres_selector_required(settings.storage_backend, platform=platform):
+        return _POSTGRES_UVICORN_LOOP_FACTORY
+    return "asyncio"
 
 
 def _run_storage(storage_args: list[str]) -> None:
@@ -43,7 +54,11 @@ def _run_api(host: str, port: int) -> None:
     import uvicorn
     from argus.api.app import app
 
-    uvicorn.run(app, host=host, port=port, loop="asyncio")
+    # Uvicorn 0.36+ creates its own loop from Config.get_loop_factory(). On Windows its
+    # built-in single-process asyncio factory is ProactorEventLoop, which is incompatible
+    # with Psycopg async even after setting WindowsSelectorEventLoopPolicy. Supply ARGUS'
+    # explicit Selector factory to Uvicorn itself instead of relying on process policy.
+    uvicorn.run(app, host=host, port=port, loop=_api_loop_factory(settings))
 
 
 def _run_worker(probe_host: str, probe_port: int) -> None:

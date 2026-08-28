@@ -40,6 +40,23 @@ def configure_windows_postgres_event_loop(
     return True
 
 
+def postgres_server_event_loop_factory() -> asyncio.AbstractEventLoop:
+    """Return the event loop used by the PostgreSQL-backed Uvicorn API process.
+
+    Uvicorn 0.36+ owns event-loop creation through Config.get_loop_factory(). Its built-in
+    asyncio factory deliberately chooses ProactorEventLoop for a single-process Windows
+    server, bypassing the process event-loop policy. Psycopg async cannot run there, so
+    ARGUS supplies this explicit Uvicorn loop factory for the API process.
+    """
+
+    if sys.platform == "win32":
+        factory = getattr(asyncio, "SelectorEventLoop", None)
+        if factory is None:
+            raise RuntimeError("Windows PostgreSQL API requires asyncio.SelectorEventLoop")
+        return factory()
+    return asyncio.new_event_loop()
+
+
 def create_windows_proactor_event_loop() -> asyncio.AbstractEventLoop:
     """Create the Windows loop required by Playwright subprocess transport."""
 
