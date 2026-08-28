@@ -4,6 +4,7 @@ from pathlib import Path
 
 from argus.contracts.models import CollectionRequest, Observation
 from argus.research.historical_catalog import HistoricalSourceCatalog, HistoricalSourceProfile
+from argus.research.historical_relevance import HistoricalTerritoryRelevanceEvaluator
 
 
 RUSSIA_USSR_HISTORICAL_SOURCES: tuple[HistoricalSourceProfile, ...] = (
@@ -23,7 +24,16 @@ RUSSIA_USSR_HISTORICAL_SOURCES: tuple[HistoricalSourceProfile, ...] = (
 class HistoricalSourceResearchPlanner:
     """Generate bounded discovery queries from built-in and operator-added historical pools."""
 
-    version = "russia-ussr-historical-sources/2"
+    version = "russia-ussr-historical-sources/3"
+    _CONTEXT_SOURCE_KINDS = frozenset(
+        {
+            "archive_library",
+            "digital_library",
+            "archive_catalogues",
+            "historical_library",
+            "historical_context",
+        }
+    )
 
     def __init__(
         self,
@@ -31,6 +41,7 @@ class HistoricalSourceResearchPlanner:
         *,
         catalog_file: Path | None = None,
         max_anchor_chars: int = 180,
+        relevance: HistoricalTerritoryRelevanceEvaluator | None = None,
     ) -> None:
         if sources is None:
             catalog = HistoricalSourceCatalog(RUSSIA_USSR_HISTORICAL_SOURCES)
@@ -40,6 +51,7 @@ class HistoricalSourceResearchPlanner:
             self.catalog_version = "explicit-source-list"
         self.sources = tuple(sorted(sources, key=lambda item: (item.priority, item.source_id)))
         self.max_anchor_chars = max(32, int(max_anchor_chars))
+        self.relevance = relevance or HistoricalTerritoryRelevanceEvaluator()
 
     def queries(
         self,
@@ -57,10 +69,12 @@ class HistoricalSourceResearchPlanner:
             return []
 
         result: list[str] = []
-        # First pass gives every high-priority source the current territory. Subsequent
-        # passes use newly discovered historical entity names when budget remains.
+        profiles = self._profiles_for_context()
+        # Historical context is a factual text/timeline goal. Prefer archive/library
+        # sources that can establish context before pure photo/map sources consume a
+        # bounded page budget. Visual sources remain available later in the same pool.
         for anchor in anchors:
-            for profile in self.sources:
+            for profile in profiles:
                 query = self._query(profile, anchor)
                 key = query.casefold()
                 if key in seen:
@@ -87,6 +101,18 @@ class HistoricalSourceResearchPlanner:
             for item in self.sources
         ]
 
+    def _profiles_for_context(self) -> tuple[HistoricalSourceProfile, ...]:
+        return tuple(
+            sorted(
+                self.sources,
+                key=lambda item: (
+                    0 if item.kind in self._CONTEXT_SOURCE_KINDS else 1,
+                    item.priority,
+                    item.source_id,
+                ),
+            )
+        )
+
     def _anchors(
         self,
         request: CollectionRequest,
@@ -97,6 +123,12 @@ class HistoricalSourceResearchPlanner:
         if territory:
             values.append(territory)
         for observation in observations:
+            # A discovered title/name is allowed to seed another historical source only
+            # when the fetched source itself proves that it belongs to the requested
+            # territory. Search titles/snippets and unrelated cities are navigation data,
+            # not evidence for recursive archive research.
+            if not self.relevance.evaluate(request, observation).matched:
+                continue
             for raw in (
                 observation.title,
                 observation.data.get("name"),

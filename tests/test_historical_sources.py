@@ -28,22 +28,24 @@ def test_catalog_contains_priority_map_photo_archive_and_library_sources():
     assert by_id["loc_prokudin_gorskii"].domain == "loc.gov"
 
 
-def test_initial_queries_cover_high_priority_historical_sources():
+def test_initial_context_queries_prioritize_text_archives_before_visual_sources():
     planner = HistoricalSourceResearchPlanner()
     queries = planner.queries(request(), limit=8)
-    joined = "\n".join(queries)
 
+    assert [query.split(' "', 1)[0] for query in queries[:5]] == [
+        "site:prlib.ru",
+        "site:rusneb.ru",
+        "site:archives.gov.ru",
+        "site:runivers.ru",
+        "site:prozhito.org",
+    ]
+    joined = "\n".join(queries)
     assert 'site:pastvu.com "Ижевск, Пушкинская, 277"' in joined
     assert 'site:etomesto.ru "Ижевск, Пушкинская, 277"' in joined
     assert 'site:retromap.ru "Ижевск, Пушкинская, 277"' in joined
-    assert 'site:photo.rgakfd.ru "Ижевск, Пушкинская, 277"' in joined
-    assert "site:prlib.ru" in joined
-    assert "site:rusneb.ru" in joined
-    assert "site:archives.gov.ru" in joined
-    assert "site:runivers.ru" in joined
 
 
-def test_new_historical_entity_becomes_a_new_archive_search_anchor():
+def test_territory_backed_historical_entity_becomes_new_archive_search_anchor():
     planner = HistoricalSourceResearchPlanner()
     observation = Observation(
         collection_id="collection",
@@ -54,6 +56,10 @@ def test_new_historical_entity_becomes_a_new_archive_search_anchor():
         url="https://example.org/history",
         entity_type="organization",
         title="Завод Ижмаш старый корпус",
+        text=(
+            "Ижевск, Пушкинская, 277. Завод Ижмаш старый корпус и история "
+            "Ижевского оружейного завода."
+        ),
         data={"former_name": "Ижевский оружейный завод"},
         content_hash="a" * 64,
     )
@@ -67,6 +73,33 @@ def test_new_historical_entity_becomes_a_new_archive_search_anchor():
 
     assert queries
     assert any("Завод Ижмаш старый корпус" in query for query in queries)
+
+
+def test_unrelated_observation_cannot_seed_curated_historical_queries():
+    planner = HistoricalSourceResearchPlanner()
+    unrelated = Observation(
+        collection_id="collection",
+        analysis_id="analysis",
+        consumer="test",
+        source="generic_web",
+        source_kind="web_page",
+        url="https://example.org/moscow",
+        entity_type="place",
+        title="Октябрьская площадь",
+        text="Москва, Октябрьская площадь. История и реконструкция площади.",
+        data={"name": "Октябрьская площадь"},
+        content_hash="b" * 64,
+    )
+    initial = set(planner.queries(request(), limit=20))
+
+    queries = planner.queries(
+        request(),
+        observations=[unrelated],
+        seen_queries=initial,
+        limit=10,
+    )
+
+    assert queries == []
 
 
 def test_catalog_planner_is_disabled_without_historical_intent():

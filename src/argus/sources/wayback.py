@@ -14,6 +14,7 @@ class WaybackSourceAdapter:
 
     source_id = "wayback_cdx"
     intents = {"historical_context"}
+    archive_dependency_version = "wayback-archive-dependency/1"
 
     def __init__(self, provider: WaybackCDXProvider, snapshots: SnapshotService) -> None:
         self.provider = provider
@@ -29,7 +30,13 @@ class WaybackSourceAdapter:
                     goal="historical_context",
                     url=target,
                     task_key=f"{self.source_id}:{target}",
-                    metadata={"archive_target_url": target},
+                    metadata={
+                        "archive_target_url": target,
+                        "historical_archive_dependency": True,
+                        "archive_dependency_version": self.archive_dependency_version,
+                        "curated_historical_round": 1,
+                        "research_goals": ["historical_context"],
+                    },
                 )
             )
         return tasks
@@ -47,6 +54,7 @@ class WaybackSourceAdapter:
         observations: list[Observation] = []
         evidence_items: list[Evidence] = []
         discovered_tasks: list[SourceTask] = []
+        archive_round = self._archive_round(task)
 
         captures = sorted(
             fetched.captures,
@@ -75,6 +83,11 @@ class WaybackSourceAdapter:
                         "discovery_rank": rank,
                         "archive_original_url": capture.original_url,
                         "archive_timestamp": capture.timestamp,
+                        "historical_archive_dependency": True,
+                        "archive_dependency_version": self.archive_dependency_version,
+                        "curated_historical_round": archive_round,
+                        "research_goals": ["historical_context"],
+                        "disable_site_discovery": True,
                     },
                 )
             )
@@ -95,7 +108,15 @@ class WaybackSourceAdapter:
     async def health(self) -> dict[str, object]:
         payload = dict(await self.provider.health())
         payload["capture_task_order"] = "oldest_first"
+        payload["archive_dependency_version"] = self.archive_dependency_version
         return payload
+
+    @staticmethod
+    def _archive_round(task: SourceTask) -> int:
+        try:
+            return max(1, int(task.metadata.get("curated_historical_round", 1) or 1))
+        except (TypeError, ValueError):
+            return 1
 
     async def _capture_observation(
         self,

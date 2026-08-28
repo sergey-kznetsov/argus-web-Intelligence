@@ -38,6 +38,8 @@ jobs:
       ARGUS_PER_DOMAIN_DELAY_SECONDS: "0.5"
       ARGUS_NOMINATIM_URL: "https://nominatim.openstreetmap.org"
       ARGUS_NOMINATIM_MIN_INTERVAL_SECONDS: "1.1"
+      ARGUS_WAYBACK_CDX_URL: "https://web.archive.org/cdx/search/cdx"
+      ARGUS_WAYBACK_MIN_INTERVAL_SECONDS: "2.0"
       ARGUS_LOG_LEVEL: INFO
 
     steps:

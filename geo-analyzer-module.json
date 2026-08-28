@@ -34,6 +34,7 @@
       "environment": {
         "ARGUS_EXECUTION_ROLE": "api",
         "ARGUS_STORAGE_BACKEND": "postgresql",
+        "ARGUS_WAYBACK_CDX_URL": "https://web.archive.org/cdx/search/cdx",
         "ARGUS_LOG_LEVEL": "INFO",
         "PYTHONUNBUFFERED": "1"
       },
@@ -46,6 +47,7 @@
       "environment": {
         "ARGUS_EXECUTION_ROLE": "worker",
         "ARGUS_STORAGE_BACKEND": "postgresql",
+        "ARGUS_WAYBACK_CDX_URL": "https://web.archive.org/cdx/search/cdx",
         "ARGUS_LOG_LEVEL": "INFO",
         "PYTHONUNBUFFERED": "1"
       },
