@@ -68,7 +68,6 @@ class _Web:
         return {"status": "ok"}
 
 
-
 def _request(*intents: str, address: str = "Комсомольский проспект, 27") -> CollectionRequest:
     return CollectionRequest(
         consumer="consumer-neutral-test",
@@ -114,28 +113,31 @@ def _fetched(
 
 
 @pytest.mark.asyncio
-async def test_residential_only_plan_uses_only_mandatory_mingkh_source():
+async def test_residential_only_plan_uses_direct_mandatory_source_before_search_fallback():
     planner = CuratedResidentialResearchPlanner(_FailPlanner(), max_queries=8)
     plan = await planner.plan(
         _request("residential_population", "residential_premises_count")
     )
 
-    assert len(plan.queries) == 2
-    assert all("site:dom.mingkh.ru" in query for query in plan.queries)
-    assert any("Количество квартир" in query for query in plan.queries)
-    assert any("Количество жителей" in query for query in plan.queries)
+    assert plan.queries == []
+    assert len(plan.tasks) == 1
+    assert plan.tasks[0].source_id == "site_discovery"
+    assert plan.tasks[0].metadata["site_discovery_target_source_id"] == "mingkh_residential"
+    assert plan.tasks[0].metadata["source_owned_navigation"] is True
     assert any("fallback_sources=false" in note for note in plan.notes)
+    assert any("search_provider=followup_only" in note for note in plan.notes)
 
 
 @pytest.mark.asyncio
-async def test_mixed_plan_hides_residential_intents_from_general_planner():
+async def test_mixed_plan_hides_residential_intents_and_search_queries_from_general_planner():
     delegate = _RecordingPlanner()
     planner = CuratedResidentialResearchPlanner(delegate, max_queries=8)
     plan = await planner.plan(_request("residential_population", "local_news"))
 
     assert delegate.intents == ["local_news"]
-    assert plan.queries[0].startswith("site:dom.mingkh.ru")
-    assert '"Пермь" новости' in plan.queries
+    assert plan.queries == ['"Пермь" новости']
+    assert not any(query.startswith("site:dom.mingkh.ru") for query in plan.queries)
+    assert plan.tasks[0].metadata["site_discovery_target_source_id"] == "mingkh_residential"
 
 
 @pytest.mark.asyncio
@@ -151,6 +153,7 @@ async def test_residential_followup_never_asks_general_planner_for_residential_g
     assert len(plan.queries) == 1
     assert plan.queries[0].startswith("site:dom.mingkh.ru")
     assert "Количество жителей" in plan.queries[0]
+    assert any("search_provider=fallback_navigation" in note for note in plan.notes)
 
 
 @pytest.mark.asyncio
