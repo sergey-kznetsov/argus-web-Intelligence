@@ -13,11 +13,16 @@ def _record(*intents: str):
     )
 
 
-def _source_owned_navigation(goal: str = "residential_population") -> SourceTask:
+def _source_owned_navigation(
+    goal: str = "residential_population",
+    *,
+    source_id: str = "site_discovery",
+    url: str = "https://dom.mingkh.ru/robots.txt",
+) -> SourceTask:
     return SourceTask(
-        source_id="site_discovery",
+        source_id=source_id,
         goal=goal,
-        url="https://dom.mingkh.ru/robots.txt",
+        url=url,
         metadata={
             "source_owned_navigation": True,
             "site_discovery_target_source_id": "mingkh_residential",
@@ -27,7 +32,11 @@ def _source_owned_navigation(goal: str = "residential_population") -> SourceTask
 
 
 def test_source_owned_navigation_is_factual_pending_dependency():
-    owned = _source_owned_navigation()
+    owned_support = _source_owned_navigation()
+    owned_factual = _source_owned_navigation(
+        source_id="mingkh_residential",
+        url="https://dom.mingkh.ru/permskiy-kray/perm/422906",
+    )
     support = SourceTask(
         source_id="site_discovery",
         goal="residential_population",
@@ -39,23 +48,53 @@ def test_source_owned_navigation_is_factual_pending_dependency():
         url="https://example.org/page",
     )
 
+    assert EvidenceStatusAdaptiveResearchOrchestrator._is_source_owned_navigation(
+        owned_support
+    ) is True
+    assert EvidenceStatusAdaptiveResearchOrchestrator._is_source_owned_navigation(
+        owned_factual
+    ) is True
     assert EvidenceStatusAdaptiveResearchOrchestrator._factual_pending_count(
-        [owned, support, factual]
-    ) == 2
+        [owned_support, owned_factual, support, factual]
+    ) == 3
 
 
-def test_source_owned_navigation_is_not_demoted_like_support_only_sitemap_work():
+def test_complete_source_owned_chain_outranks_support_and_adaptive_fallback():
     requested = {"residential_population", "residential_premises_count"}
-    owned = _source_owned_navigation()
+    owned_support = _source_owned_navigation()
+    owned_factual = _source_owned_navigation(
+        source_id="mingkh_residential",
+        url="https://dom.mingkh.ru/permskiy-kray/perm/422906",
+    )
     support = SourceTask(
         source_id="site_discovery",
         goal="residential_population",
         url="https://example.org/robots.txt",
     )
+    fallback = SourceTask(
+        source_id="mingkh_residential",
+        goal="residential_population",
+        url="https://dom.mingkh.ru/permskiy-kray/perm/456250",
+        metadata={"adaptive_followup_round": 1},
+    )
 
-    assert EvidenceStatusAdaptiveResearchOrchestrator._pending_priority(
-        owned, requested
-    ) < EvidenceStatusAdaptiveResearchOrchestrator._pending_priority(support, requested)
+    owned_support_priority = EvidenceStatusAdaptiveResearchOrchestrator._pending_priority(
+        owned_support, requested
+    )
+    owned_factual_priority = EvidenceStatusAdaptiveResearchOrchestrator._pending_priority(
+        owned_factual, requested
+    )
+    support_priority = EvidenceStatusAdaptiveResearchOrchestrator._pending_priority(
+        support, requested
+    )
+    fallback_priority = EvidenceStatusAdaptiveResearchOrchestrator._pending_priority(
+        fallback, requested
+    )
+
+    assert owned_support_priority[0] == -1
+    assert owned_factual_priority[0] == -1
+    assert owned_support_priority < support_priority
+    assert owned_factual_priority < fallback_priority
 
 
 def test_production_orchestrator_uses_round_robin_fairness_from_adaptive_queue():
