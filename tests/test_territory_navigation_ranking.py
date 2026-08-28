@@ -15,7 +15,7 @@ def _request() -> CollectionRequest:
     )
 
 
-def test_navigation_score_prefers_requested_city_over_homonyms_and_bare_house_number():
+def test_navigation_score_prefers_exact_city_over_region_homonyms_and_bare_number():
     evaluator = TerritoryRelevanceEvaluator()
     request = _request()
 
@@ -36,6 +36,7 @@ def test_navigation_score_prefers_requested_city_over_homonyms_and_bare_house_nu
         request,
     )
 
+    assert perm_city > perm_region
     assert perm_region > other_komsomolskiy
     assert perm_city > other_komsomolskiy
     assert perm_city > unrelated_27
@@ -58,9 +59,9 @@ def test_sitemap_keeps_territory_score_for_later_queue_ordering():
     ranked = source._rank_urls(urls, request)
 
     assert ranked[:3] == [
-        "https://dom.mingkh.ru/permskiy-kray/",
         "https://dom.mingkh.ru/permskiy-kray/perm/",
         "https://dom.mingkh.ru/permskiy-kray/perm/123456",
+        "https://dom.mingkh.ru/permskiy-kray/",
     ]
 
     metadata = source._downstream_metadata(
@@ -70,9 +71,9 @@ def test_sitemap_keeps_territory_score_for_later_queue_ordering():
             {"metadata": {"allowed_domains": ["dom.mingkh.ru"]}, "url": "sitemap.xml"},
         )(),
         request=request,
-        url=ranked[1],
+        url=ranked[0],
         collection_id="collection-1",
-        rank=2,
+        rank=1,
     )
     assert metadata["discovery_navigation_score"] > 0
     assert (
