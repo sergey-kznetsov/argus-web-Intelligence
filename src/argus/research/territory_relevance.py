@@ -26,7 +26,7 @@ class TerritoryRelevanceEvaluator:
     """
 
     version = "territory-relevance/4"
-    navigation_ranking_version = "territory-url-ranking/1"
+    navigation_ranking_version = "territory-url-ranking/2"
     point_tolerance_meters = 250
     max_address_anchor_distance_tokens = 8
     max_data_chars = 30_000
@@ -160,10 +160,6 @@ class TerritoryRelevanceEvaluator:
                         tuple(matched_lexical[:3]),
                     )
 
-            # An address-scoped request must not be downgraded to a city-only match. A search
-            # engine may return an otherwise unrelated page from the same city. House-number
-            # matching is proximity-bound so an unrelated date like "27 июля" cannot attach a
-            # street-level article to house 27.
             return TerritoryRelevanceResult(False, "address_anchor_missing")
 
         if city and city in haystack:
@@ -181,9 +177,9 @@ class TerritoryRelevanceEvaluator:
     def navigation_url_score(self, url: str, request: CollectionRequest) -> float:
         """Score a URL only for navigation ordering; the score is never factual evidence.
 
-        City matching dominates street/house hints so ``/permskiy-kray/perm/...`` outranks
-        an unrelated ``/altayskiy-kray/komsomolskiy/...`` page for a Perm request. A bounded
-        Latin prefix match handles common region slugs such as ``perm`` -> ``permskiy``.
+        An exact city path segment is deliberately much stronger than a regional prefix.
+        This keeps ``/permskiy-kray/perm/...`` ahead of all other settlements inside Perm
+        Krai while still allowing ``permskiy`` to act as a weak regional navigation hint.
         """
 
         path = unquote(urlsplit(str(url)).path).casefold()
@@ -205,24 +201,27 @@ class TerritoryRelevanceEvaluator:
         lexical_tokens = [token for token in address_tokens if token not in number_tokens]
         address_aliases = self._navigation_aliases(lexical_tokens)
 
-        city_matches = self._navigation_match_count(city_aliases, url_tokens, prefix=True)
+        city_exact = self._navigation_match_count(city_aliases, url_tokens, prefix=False)
+        city_with_prefix = self._navigation_match_count(city_aliases, url_tokens, prefix=True)
+        city_prefix_only = max(0, city_with_prefix - city_exact)
         address_matches = self._navigation_match_count(address_aliases, url_tokens, prefix=True)
         number_matches = self._navigation_match_count(number_tokens, url_tokens, prefix=False)
 
-        score = float(city_matches * 200 + address_matches * 40)
-        if city_matches:
-            score += 300.0
-        if city_matches and address_matches:
+        score = float(city_exact * 400 + city_prefix_only * 60 + address_matches * 40)
+        if city_exact:
+            score += 400.0
+        elif city_prefix_only:
+            score += 40.0
+        if city_exact and address_matches:
             score += 200.0
-        if city_matches and address_matches and number_matches:
+        if city_exact and address_matches and number_matches:
             score += 100.0
-        elif number_matches and (city_matches or address_matches):
+        elif number_matches and (city_exact or address_matches):
             score += 10.0
         elif number_matches:
-            # A bare house number must never outweigh the requested city/street.
             score += 1.0
 
-        if city_matches or address_matches:
+        if city_exact or city_prefix_only or address_matches:
             segment_count = len([segment for segment in path.split("/") if segment])
             score += float(max(0, 4 - min(segment_count, 4)) * 5)
         return score
@@ -259,13 +258,6 @@ class TerritoryRelevanceEvaluator:
         return result
 
     def latin_address_aliases(self, lexical_tokens: list[str]) -> list[str]:
-        """Return deterministic Latin aliases used only for navigation/relevance matching.
-
-        These aliases never become factual evidence. They exist so a Cyrillic territory such
-        as ``Пермь, Комсомольский`` can be matched against public URL slugs such as
-        ``/perm/komsomolskiy-...`` without an external transliteration service.
-        """
-
         result: list[str] = []
         seen: set[str] = set()
         for token in lexical_tokens:
