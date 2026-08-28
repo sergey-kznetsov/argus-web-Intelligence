@@ -36,6 +36,8 @@ jobs:
       ARGUS_MAX_CONCURRENCY: "2"
       ARGUS_BROWSER_MAX_CONCURRENCY: "1"
       ARGUS_PER_DOMAIN_DELAY_SECONDS: "0.5"
+      ARGUS_NOMINATIM_URL: "https://nominatim.openstreetmap.org"
+      ARGUS_NOMINATIM_MIN_INTERVAL_SECONDS: "1.1"
       ARGUS_LOG_LEVEL: INFO
 
     steps:
