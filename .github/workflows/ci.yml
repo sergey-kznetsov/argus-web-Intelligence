@@ -56,3 +56,18 @@ jobs:
           path: pytest.log
           retention-days: 3
           if-no-files-found: error
+
+  windows-runtime:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e '.[dev]'
+      - run: python -m compileall -q src tests/test_windows_runtime.py
+      - run: ruff check src/argus/platform_asyncio.py src/argus/runtime_entrypoint.py src/argus/crawler/browser/windows_runtime.py tests/test_windows_runtime.py
+      - run: pytest -q tests/test_windows_runtime.py

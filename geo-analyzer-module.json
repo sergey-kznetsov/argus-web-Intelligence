@@ -21,8 +21,8 @@
     "dsn_env": "GEOANALYZER_DATABASE_DSN",
     "dsn_file_env": "GEOANALYZER_DATABASE_DSN_FILE",
     "migrations": [
-      ["{python}", "-m", "argus.storage.cli", "migrate"],
-      ["{python}", "-m", "argus.storage.cli", "check"]
+      ["{python}", "-m", "argus.runtime_entrypoint", "storage", "migrate"],
+      ["{python}", "-m", "argus.runtime_entrypoint", "storage", "check"]
     ]
   },
   "secrets": {"auth_token_file_env": "ARGUS_TOKEN_FILE"},
@@ -30,7 +30,7 @@
     {
       "id": "api",
       "role": "module_api",
-      "command": ["{python}", "-m", "uvicorn", "argus.api.app:app", "--host", "127.0.0.1", "--port", "{api_port}"],
+      "command": ["{python}", "-m", "argus.runtime_entrypoint", "api", "--host", "127.0.0.1", "--port", "{api_port}"],
       "environment": {
         "ARGUS_EXECUTION_ROLE": "api",
         "ARGUS_STORAGE_BACKEND": "postgresql",
@@ -43,7 +43,7 @@
     {
       "id": "worker",
       "role": "worker",
-      "command": ["{python}", "-m", "argus.worker", "--probe-host", "127.0.0.1", "--probe-port", "{worker_probe_port}"],
+      "command": ["{python}", "-m", "argus.runtime_entrypoint", "worker", "--probe-host", "127.0.0.1", "--probe-port", "{worker_probe_port}"],
       "environment": {
         "ARGUS_EXECUTION_ROLE": "worker",
         "ARGUS_STORAGE_BACKEND": "postgresql",
