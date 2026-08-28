@@ -24,7 +24,7 @@ class TerritoryRelevanceEvaluator:
     evaluator uses source-backed text/data or explicit source coordinates only.
     """
 
-    version = "territory-relevance/3"
+    version = "territory-relevance/4"
     point_tolerance_meters = 250
     max_address_anchor_distance_tokens = 8
     max_data_chars = 30_000
@@ -134,7 +134,7 @@ class TerritoryRelevanceEvaluator:
             if nearby:
                 return TerritoryRelevanceResult(True, "street_and_house_number", nearby)
 
-            latin_aliases = self._latin_address_aliases(lexical_tokens)
+            latin_aliases = self.latin_address_aliases(lexical_tokens)
             nearby_latin = self._nearby_address_anchors(
                 haystack,
                 latin_aliases,
@@ -207,7 +207,14 @@ class TerritoryRelevanceEvaluator:
                 break
         return result
 
-    def _latin_address_aliases(self, lexical_tokens: list[str]) -> list[str]:
+    def latin_address_aliases(self, lexical_tokens: list[str]) -> list[str]:
+        """Return deterministic Latin aliases used only for navigation/relevance matching.
+
+        These aliases never become factual evidence. They exist so a Cyrillic territory such
+        as ``Пермь, Комсомольский`` can be matched against public URL slugs such as
+        ``/perm/komsomolskiy-...`` without an external transliteration service.
+        """
+
         result: list[str] = []
         seen: set[str] = set()
         for token in lexical_tokens:
