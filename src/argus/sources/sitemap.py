@@ -22,8 +22,8 @@ class SitemapDiscoveryAdapter:
 
     This adapter never creates factual observations. It only emits bounded same-host page
     tasks which must be fetched by their configured factual source adapter before they can
-    become evidence. Network/parser failures are intentionally fail-open because sitemap
-    discovery is a navigation aid, not requested factual coverage.
+    become evidence. Sitemap parser failures are fail-open navigation failures, but an
+    unreachable robots.txt is fail-closed as required by RFC 9309.
     """
 
     source_id = "site_discovery"
@@ -58,12 +58,40 @@ class SitemapDiscoveryAdapter:
         return []
 
     async def fetch(self, task: SourceTask) -> FetchResult | None:
+        kind = str(task.metadata.get("site_discovery_kind") or "")
+        if kind == "robots":
+            # Do not hide network/server failures for robots.txt. The orchestrator asks the
+            # adapter how to classify them and stops this host instead of silently continuing.
+            return await self.fast.fetch(task.url)
         try:
             return await self.fast.fetch(task.url)
         except asyncio.CancelledError:
             raise
         except Exception:
             return None
+
+    def failure_disposition(
+        self,
+        task: SourceTask,
+        *,
+        error_code: str,
+        message: str,
+    ) -> dict[str, object] | None:
+        """Classify a failed robots.txt request without bypassing the site rules."""
+
+        del message
+        kind = str(task.metadata.get("site_discovery_kind") or "")
+        if kind != "robots" or error_code not in {"SOURCE_TASK_TIMEOUT", "SOURCE_ERROR"}:
+            return None
+        return {
+            "error_code": "SOURCE_ROBOTS_UNREACHABLE",
+            "message": (
+                "robots.txt could not be reached because of a server or network failure; "
+                "ARGUS stopped access to this host as required by RFC 9309"
+            ),
+            "retryable": True,
+            "blocked": True,
+        }
 
     async def extract(
         self,
@@ -100,6 +128,7 @@ class SitemapDiscoveryAdapter:
             "dedicated_source_routing": True,
             "territory_transliteration_ranking": True,
             "territory_navigation_ranking": self.territory_relevance.navigation_ranking_version,
+            "robots_unreachable_policy": "complete_disallow_rfc9309",
         }
 
     def _robots_tasks(
