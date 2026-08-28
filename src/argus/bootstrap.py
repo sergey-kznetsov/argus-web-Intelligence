@@ -228,8 +228,10 @@ def build_services(settings: Settings) -> ServiceContainer:
         )
     )
     registry.register(JSONFeedAdapter(fast, snapshots, structured_extractor))
-    if settings.sitemap_discovery_enabled:
-        registry.register(SitemapDiscoveryAdapter(settings, fast))
+    # Explicit source-owned navigation (for example the mandatory residential source)
+    # must remain executable even when opportunistic sitemap crawling is disabled. The
+    # setting only controls automatic sitemap expansion initiated by Generic Web.
+    registry.register(SitemapDiscoveryAdapter(settings, fast))
     if settings.overpass_url:
         overpass_provider = map_registry.get("openstreetmap_overpass")
         registry.register(OverpassSourceAdapter(overpass_provider, snapshots, geocoder))
