@@ -139,14 +139,15 @@ def test_sitemap_index_is_same_host_bounded_and_recurses_within_request_depth():
     ]
     assert all(task.metadata["sitemap_index_depth"] == 1 for task in result)
 
+    # A nested index is allowed, but it cannot enqueue itself again.
     nested = source._sitemap_tasks(
         sitemap_task("https://example.com/a.xml", index_depth=1),
         fetched("https://example.com/a.xml", xml),
         req,
     )
     assert [task.url for task in nested] == [
-        "https://example.com/a.xml",
         "https://example.com/c.xml.gz",
+        "https://example.com/d.xml",
     ]
     assert all(task.metadata["sitemap_index_depth"] == 2 for task in nested)
 
@@ -194,6 +195,7 @@ def test_urlset_can_route_relevant_pages_to_dedicated_source_without_becoming_ev
             "root_origin": "https://dom.mingkh.ru",
             "sitemap_index_depth": 0,
             "site_discovery_target_source_id": "mingkh_residential",
+            "source_owned_navigation": True,
             "allowed_domains": ["dom.mingkh.ru"],
             "research_goals": ["residential_population", "residential_premises_count"],
             "research_input_candidates": [
@@ -225,6 +227,8 @@ def test_urlset_can_route_relevant_pages_to_dedicated_source_without_becoming_ev
     assert len(result) == 2
     assert result[0].url == "https://dom.mingkh.ru/permskiy-kray/perm/komsomolskiy-prospekt"
     assert result[0].source_id == "mingkh_residential"
+    assert result[0].metadata["site_discovery_target_source_id"] == "mingkh_residential"
+    assert result[0].metadata["source_owned_navigation"] is True
     assert result[0].metadata["research_goals"] == [
         "residential_population",
         "residential_premises_count",
