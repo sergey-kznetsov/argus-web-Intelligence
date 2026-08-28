@@ -249,7 +249,9 @@ class HeuristicResearchPlanner:
             for terms in intent_terms:
                 if round_index >= len(terms):
                     continue
-                query = self._bounded_query(f'"{territory}" {terms[round_index]}'.strip())
+                # Keep the territorial anchor broad. Exact-phrase quoting can make
+                # no-JS search providers return zero results for valid street addresses.
+                query = self._bounded_query(f"{territory} {terms[round_index]}".strip())
                 key = query.casefold()
                 if query and key not in seen:
                     seen.add(key)
