@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from argus.contracts.models import CollectionStatus, SourceCoverage, StructuredError
 from argus.crawler.errors import CrawlerRequestSkippedError
@@ -21,6 +22,8 @@ class AtomicCollectionOrchestrator(CollectionOrchestrator):
     """Collection orchestrator with atomic factual persistence per successful source task."""
 
     execution_budget_version = "time-and-page-budget/1"
+    source_block_circuit_breaker_version = "source-block-circuit-breaker/1"
+    source_block_threshold = 3
 
     def __init__(
         self,
@@ -117,6 +120,7 @@ class AtomicCollectionOrchestrator(CollectionOrchestrator):
                         else:
                             coverage.status = "ok"
 
+                        circuit_open = False
                         if result.blocked:
                             logger.warning(
                                 "source blocked",
@@ -126,6 +130,12 @@ class AtomicCollectionOrchestrator(CollectionOrchestrator):
                                     source_id=task.source_id,
                                     error_code=coverage.error_code,
                                 ),
+                            )
+                            circuit_open = self._apply_source_block_circuit_breaker(
+                                working_record,
+                                working_pending,
+                                task,
+                                coverage,
                             )
                         elif result.partial or result.errors:
                             logger.warning(
@@ -146,41 +156,42 @@ class AtomicCollectionOrchestrator(CollectionOrchestrator):
                                 queued_keys.add(child_key)
                                 working_pending.append(child)
 
-                        try:
-                            await self._expand_historical(
-                                working_record,
-                                task,
-                                result.observations,
-                                working_pending,
-                                working_visited,
-                                working_historical_queries,
-                            )
-                        except asyncio.CancelledError:
-                            raise
-                        except Exception as exc:
-                            message = safe_error_message(exc, max_length=300)
-                            working_record.errors.append(
-                                StructuredError(
-                                    code="HISTORICAL_BRANCH_ERROR",
-                                    message=message,
-                                    retryable=True,
-                                    source_id=task.source_id,
-                                )
-                            )
-                            if coverage.status == "ok":
-                                coverage.status = "partial"
-                            if coverage.error_code is None:
-                                coverage.error_code = "HISTORICAL_BRANCH_ERROR"
-                                coverage.error_message = message
-                            logger.warning(
-                                "historical branch failed after factual extraction",
-                                extra=_log_extra(
+                        if not circuit_open:
+                            try:
+                                await self._expand_historical(
                                     working_record,
-                                    "historical_branch_error",
-                                    source_id=task.source_id,
-                                    error_code="HISTORICAL_BRANCH_ERROR",
-                                ),
-                            )
+                                    task,
+                                    result.observations,
+                                    working_pending,
+                                    working_visited,
+                                    working_historical_queries,
+                                )
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception as exc:
+                                message = safe_error_message(exc, max_length=300)
+                                working_record.errors.append(
+                                    StructuredError(
+                                        code="HISTORICAL_BRANCH_ERROR",
+                                        message=message,
+                                        retryable=True,
+                                        source_id=task.source_id,
+                                    )
+                                )
+                                if coverage.status == "ok":
+                                    coverage.status = "partial"
+                                if coverage.error_code is None:
+                                    coverage.error_code = "HISTORICAL_BRANCH_ERROR"
+                                    coverage.error_message = message
+                                logger.warning(
+                                    "historical branch failed after factual extraction",
+                                    extra=_log_extra(
+                                        working_record,
+                                        "historical_branch_error",
+                                        source_id=task.source_id,
+                                        error_code="HISTORICAL_BRANCH_ERROR",
+                                    ),
+                                )
 
                         coverage.finished_at = now()
                         working_record.coverage.append(coverage)
@@ -293,10 +304,7 @@ class AtomicCollectionOrchestrator(CollectionOrchestrator):
         observations = await self.repository.list_observations(record.collection_id)
         blocked = any(item.blocked for item in record.coverage)
         source_partial = any(item.status == "partial" for item in record.coverage)
-        non_blocking_errors = [
-            error for error in record.errors if not _blocking_error(error)
-        ]
-        source_errors = bool(non_blocking_errors)
+        source_errors = bool(self._terminal_source_errors(record))
         pending_work = bool(pending)
         page_budget_exhausted = pending_work and processed >= total_budget
 
@@ -366,6 +374,79 @@ class AtomicCollectionOrchestrator(CollectionOrchestrator):
             "collection finished",
             extra=_log_extra(record, "collection_finished"),
         )
+
+    @classmethod
+    def _apply_source_block_circuit_breaker(
+        cls,
+        record,
+        pending: list[SourceTask],
+        task: SourceTask,
+        coverage: SourceCoverage,
+    ) -> bool:
+        """Stop repeatedly fetching one host after the same blocking response.
+
+        A circuit opens only after repeated explicit blocked results for the same source,
+        host and error code. It never bypasses the block and never suppresses tasks from
+        another host.
+        """
+
+        host = (urlsplit(task.url).hostname or "").casefold().strip(".")
+        error_code = str(coverage.error_code or "SOURCE_BLOCKED").strip()
+        if not host or not error_code:
+            return False
+
+        raw_state = record.checkpoint.get("source_block_circuit_breakers", {})
+        state = dict(raw_state) if isinstance(raw_state, dict) else {}
+        key = f"{task.source_id}|{host}|{error_code}"
+        raw_entry = state.get(key, {})
+        entry = dict(raw_entry) if isinstance(raw_entry, dict) else {}
+        count = int(entry.get("count", 0) or 0) + 1
+        opened = count >= cls.source_block_threshold
+        removed = 0
+        if opened:
+            retained: list[SourceTask] = []
+            for candidate in pending:
+                candidate_host = (
+                    urlsplit(candidate.url).hostname or ""
+                ).casefold().strip(".")
+                if candidate.source_id == task.source_id and candidate_host == host:
+                    removed += 1
+                    continue
+                retained.append(candidate)
+            pending[:] = retained
+
+        state[key] = {
+            "version": cls.source_block_circuit_breaker_version,
+            "source_id": task.source_id,
+            "host": host,
+            "error_code": error_code,
+            "count": count,
+            "threshold": cls.source_block_threshold,
+            "open": opened,
+            "pending_tasks_removed": int(entry.get("pending_tasks_removed", 0) or 0)
+            + removed,
+        }
+        record.checkpoint = {
+            **record.checkpoint,
+            "source_block_circuit_breaker_version": cls.source_block_circuit_breaker_version,
+            "source_block_circuit_breakers": state,
+        }
+        return opened
+
+    @staticmethod
+    def _terminal_source_errors(record) -> list[StructuredError]:
+        blocked_error_codes = {
+            str(item.error_code)
+            for item in record.coverage
+            if item.blocked and item.error_code
+        }
+        return [
+            error
+            for error in record.errors
+            if not _blocking_error(error)
+            and error.code not in blocked_error_codes
+            and error.code != "DISCOVERY_NO_QUERIES"
+        ]
 
     async def _record_task_failure(
         self,
