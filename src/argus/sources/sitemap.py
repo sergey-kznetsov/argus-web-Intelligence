@@ -36,6 +36,8 @@ class SitemapDiscoveryAdapter:
     _MAX_INDEX_DEPTH = 3
     _SOURCE_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
     _DOWNSTREAM_METADATA_KEYS = (
+        "site_discovery_target_source_id",
+        "source_owned_navigation",
         "research_goals",
         "research_input_candidates",
         "research_input_candidates_navigation_only",
@@ -222,6 +224,7 @@ class SitemapDiscoveryAdapter:
 
         urls: list[str] = []
         seen: set[str] = set()
+        current_url = urldefrag(task.url)[0]
         for child in list(root):
             if self._local_name(child) != "sitemap":
                 continue
@@ -229,7 +232,7 @@ class SitemapDiscoveryAdapter:
             if not raw:
                 continue
             url = urldefrag(urljoin(task.url, raw))[0]
-            if url in seen or not self._same_host_url(url, root_host):
+            if url == current_url or url in seen or not self._same_host_url(url, root_host):
                 continue
             seen.add(url)
             urls.append(url)
