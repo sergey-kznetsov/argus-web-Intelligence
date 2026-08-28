@@ -10,10 +10,11 @@ from defusedxml import ElementTree as DefusedET
 from defusedxml.common import DefusedXmlException
 
 from argus.config import Settings
-from argus.contracts.models import CollectionRequest
+from argus.contracts.models import CollectionRequest, StructuredError
 from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.crawler.models import FetchResult
 from argus.research.territory_relevance import TerritoryRelevanceEvaluator
+from argus.security.redaction import safe_error_message
 from argus.sources.base import SourceResult, SourceTask
 
 
@@ -22,8 +23,8 @@ class SitemapDiscoveryAdapter:
 
     This adapter never creates factual observations. It only emits bounded same-host page
     tasks which must be fetched by their configured factual source adapter before they can
-    become evidence. Sitemap parser failures are fail-open navigation failures, but an
-    unreachable robots.txt is fail-closed as required by RFC 9309.
+    become evidence. Sitemap parser failures are navigation failures, while an unreachable
+    robots.txt stops access to the host as required by RFC 9309.
     """
 
     source_id = "site_discovery"
@@ -52,6 +53,9 @@ class SitemapDiscoveryAdapter:
         self.settings = settings
         self.fast = fast
         self.territory_relevance = TerritoryRelevanceEvaluator()
+        # Production source tasks are bounded at 45 seconds. Finish robots handling inside
+        # the adapter first so a network failure becomes an explicit source-access outcome.
+        self.robots_timeout_seconds = min(35.0, float(settings.http_timeout_seconds) + 5.0)
 
     async def discover(self, request: CollectionRequest) -> list[SourceTask]:
         del request
@@ -60,9 +64,7 @@ class SitemapDiscoveryAdapter:
     async def fetch(self, task: SourceTask) -> FetchResult | None:
         kind = str(task.metadata.get("site_discovery_kind") or "")
         if kind == "robots":
-            # Do not hide network/server failures for robots.txt. The orchestrator asks the
-            # adapter how to classify them and stops this host instead of silently continuing.
-            return await self.fast.fetch(task.url)
+            return await self._fetch_robots(task)
         try:
             return await self.fast.fetch(task.url)
         except asyncio.CancelledError:
@@ -70,28 +72,41 @@ class SitemapDiscoveryAdapter:
         except Exception:
             return None
 
-    def failure_disposition(
-        self,
-        task: SourceTask,
-        *,
-        error_code: str,
-        message: str,
-    ) -> dict[str, object] | None:
-        """Classify a failed robots.txt request without bypassing the site rules."""
-
-        del message
-        kind = str(task.metadata.get("site_discovery_kind") or "")
-        if kind != "robots" or error_code not in {"SOURCE_TASK_TIMEOUT", "SOURCE_ERROR"}:
-            return None
-        return {
-            "error_code": "SOURCE_ROBOTS_UNREACHABLE",
-            "message": (
-                "robots.txt could not be reached because of a server or network failure; "
-                "ARGUS stopped access to this host as required by RFC 9309"
-            ),
-            "retryable": True,
-            "blocked": True,
-        }
+    async def _fetch_robots(self, task: SourceTask) -> FetchResult:
+        try:
+            async with asyncio.timeout(self.robots_timeout_seconds):
+                return await self.fast.fetch(task.url)
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError:
+            return self._robots_failure_fetch(
+                task.url,
+                state="unreachable",
+                reason="timeout",
+            )
+        except Exception as exc:
+            status_code = self._exception_status_code(exc)
+            if status_code is not None and 400 <= status_code <= 499:
+                # RFC 9309 calls a 4xx robots.txt response "unavailable" and permits the
+                # crawler to continue. We keep the status for audit and use the default
+                # same-host sitemap path as a navigation aid.
+                return FetchResult(
+                    url=task.url,
+                    final_url=task.url,
+                    status_code=status_code,
+                    content_type=None,
+                    text="",
+                    runtime="fast",
+                    metadata={
+                        "robots_access_state": "unavailable_4xx",
+                        "robots_failure_reason": safe_error_message(exc, max_length=160),
+                    },
+                )
+            return self._robots_failure_fetch(
+                task.url,
+                state="unreachable",
+                reason=safe_error_message(exc, max_length=160),
+            )
 
     async def extract(
         self,
@@ -101,6 +116,9 @@ class SitemapDiscoveryAdapter:
     ) -> SourceResult:
         kind = str(task.metadata.get("site_discovery_kind") or "")
         if kind == "robots":
+            blocked = self._robots_blocked_result(fetched)
+            if blocked is not None:
+                return blocked
             return SourceResult(
                 observations=[],
                 discovered_tasks=self._robots_tasks(task, fetched),
@@ -128,8 +146,68 @@ class SitemapDiscoveryAdapter:
             "dedicated_source_routing": True,
             "territory_transliteration_ranking": True,
             "territory_navigation_ranking": self.territory_relevance.navigation_ranking_version,
+            "robots_timeout_seconds": self.robots_timeout_seconds,
             "robots_unreachable_policy": "complete_disallow_rfc9309",
         }
+
+    def _robots_blocked_result(self, fetched: FetchResult | None) -> SourceResult | None:
+        if fetched is None:
+            return None
+        state = str(fetched.metadata.get("robots_access_state") or "")
+        if state == "unreachable" or fetched.status_code >= 500:
+            return SourceResult(
+                observations=[],
+                blocked=True,
+                errors=[
+                    StructuredError(
+                        code="SOURCE_ROBOTS_UNREACHABLE",
+                        message=(
+                            "robots.txt could not be reached because of a server or network "
+                            "failure; ARGUS stopped access to this host"
+                        ),
+                        retryable=True,
+                        source_id=self.source_id,
+                    )
+                ],
+            )
+        if fetched.blocked:
+            return SourceResult(
+                observations=[],
+                blocked=True,
+                errors=[
+                    StructuredError(
+                        code="SOURCE_ROBOTS_ACCESS_BLOCKED",
+                        message="robots.txt access was blocked; ARGUS stopped access to this host",
+                        retryable=True,
+                        source_id=self.source_id,
+                    )
+                ],
+            )
+        return None
+
+    @staticmethod
+    def _robots_failure_fetch(url: str, *, state: str, reason: str) -> FetchResult:
+        return FetchResult(
+            url=url,
+            final_url=url,
+            status_code=0,
+            content_type=None,
+            text="",
+            blocked=True,
+            runtime="fast",
+            metadata={
+                "robots_access_state": state,
+                "robots_failure_reason": reason,
+            },
+        )
+
+    @staticmethod
+    def _exception_status_code(exc: Exception) -> int | None:
+        raw = getattr(exc, "status_code", None)
+        try:
+            return int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
 
     def _robots_tasks(
         self,
