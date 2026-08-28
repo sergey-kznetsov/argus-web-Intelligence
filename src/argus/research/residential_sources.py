@@ -36,12 +36,12 @@ class MingkhResidentialSourceResearchPlanner:
 
     These intents have one mandatory factual source. ARGUS enters the source through its
     public ``robots.txt`` and declared sitemap, then routes relevant same-domain pages to the
-    dedicated residential adapter. Search engines remain a secondary navigation aid; their
+    dedicated residential adapter. Search engines are a fallback navigation aid and their
     snippets never become Evidence. Without a building address this source planner fails
     closed instead of selecting an arbitrary house from a city-level result set.
     """
 
-    version = "mingkh-residential-sources/5"
+    version = "mingkh-residential-sources/6"
     supported_intents = RESIDENTIAL_INTENTS
     source = MINGKH_RESIDENTIAL_SOURCE
 
@@ -72,11 +72,14 @@ class MingkhResidentialSourceResearchPlanner:
                     "dedicated_source_direct_entry": True,
                     "dedicated_source_navigation": "robots_sitemap",
                     "source_policy": "mandatory_single_factual_source",
+                    "source_owned_navigation": True,
                 },
             )
         ]
 
     def queries(self, request: CollectionRequest, *, limit: int = 2) -> list[str]:
+        """Return fallback search-provider navigation queries for uncovered facts."""
+
         if limit <= 0:
             return []
         requested = self.supported_intents.intersection(request.intents)
@@ -107,6 +110,7 @@ class MingkhResidentialSourceResearchPlanner:
             "fallback_sources": False,
             "building_address_required": True,
             "direct_entry": "/robots.txt -> declared sitemap -> same-domain page",
+            "search_provider_policy": "followup_only_after_direct_navigation",
         }
 
     @staticmethod
@@ -128,9 +132,10 @@ class CuratedResidentialResearchPlanner:
     """Keep residential intents on their mandatory source without consumer branching.
 
     Non-residential intents are delegated to the normal ARGUS planner. Residential requests
-    with a building address receive a source-owned robots/sitemap navigation task. Search-
-    engine queries are retained only as a secondary navigation aid. Mixed requests preserve
-    normal research for the other intents while residential facts remain source-specific.
+    with a building address receive the source-owned robots/sitemap navigation task first.
+    Search-provider navigation for residential facts is deliberately deferred to adaptive
+    follow-up so it cannot consume the initial page budget ahead of the source's own public
+    navigation path. Mixed requests preserve normal research for other intents.
     """
 
     def __init__(
@@ -156,12 +161,12 @@ class CuratedResidentialResearchPlanner:
         else:
             delegated = ResearchPlan()
 
-        source_queries = self.source_planner.queries(
-            request,
-            limit=min(len(residential), self.max_queries),
-        )
         source_tasks = self.source_planner.tasks(request)
-        queries = _merge_queries(source_queries, delegated.queries, limit=self.max_queries)
+        # The mandatory source's own published navigation path is primary. Residential
+        # search-provider queries are generated only by the follow-up planner when factual
+        # coverage is still missing after direct navigation. This prevents navigation noise
+        # from exhausting max_pages before robots/sitemap traversal can run.
+        queries = _merge_queries([], delegated.queries, limit=self.max_queries)
         notes = [
             *delegated.notes,
             (
@@ -170,6 +175,7 @@ class CuratedResidentialResearchPlanner:
                 f"version={self.source_planner.version};"
                 f"direct_entry={str(bool(source_tasks)).lower()};"
                 "navigation=robots_sitemap;"
+                "search_provider=followup_only;"
                 "building_address_required=true;fallback_sources=false"
             ),
         ]
@@ -184,8 +190,10 @@ class CuratedResidentialFollowupResearchPlanner:
     """Keep adaptive residential gap research on the same mandatory source.
 
     The delegate never sees the source-scoped residential intents, so an LLM or heuristic
-    follow-up planner cannot propose alternative factual sources for them. One independent
-    ``dom.mingkh.ru`` fact is sufficient for each of these explicitly single-source intents.
+    follow-up planner cannot propose alternative factual sources for them. Search-provider
+    queries are emitted here only for facts still uncovered after primary source navigation.
+    One independent ``dom.mingkh.ru`` fact is sufficient for each explicitly single-source
+    residential intent.
     """
 
     def __init__(
@@ -249,7 +257,8 @@ class CuratedResidentialFollowupResearchPlanner:
             notes.append(
                 "residential_followup_source="
                 f"{self.source_planner.source.source_id};"
-                f"gaps={','.join(gaps)};fallback_sources=false"
+                f"gaps={','.join(gaps)};search_provider=fallback_navigation;"
+                "fallback_sources=false"
             )
         return FollowupPlan(queries=queries, notes=notes)
 
