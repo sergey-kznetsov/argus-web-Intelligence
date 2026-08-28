@@ -19,7 +19,7 @@ class HistoricalTerritoryRelevanceEvaluator:
     lexical anchor and compatible street type. Search/navigation metadata is never consulted.
     """
 
-    version = "historical-territory-relevance/1"
+    version = "historical-territory-relevance/2"
     min_anchor_root_chars = 5
     max_source_tokens = 12_000
 
@@ -205,7 +205,7 @@ class HistoricalTerritoryRelevanceEvaluator:
             if len(root) >= self.min_anchor_root_chars and root not in seen:
                 seen.add(root)
                 result.append(root)
-            for alias in self.base._latin_address_aliases([token]):
+            for alias in self.base.latin_address_aliases([token]):
                 alias_root = self._root(alias)
                 if len(alias_root) >= self.min_anchor_root_chars and alias_root not in seen:
                     seen.add(alias_root)
