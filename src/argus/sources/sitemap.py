@@ -13,16 +13,17 @@ from argus.config import Settings
 from argus.contracts.models import CollectionRequest
 from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.crawler.models import FetchResult
+from argus.research.territory_relevance import TerritoryRelevanceEvaluator
 from argus.sources.base import SourceResult, SourceTask
 
 
 class SitemapDiscoveryAdapter:
     """Best-effort robots.txt and Sitemap URL discovery.
 
-    This adapter never creates factual observations. It only emits bounded same-host
-    Generic Web tasks which must be fetched normally before they can become evidence.
-    Network/parser failures are intentionally fail-open because sitemap discovery is
-    an optional navigation aid, not requested factual coverage.
+    This adapter never creates factual observations. It only emits bounded same-host page
+    tasks which must be fetched by their configured factual source adapter before they can
+    become evidence. Network/parser failures are intentionally fail-open because sitemap
+    discovery is a navigation aid, not requested factual coverage.
     """
 
     source_id = "site_discovery"
@@ -32,10 +33,23 @@ class SitemapDiscoveryAdapter:
         "application/gzip",
         "application/x-gzip",
     }
+    _MAX_INDEX_DEPTH = 3
+    _SOURCE_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+    _DOWNSTREAM_METADATA_KEYS = (
+        "research_goals",
+        "research_input_candidates",
+        "research_input_candidates_navigation_only",
+        "research_input_candidates_are_evidence",
+        "research_input_scope",
+        "dedicated_source_direct_entry",
+        "dedicated_source_navigation",
+        "source_policy",
+    )
 
     def __init__(self, settings: Settings, fast: FastCrawlerRuntime) -> None:
         self.settings = settings
         self.fast = fast
+        self.territory_relevance = TerritoryRelevanceEvaluator()
 
     async def discover(self, request: CollectionRequest) -> list[SourceTask]:
         del request
@@ -78,8 +92,11 @@ class SitemapDiscoveryAdapter:
             "mode": "robots_sitemap",
             "max_urls": self.settings.sitemap_max_urls,
             "max_indexes": self.settings.sitemap_max_indexes,
+            "max_index_depth": self._MAX_INDEX_DEPTH,
             "gzip_sitemaps": True,
             "gzip_max_uncompressed_bytes": self.settings.max_response_bytes,
+            "dedicated_source_routing": True,
+            "territory_transliteration_ranking": True,
         }
 
     def _robots_tasks(
@@ -150,7 +167,7 @@ class SitemapDiscoveryAdapter:
             return []
         root_name = self._local_name(root)
         if root_name == "sitemapindex":
-            return self._index_tasks(task, root, root_host)
+            return self._index_tasks(task, root, root_host, request)
         if root_name == "urlset":
             return self._page_tasks(task, root, root_host, request)
         return []
@@ -193,11 +210,17 @@ class SitemapDiscoveryAdapter:
         task: SourceTask,
         root: Element,
         root_host: str,
+        request: CollectionRequest,
     ) -> list[SourceTask]:
         index_depth = int(task.metadata.get("sitemap_index_depth") or 0)
-        if index_depth >= 1:
+        max_index_depth = min(
+            self._MAX_INDEX_DEPTH,
+            max(0, int(request.constraints.max_depth)),
+        )
+        if index_depth >= max_index_depth:
             return []
-        tasks: list[SourceTask] = []
+
+        urls: list[str] = []
         seen: set[str] = set()
         for child in list(root):
             if self._local_name(child) != "sitemap":
@@ -209,23 +232,24 @@ class SitemapDiscoveryAdapter:
             if url in seen or not self._same_host_url(url, root_host):
                 continue
             seen.add(url)
-            tasks.append(
-                SourceTask(
-                    source_id=self.source_id,
-                    goal=task.goal,
-                    url=url,
-                    depth=task.depth,
-                    task_key=f"{self.source_id}:sitemap:{url}",
-                    metadata={
-                        **task.metadata,
-                        "site_discovery_kind": "sitemap",
-                        "sitemap_index_depth": index_depth + 1,
-                    },
-                )
+            urls.append(url)
+
+        ranked = self._rank_urls(urls, request)
+        return [
+            SourceTask(
+                source_id=self.source_id,
+                goal=task.goal,
+                url=url,
+                depth=task.depth,
+                task_key=f"{self.source_id}:sitemap:{url}",
+                metadata={
+                    **task.metadata,
+                    "site_discovery_kind": "sitemap",
+                    "sitemap_index_depth": index_depth + 1,
+                },
             )
-            if len(tasks) >= self.settings.sitemap_max_indexes:
-                break
-        return tasks
+            for url in ranked[: self.settings.sitemap_max_indexes]
+        ]
 
     def _page_tasks(
         self,
@@ -259,19 +283,19 @@ class SitemapDiscoveryAdapter:
 
         ranked = self._rank_urls(urls, request)
         collection_id = str(task.metadata.get("collection_id") or "")
+        target_source_id = self._target_source_id(task)
         return [
             SourceTask(
-                source_id="generic_web",
+                source_id=target_source_id,
                 goal=task.goal,
                 url=url,
                 depth=task.depth + 1,
-                metadata={
-                    "collection_id": collection_id,
-                    "discovery_provider": "sitemap",
-                    "discovery_rank": rank,
-                    "allowed_domains": list(request.constraints.allowed_domains),
-                    "disable_site_discovery": True,
-                },
+                metadata=self._downstream_metadata(
+                    task,
+                    request,
+                    collection_id=collection_id,
+                    rank=rank,
+                ),
             )
             for rank, url in enumerate(
                 ranked[: self.settings.sitemap_max_urls],
@@ -279,28 +303,65 @@ class SitemapDiscoveryAdapter:
             )
         ]
 
-    @classmethod
-    def _rank_urls(cls, urls: list[str], request: CollectionRequest) -> list[str]:
-        hints = [
-            request.territory.city or "",
-            request.territory.address or "",
-            *request.intents,
-        ]
-        tokens: set[str] = set()
-        for hint in hints:
-            tokens.update(
-                token.casefold()
-                for token in re.findall(r"\w+", hint, flags=re.UNICODE)
-                if len(token) >= 3
-            )
+    def _rank_urls(self, urls: list[str], request: CollectionRequest) -> list[str]:
+        weighted_tokens: dict[str, int] = {}
+
+        def add_tokens(value: str, weight: int) -> None:
+            tokens = self.territory_relevance.territory_tokens(value)
+            lexical = [token for token in tokens if not token[:1].isdigit()]
+            aliases = self.territory_relevance.latin_address_aliases(lexical)
+            for token in [*tokens, *aliases]:
+                current = weighted_tokens.get(token, 0)
+                weighted_tokens[token] = max(current, weight if not token[:1].isdigit() else 1)
+
+        add_tokens(request.territory.city or "", 4)
+        add_tokens(request.territory.address or "", 5)
+        for intent in request.intents:
+            for token in re.findall(r"[a-z0-9_]{3,}", intent.casefold()):
+                weighted_tokens[token] = max(weighted_tokens.get(token, 0), 1)
 
         def score(item: tuple[int, str]) -> tuple[int, int]:
             index, url = item
             haystack = unquote(urlsplit(url).path + "?" + urlsplit(url).query).casefold()
-            matches = sum(1 for token in tokens if token in haystack)
-            return (-matches, index)
+            url_tokens = set(re.findall(r"[a-zа-яё0-9]+", haystack, flags=re.UNICODE))
+            relevance = sum(weight for token, weight in weighted_tokens.items() if token in url_tokens)
+            return (-relevance, index)
 
         return [url for _, url in sorted(enumerate(urls), key=score)]
+
+    def _downstream_metadata(
+        self,
+        task: SourceTask,
+        request: CollectionRequest,
+        *,
+        collection_id: str,
+        rank: int,
+    ) -> dict[str, object]:
+        inherited_allowed = task.metadata.get("allowed_domains")
+        if isinstance(inherited_allowed, list):
+            allowed_domains = [str(item) for item in inherited_allowed]
+        else:
+            allowed_domains = list(request.constraints.allowed_domains)
+        metadata: dict[str, object] = {
+            "collection_id": collection_id,
+            "discovery_provider": "sitemap",
+            "discovery_rank": rank,
+            "allowed_domains": allowed_domains,
+            "disable_site_discovery": True,
+            "sitemap_navigation_only": True,
+            "sitemap_source_url": task.url,
+        }
+        for key in self._DOWNSTREAM_METADATA_KEYS:
+            if key in task.metadata:
+                metadata[key] = task.metadata[key]
+        return metadata
+
+    @classmethod
+    def _target_source_id(cls, task: SourceTask) -> str:
+        raw = str(task.metadata.get("site_discovery_target_source_id") or "generic_web").strip()
+        if raw == cls.source_id or cls._SOURCE_ID_RE.fullmatch(raw) is None:
+            return "generic_web"
+        return raw
 
     @staticmethod
     def _direct_loc(element: Element) -> str | None:
