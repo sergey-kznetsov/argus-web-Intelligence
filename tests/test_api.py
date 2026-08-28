@@ -76,7 +76,7 @@ def test_health_and_auth(tmp_path: Path):
         assert payload["geospatial_extractors"] == list(GEOSPATIAL_EXTRACTORS)
         assert payload["historical_timeline"] is True
         assert payload["historical_images"] is True
-        assert "duckduckgo_browser" in payload["discovery_providers"]
+        assert "duckduckgo_fast" in payload["discovery_providers"]
 
         sources = client.get("/v1/sources", headers=auth_headers(settings)).json()
         source_ids = {item["source_id"] for item in sources}
