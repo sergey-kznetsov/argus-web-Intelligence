@@ -13,11 +13,15 @@ The current factual source is the public web interface of `dom.mingkh.ru`, repre
 
 This is an intent-to-source policy, not a consumer-specific branch. ARGUS does not check whether the caller is Janus, Kraken or another module. Any consumer requesting these intents receives the same source contract.
 
-For every residential request with a non-empty building address, the curated planner creates a direct same-domain house-search task using `https://dom.mingkh.ru/search?address=...&searchtype=house`. The `address` parameter contains the request's building address itself; city remains in `TerritoryContext` and is used for territory relevance and external discovery precision. This makes the configured factual site itself the primary entry point instead of requiring a search engine to have indexed the requested building.
+For every residential request with a non-empty building address, the curated planner starts source-owned navigation at `https://dom.mingkh.ru/robots.txt`. ARGUS reads the sitemap declarations published by the source, traverses same-host sitemap indexes within bounded depth/page limits, ranks candidate URLs against the requested territory (including deterministic Cyrillic-to-Latin aliases for navigation), and routes selected pages to `mingkh_residential` for factual extraction. The sitemap is navigation only and cannot itself satisfy an intent.
+
+The planner intentionally does not use the site's `/search` route because the current public `robots.txt` disallows `/search`. ARGUS does not use BROWSER or AGENT to evade that directive. If the source changes its published crawl policy later, the normal runtime will observe the new policy on subsequent requests.
 
 A residential request without a building address fails closed at planning: ARGUS does not run a city-wide house search and does not select an arbitrary building. Residential discovery is also fail-closed to `dom.mingkh.ru`. Search providers may additionally be used to locate a corresponding public house detail page, but search results are navigation only and never Evidence. ARGUS does not fall back to unrelated housing sites for these two intents.
 
 Mixed collections preserve normal ARGUS research for their other intents. Generic semantic classification is explicitly prevented from proving the source-scoped residential intents, so an alternative web page cannot accidentally satisfy their factual coverage.
+
+The `site_discovery` adapter is always registered because it can be an explicitly planned part of a source contract. `sitemap_discovery_enabled=false` disables only opportunistic sitemap expansion initiated by Generic Web; it does not make an explicitly planned residential source path unexecutable.
 
 ## Evidence contract
 
@@ -43,13 +47,21 @@ Supported population labels currently include:
 
 If multiple different values are exposed for one intent on the same page, ARGUS returns `MINGKH_RESIDENTIAL_VALUE_CONFLICT` instead of choosing one.
 
+## Sitemap navigation contract
+
+Robots/sitemap traversal is performed by the shared `site_discovery` adapter and has no factual extraction capability. It accepts a validated internal `site_discovery_target_source_id`, preserves the requested research goals and territory-derived navigation inputs, and emits bounded same-host page tasks to the target adapter. Invalid, recursive or unsafe target identifiers fall back to `generic_web` rather than becoming arbitrary dispatch targets.
+
+Sitemap indexes may be nested, but traversal is hard-capped and additionally bounded by the collection's `max_depth`. Child sitemap URLs and final page URLs are ranked by territory tokens before truncation. URL matching uses complete path/query tokens; a house number such as `27` is not allowed to match a substring inside an unrelated numeric identifier. Deterministic Latin aliases are used for URL ranking only and never become source Evidence.
+
+The source's robots/sitemap documents, their URLs, search-engine snippets and the request's address are all navigation context. None can create `residential_population` or `residential_premises_count`; only a fetched page processed by `mingkh_residential` can do that.
+
 ## Public interface navigation
 
 `dom.mingkh.ru` is not treated as a static HTML-only source. When an already accessible public page exposes search, address, filter, tab or expandable controls and the requested fact is still not evidenced, `mingkh_residential` may request one bounded navigation round from the shared ARGUS web runtime.
 
 The interaction path is the existing `OllamaRecipeAgent -> deterministic SiteRecipe -> Playwright replay` pipeline. The model never receives direct browser control. It can select only controls already extracted from the fetched DOM, form values are restricted to bounded research inputs derived from the requested territory, GET/search/filter actions remain same-domain, and the resulting path is browser-replayed before factual extraction.
 
-Search-provider queries and snippets are never form values. When a discovered `dom.mingkh.ru` URL is routed to `mingkh_residential`, ARGUS replaces generic discovery input metadata with a bounded `territory_context` input scope derived only from the current `CollectionRequest` city/address. The direct source task uses the same input scope. The adapter repeats the rebasing immediately before guided navigation, so inherited or stale discovery strings cannot reach the model as allowed form input.
+Search-provider queries and snippets are never form values. When a discovered `dom.mingkh.ru` URL is routed to `mingkh_residential`, ARGUS replaces generic discovery input metadata with a bounded `territory_context` input scope derived only from the current `CollectionRequest` city/address. Sitemap-routed source tasks preserve the same bounded input scope. The adapter repeats the rebasing immediately before guided navigation, so inherited or stale discovery strings cannot reach the model as allowed form input.
 
 Persisted SiteRecipes containing literal `fill` values are also request-scoped at replay time. Such a recipe may run only when every stored fill value is present in the current task's allowed territory-derived research inputs. A mismatch suppresses replay without counting the recipe as broken. Recipes without literal fills remain reusable across requests.
 
