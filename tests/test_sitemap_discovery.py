@@ -7,14 +7,20 @@ from argus.sources.base import SourceTask
 from argus.sources.sitemap import SitemapDiscoveryAdapter
 
 
-def request(**constraint_values) -> CollectionRequest:
+def request(
+    *,
+    city: str = "Ижевск",
+    address: str | None = None,
+    intents: list[str] | None = None,
+    **constraint_values,
+) -> CollectionRequest:
     constraints = {"max_depth": 2, "max_pages": 20}
     constraints.update(constraint_values)
     return CollectionRequest(
         consumer="test",
         analysis_id="1",
-        territory={"city": "Ижевск"},
-        intents=["local_news"],
+        territory={"city": city, "address": address},
+        intents=intents or ["local_news"],
         constraints=constraints,
     )
 
@@ -112,7 +118,7 @@ def test_missing_robots_still_tries_default_sitemap():
     assert [task.url for task in result] == ["https://example.com/sitemap.xml"]
 
 
-def test_sitemap_index_is_same_host_bounded_and_one_level():
+def test_sitemap_index_is_same_host_bounded_and_recurses_within_request_depth():
     source = adapter(sitemap_max_indexes=2)
     xml = """<?xml version="1.0"?>
     <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -120,24 +126,36 @@ def test_sitemap_index_is_same_host_bounded_and_one_level():
       <sitemap><loc>https://evil.example/b.xml</loc></sitemap>
       <sitemap><loc>https://example.com/c.xml.gz</loc></sitemap>
       <sitemap><loc>https://example.com/d.xml</loc></sitemap>
-      <sitemap><loc>https://example.com/e.xml</loc></sitemap>
     </sitemapindex>"""
+    req = request(max_depth=2)
     result = source._sitemap_tasks(
         sitemap_task(),
         fetched("https://example.com/sitemap.xml", xml),
-        request(),
+        req,
     )
     assert [task.url for task in result] == [
         "https://example.com/a.xml",
         "https://example.com/c.xml.gz",
     ]
+    assert all(task.metadata["sitemap_index_depth"] == 1 for task in result)
 
     nested = source._sitemap_tasks(
         sitemap_task("https://example.com/a.xml", index_depth=1),
         fetched("https://example.com/a.xml", xml),
-        request(),
+        req,
     )
-    assert nested == []
+    assert [task.url for task in nested] == [
+        "https://example.com/a.xml",
+        "https://example.com/c.xml.gz",
+    ]
+    assert all(task.metadata["sitemap_index_depth"] == 2 for task in nested)
+
+    exhausted = source._sitemap_tasks(
+        sitemap_task("https://example.com/a.xml", index_depth=2),
+        fetched("https://example.com/a.xml", xml),
+        req,
+    )
+    assert exhausted == []
 
 
 def test_urlset_emits_only_same_host_generic_web_tasks_with_limit():
@@ -160,6 +178,74 @@ def test_urlset_emits_only_same_host_generic_web_tasks_with_limit():
     assert all(task.source_id == "generic_web" for task in result)
     assert all(task.metadata["discovery_provider"] == "sitemap" for task in result)
     assert all(task.metadata["disable_site_discovery"] is True for task in result)
+    assert all(task.metadata["sitemap_navigation_only"] is True for task in result)
+
+
+def test_urlset_can_route_relevant_pages_to_dedicated_source_without_becoming_evidence():
+    source = adapter(sitemap_max_urls=2)
+    task = SourceTask(
+        source_id="site_discovery",
+        goal="residential_premises_count",
+        url="https://dom.mingkh.ru/sitemap.xml",
+        metadata={
+            "collection_id": "collection-1",
+            "site_discovery_kind": "sitemap",
+            "root_host": "dom.mingkh.ru",
+            "root_origin": "https://dom.mingkh.ru",
+            "sitemap_index_depth": 0,
+            "site_discovery_target_source_id": "mingkh_residential",
+            "allowed_domains": ["dom.mingkh.ru"],
+            "research_goals": ["residential_population", "residential_premises_count"],
+            "research_input_candidates": [
+                "Пермь, Комсомольский проспект, 27",
+                "Комсомольский проспект, 27",
+            ],
+            "research_input_candidates_navigation_only": True,
+            "research_input_candidates_are_evidence": False,
+            "research_input_scope": "territory_context",
+            "dedicated_source_direct_entry": True,
+            "dedicated_source_navigation": "robots_sitemap",
+            "source_policy": "mandatory_single_factual_source",
+        },
+    )
+    xml = """<?xml version="1.0"?>
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <url><loc>https://dom.mingkh.ru/moskva/cao/123456</loc></url>
+      <url><loc>https://dom.mingkh.ru/permskiy-kray/perm/422906</loc></url>
+      <url><loc>https://dom.mingkh.ru/permskiy-kray/perm/komsomolskiy-prospekt</loc></url>
+    </urlset>"""
+    req = request(
+        city="Пермь",
+        address="Комсомольский проспект, 27",
+        intents=["residential_population", "residential_premises_count"],
+    )
+
+    result = source._sitemap_tasks(task, fetched(task.url, xml), req)
+
+    assert len(result) == 2
+    assert result[0].url == "https://dom.mingkh.ru/permskiy-kray/perm/komsomolskiy-prospekt"
+    assert result[0].source_id == "mingkh_residential"
+    assert result[0].metadata["research_goals"] == [
+        "residential_population",
+        "residential_premises_count",
+    ]
+    assert result[0].metadata["research_input_scope"] == "territory_context"
+    assert result[0].metadata["research_input_candidates_are_evidence"] is False
+    assert result[0].metadata["sitemap_navigation_only"] is True
+    assert result[0].metadata["sitemap_source_url"] == task.url
+    assert result[0].metadata["allowed_domains"] == ["dom.mingkh.ru"]
+
+
+def test_invalid_or_recursive_target_source_id_falls_back_to_generic_web():
+    source = adapter(sitemap_max_urls=1)
+    xml = """<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <url><loc>https://example.com/local_news</loc></url>
+    </urlset>"""
+    for target in ["site_discovery", "../unsafe", "Generic Web"]:
+        task = sitemap_task()
+        task.metadata["site_discovery_target_source_id"] = target
+        result = source._sitemap_tasks(task, fetched(task.url, xml), request())
+        assert result[0].source_id == "generic_web"
 
 
 def test_gzip_urlset_is_decompressed_with_same_navigation_rules():
