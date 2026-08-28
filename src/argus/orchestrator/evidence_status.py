@@ -14,7 +14,7 @@ class EvidenceStatusAdaptiveResearchOrchestrator(AdaptiveResearchAtomicCollectio
 
     coverage_status_version = "evidence-aware-terminal-status/1"
     research_supervision_version = "factual-gap-supervision/1"
-    research_queue_priority_version = "research-queue-priority/5"
+    research_queue_priority_version = "research-queue-priority/6"
     production_source_task_timeout_seconds = 45.0
     research_expansion_timeout_seconds = 20.0
     research_supervisor_timeout_seconds = 5.0
@@ -463,15 +463,17 @@ class EvidenceStatusAdaptiveResearchOrchestrator(AdaptiveResearchAtomicCollectio
 
     @staticmethod
     def _task_intents(task) -> set[str]:
-        intents = {str(task.goal).strip().casefold()}
+        explicit_goal = str(task.goal).strip().casefold()
+        if explicit_goal:
+            return {explicit_goal}
         raw_goals = task.metadata.get("research_goals")
-        if isinstance(raw_goals, list):
-            intents.update(
-                str(value).strip().casefold()
-                for value in raw_goals
-                if str(value).strip()
-            )
-        return {intent for intent in intents if intent}
+        if not isinstance(raw_goals, list):
+            return set()
+        return {
+            str(value).strip().casefold()
+            for value in raw_goals
+            if str(value).strip()
+        }
 
     @classmethod
     def _task_priority_goal(cls, task, priority_intents: list[str]) -> str | None:

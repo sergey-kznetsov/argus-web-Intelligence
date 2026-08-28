@@ -145,7 +145,7 @@ def test_production_orchestrator_uses_round_robin_fairness_from_adaptive_queue()
         "historical_context",
         "historical_images",
     ]
-    assert record.checkpoint["research_queue_priority_version"] == "research-queue-priority/5"
+    assert record.checkpoint["research_queue_priority_version"] == "research-queue-priority/6"
     assert record.checkpoint["research_queue_next"][0]["fairness_goal"] == "public_mentions"
     assert record.checkpoint["research_queue_priority_intents"] == []
 
@@ -203,7 +203,7 @@ def test_live_factual_gap_outranks_already_covered_goals():
     }
 
 
-def test_mixed_goal_task_is_prioritized_when_any_goal_is_a_live_gap():
+def test_explicit_task_goal_prevents_broad_metadata_from_stealing_gap_priority():
     orchestrator = object.__new__(EvidenceStatusAdaptiveResearchOrchestrator)
     record = _record("public_mentions", "historical_context")
     record.checkpoint = {
@@ -216,28 +216,49 @@ def test_mixed_goal_task_is_prioritized_when_any_goal_is_a_live_gap():
             "target_sources_per_intent": 2,
         }
     }
-    covered = SourceTask(
+    context = SourceTask(
         source_id="generic_web",
-        goal="public_mentions",
-        url="https://example.org/covered",
-        depth=0,
-    )
-    mixed = SourceTask(
-        source_id="generic_web",
-        goal="public_mentions",
-        url="https://example.org/mixed",
+        goal="historical_context",
+        url="https://example.org/context",
         depth=2,
+    )
+    broad_mentions = SourceTask(
+        source_id="generic_web",
+        goal="public_mentions",
+        url="https://example.org/broad-mentions",
+        depth=0,
         metadata={"research_goals": ["public_mentions", "historical_context"]},
     )
-    pending = [covered, mixed]
+    pending = [broad_mentions, context]
 
     orchestrator._prioritize_pending(record, pending)
 
-    assert pending[0] is mixed
+    assert pending[0] is context
     assert record.checkpoint["research_queue_next_goal"] == "historical_context"
     assert record.checkpoint["research_queue_next"][0]["factual_gap_intents"] == [
         "historical_context"
     ]
+    broad_summary = next(
+        item
+        for item in record.checkpoint["research_queue_next"]
+        if item["goal"] == "public_mentions"
+    )
+    assert broad_summary["factual_gap"] is False
+    assert broad_summary["factual_gap_intents"] == []
+
+
+def test_task_without_explicit_goal_falls_back_to_research_goals_for_queue_routing():
+    task = SourceTask(
+        source_id="site_discovery",
+        goal="",
+        url="https://example.org/support",
+        metadata={"research_goals": ["historical_context", "public_mentions"]},
+    )
+
+    assert EvidenceStatusAdaptiveResearchOrchestrator._task_intents(task) == {
+        "historical_context",
+        "public_mentions",
+    }
 
 
 def test_all_covered_or_unsupervised_queue_keeps_shared_fair_order():
