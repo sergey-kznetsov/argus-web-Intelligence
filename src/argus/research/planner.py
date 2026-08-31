@@ -191,9 +191,12 @@ class HeuristicResearchPlanner:
         "comments": ("комментарии", "комментарии жителей"),
         "complaints": ("жалобы обращения", "проблемы жителей"),
         "public_mentions": ("", "упоминания"),
-        "local_news": ("новости",),
+        "local_news": ("новости", "местные новости"),
         "incidents": ("происшествия", "авария пожар"),
         "discussions": ("обсуждение форум", "жители обсуждают"),
+        "posts": ("посты", "публикации жителей"),
+        "public_appeals": ("обращения граждан", "публичные обращения"),
+        "resident_messages": ("сообщения жителей", "жители сообщают"),
         "historical_context": (
             "история",
             "что было раньше",
@@ -206,9 +209,12 @@ class HeuristicResearchPlanner:
         "comments": ("comments", "resident comments"),
         "complaints": ("complaints", "resident issues"),
         "public_mentions": ("", "mentions"),
-        "local_news": ("news",),
+        "local_news": ("news", "local news"),
         "incidents": ("incidents", "accident fire"),
         "discussions": ("discussion forum", "residents discuss"),
+        "posts": ("posts", "resident posts"),
+        "public_appeals": ("public appeals", "citizen appeals"),
+        "resident_messages": ("resident messages", "residents report"),
         "historical_context": (
             "history",
             "what was here before",
@@ -249,8 +255,6 @@ class HeuristicResearchPlanner:
             for terms in intent_terms:
                 if round_index >= len(terms):
                     continue
-                # Keep the territorial anchor broad. Exact-phrase quoting can make
-                # no-JS search providers return zero results for valid street addresses.
                 query = self._bounded_query(f"{territory} {terms[round_index]}".strip())
                 key = query.casefold()
                 if query and key not in seen:
@@ -349,12 +353,12 @@ class OllamaResearchPlanner:
             "to queries. Every general query should preserve a territorial anchor unless it is a domain-"
             "targeted source query. Cover the requested intents fairly within a small query budget. For area "
             "research include nearby organizations/places and, when requested, reviews, comments, complaints, "
-            "resident discussions, local media, incidents and historical records. Public map/card pages are "
-            "ordinary public web sources: do not assume paid map APIs or access-control bypass. Caller supplied "
-            "source_pool_urls are handled outside this planner as supplemental candidates and must not alter "
-            "normal discovery. For historical context expand current place, former buildings/organizations, "
-            "construction, demolition, reconstruction, old addresses, documents, publications and newly "
-            "discovered entities.\n"
+            "resident discussions, posts, public appeals, resident messages, local media, incidents and "
+            "historical records. Public map/card pages are ordinary public web sources: do not assume paid map "
+            "APIs or access-control bypass. Caller supplied source_pool_urls are handled outside this planner "
+            "as supplemental candidates and must not alter normal discovery. For historical context expand "
+            "current place, former buildings/organizations, construction, demolition, reconstruction, old "
+            "addresses, documents, publications and newly discovered entities.\n"
             f"Input: {json.dumps(research_input, ensure_ascii=False, sort_keys=True)}"
         )
         try:
