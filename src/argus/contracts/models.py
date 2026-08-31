@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
+from argus.consumer_registry import CONSUMER_PROFILE_REGISTRY
+
 PROTOCOL_VERSION = "1.0.0"
 
 
@@ -67,6 +69,9 @@ class CollectionConstraints(BaseModel):
 class CollectionRequest(BaseModel):
     protocol_version: Literal["1.0.0"] = PROTOCOL_VERSION
     consumer: str = Field(min_length=1, max_length=128)
+    consumer_profile_version: int | None = Field(default=None, ge=1)
+    capability: str | None = Field(default=None, min_length=1, max_length=128)
+    requested_facts: list[str] = Field(default_factory=list, max_length=50)
     analysis_id: str = Field(min_length=1, max_length=128)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
     territory: TerritoryContext
@@ -83,6 +88,20 @@ class CollectionRequest(BaseModel):
         if not normalized:
             raise ValueError("idempotency_key must not be blank")
         return normalized
+
+    @model_validator(mode="after")
+    def resolve_consumer_contract(self) -> "CollectionRequest":
+        resolved = CONSUMER_PROFILE_REGISTRY.resolve(
+            consumer=self.consumer,
+            capability=self.capability,
+            requested_facts=self.requested_facts,
+            profile_version=self.consumer_profile_version,
+        )
+        self.consumer = resolved.consumer_id
+        self.consumer_profile_version = resolved.profile_version
+        self.capability = resolved.capability
+        self.requested_facts = list(resolved.requested_facts)
+        return self
 
 
 class EvidenceSource(BaseModel):
