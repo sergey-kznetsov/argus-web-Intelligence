@@ -42,6 +42,27 @@ async def test_russian_intents_generate_useful_search_terms():
 
 
 @pytest.mark.asyncio
+async def test_kraken_canonical_intents_use_real_russian_search_phrases():
+    request = CollectionRequest(
+        consumer="kraken.development.uds",
+        consumer_profile_version=1,
+        capability="urban_signals",
+        analysis_id="kraken-intents",
+        territory={"city": "Ижевск", "address": "Пушкинская, 277"},
+        intents=["posts", "public_appeals", "resident_messages", "local_news"],
+    )
+    plan = await HeuristicResearchPlanner(max_queries=8).plan(request)
+    joined = " ".join(plan.queries)
+
+    assert "посты" in joined
+    assert "обращения граждан" in joined
+    assert "сообщения жителей" in joined
+    assert "новости" in joined
+    assert "public appeals" not in joined
+    assert "resident messages" not in joined
+
+
+@pytest.mark.asyncio
 async def test_public_mentions_address_is_not_forced_into_exact_phrase():
     request = CollectionRequest(
         consumer="test",
