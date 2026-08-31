@@ -17,6 +17,7 @@ class SchemaAwareSemanticWebAdapter(SemanticWebAdapter):
     _TEXT_FIELDS = {
         "review": ("reviewBody", "description"),
         "publication": ("articleBody", "text", "description"),
+        "post": ("articleBody", "text", "description"),
         "comment": ("text", "description"),
         "dataset": ("description",),
         "event": ("description",),
