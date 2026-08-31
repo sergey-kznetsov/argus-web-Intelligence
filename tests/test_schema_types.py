@@ -7,6 +7,10 @@ def test_classifies_full_schema_org_urls_without_context():
         "publication",
         ["NewsArticle"],
     )
+    assert classify_schema_entity("https://schema.org/SocialMediaPosting") == (
+        "post",
+        ["SocialMediaPosting"],
+    )
     assert classify_schema_entity("https://schema.org/GovernmentOrganization") == (
         "organization",
         ["GovernmentOrganization"],
@@ -51,3 +55,7 @@ def test_multiple_types_use_specific_factual_category_precedence():
         ["Article", "NewsArticle"],
         context_hints=["https://schema.org/"],
     ) == ("publication", ["Article", "NewsArticle"])
+    assert classify_schema_entity(
+        ["Article", "DiscussionForumPosting"],
+        context_hints=["https://schema.org/"],
+    ) == ("post", ["Article", "DiscussionForumPosting"])
