@@ -12,15 +12,17 @@ _REVIEW_TYPES = {
     "EmployerReview",
     "MediaReview",
 }
+_POST_TYPES = {
+    "BlogPosting",
+    "DiscussionForumPosting",
+    "SocialMediaPosting",
+}
 _PUBLICATION_TYPES = {
     "Article",
     "NewsArticle",
     "AdvertiserContentArticle",
-    "BlogPosting",
-    "DiscussionForumPosting",
     "Report",
     "ScholarlyArticle",
-    "SocialMediaPosting",
     "TechArticle",
 }
 _COMMENT_TYPES = {"Comment"}
@@ -53,6 +55,8 @@ def classify_schema_entity(
         return "review", recognized
     if names & _COMMENT_TYPES:
         return "comment", recognized
+    if names & _POST_TYPES:
+        return "post", recognized
     if names & _PUBLICATION_TYPES:
         return "publication", recognized
     if names & _DATASET_TYPES:
