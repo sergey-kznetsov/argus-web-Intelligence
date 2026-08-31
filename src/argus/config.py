@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -102,12 +102,14 @@ class Settings(BaseSettings):
     fast_max_requests_per_minute: float = Field(default=120.0, gt=0, le=10_000)
     browser_max_requests_per_minute: float = Field(default=30.0, gt=0, le=2_000)
     per_domain_delay_seconds: float = Field(default=1.0, ge=0, le=300)
-    throttled_domains: list[str] = Field(default_factory=list)
+    throttled_domains: Annotated[list[str], NoDecode] = Field(default_factory=list)
     throttle_base_delay_seconds: float = Field(default=2.0, gt=0, le=300)
     throttle_max_delay_seconds: float = Field(default=60.0, gt=0, le=3600)
 
-    outbound_public_ports: list[int] = Field(default_factory=lambda: [80, 443])
-    deny_outbound_hosts: list[str] = Field(default_factory=list)
+    outbound_public_ports: Annotated[list[int], NoDecode] = Field(
+        default_factory=lambda: [80, 443]
+    )
+    deny_outbound_hosts: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     direct_provider_max_retries: int = Field(default=2, ge=0, le=5)
     direct_provider_retry_base_seconds: float = Field(default=1.0, ge=0, le=300)
@@ -146,7 +148,7 @@ class Settings(BaseSettings):
     llm_health_cache_seconds: float = Field(default=10.0, ge=0, le=300)
     agent_backend: str = "ollama-recipe"
     agent_enabled: bool = False
-    allow_internal_targets: list[str] = Field(default_factory=list)
+    allow_internal_targets: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     @field_validator(
         "allow_internal_targets",
