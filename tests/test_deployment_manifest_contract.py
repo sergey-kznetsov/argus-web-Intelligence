@@ -53,13 +53,25 @@ def test_deployment_uses_shared_postgres_and_bounded_local_processes() -> None:
     assert database["dsn_env"] == "GEOANALYZER_DATABASE_DSN"
     assert database["dsn_file_env"] == "GEOANALYZER_DATABASE_DSN_FILE"
     assert database["migrations"] == [
-        ["{python}", "-m", "argus.storage.cli", "migrate"],
-        ["{python}", "-m", "argus.storage.cli", "check"],
+        ["{python}", "-m", "argus.runtime_entrypoint", "storage", "migrate"],
+        ["{python}", "-m", "argus.runtime_entrypoint", "storage", "check"],
     ]
 
     assert {process["id"] for process in processes} == {"api", "worker"}
     api = next(process for process in processes if process["id"] == "api")
     worker = next(process for process in processes if process["id"] == "worker")
+    assert api["command"][:4] == [
+        "{python}",
+        "-m",
+        "argus.runtime_entrypoint",
+        "api",
+    ]
+    assert worker["command"][:4] == [
+        "{python}",
+        "-m",
+        "argus.runtime_entrypoint",
+        "worker",
+    ]
     assert api["command"][-4:] == ["--host", "127.0.0.1", "--port", "{api_port}"]
     assert worker["command"][-4:] == [
         "--probe-host",
@@ -101,6 +113,7 @@ def test_deployment_install_and_health_contract_match_geo_analyzer_manager() -> 
     assert api["health"] == {"path": "/v1/health", "authenticated": True}
     assert worker["health"] == {
         "path": "/readyz",
-        "port": "worker_probe_port",
+        "port_placeholder": "worker_probe_port",
         "authenticated": False,
     }
+    assert "port" not in worker["health"]
