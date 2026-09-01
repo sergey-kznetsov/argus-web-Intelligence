@@ -8,6 +8,12 @@ from datetime import datetime
 from argus.contracts.models import CollectionRequest, utcnow
 from argus.observability import OperationalMetrics
 from argus.sources.base import SourceAdapter, SourceResult, SourceTask
+from argus.toolpacks import (
+    ToolPackSourceDeniedError,
+    activate_tool_pack,
+    resolved_tool_pack_from_request,
+    source_allowed_by_active_tool_pack,
+)
 
 
 @dataclass(slots=True)
@@ -260,6 +266,14 @@ class SourceRegistry:
         )
 
     def get(self, source_id: str) -> SourceAdapter:
+        if not source_allowed_by_active_tool_pack(source_id):
+            from argus.toolpacks import active_tool_pack
+
+            pack = active_tool_pack()
+            raise ToolPackSourceDeniedError(
+                source_id=source_id,
+                tool_pack_id=pack.tool_pack_id if pack is not None else "unknown",
+            )
         return self._sources[source_id]
 
     def all(self) -> list[SourceAdapter]:
@@ -270,8 +284,18 @@ class SourceRegistry:
         return [
             source
             for source in self._sources.values()
-            if source.intents & wanted or "*" in source.intents
+            if (source.intents & wanted or "*" in source.intents)
+            and source_allowed_by_active_tool_pack(source.source_id)
         ]
+
+    def for_request(self, request: CollectionRequest) -> list[SourceAdapter]:
+        pack = resolved_tool_pack_from_request(request)
+        with activate_tool_pack(pack):
+            return self.for_intents(request.intents)
+
+    def allows_source(self, request: CollectionRequest, source_id: str) -> bool:
+        pack = resolved_tool_pack_from_request(request)
+        return pack is None or pack.allows_source(source_id)
 
     async def health(self, source_id: str) -> dict[str, object]:
         return await self.get(source_id).health()
