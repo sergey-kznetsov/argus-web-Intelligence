@@ -8,7 +8,7 @@ be separated deliberately.
 - Playwright launches its driver as an asyncio subprocess. On Windows subprocess support
   is provided by `ProactorEventLoop`, not `SelectorEventLoop`.
 
-The Geo Analyzer deployment entrypoint therefore uses this process model:
+The standalone ARGUS Windows runtime therefore uses this process model:
 
 ```text
 ARGUS API / worker / storage command
@@ -20,7 +20,7 @@ ARGUS API / worker / storage command
                 +-- Windows ProactorEventLoop -> Crawlee / Playwright / Chromium
 ```
 
-`argus.runtime_entrypoint` must be used by `geo-analyzer-module.json` for PostgreSQL
+`argus.runtime_entrypoint` is used by the standalone Windows deployment for PostgreSQL
 migrations, API startup and worker startup. On Linux/macOS the compatibility setup is a
 no-op and the ordinary event-loop behavior remains unchanged.
 
@@ -44,7 +44,7 @@ This is not a CAPTCHA/anti-bot bypass and does not alter ARGUS network security,
 platform event-loop responsibilities.
 
 The CI pipeline contains a Windows Server 2022 / Python 3.11 / PostgreSQL 14 deployment
-smoke. It runs the same storage migration/check entrypoints as Geo Analyzer, starts the
+smoke. It runs the same storage migration/check entrypoints as the standalone server deployment, starts the
 real API and worker processes, waits for authenticated API health and worker readiness,
 and fails immediately with both process logs if either process exits. Unit regressions
 also verify the Selector API loop and the separate Proactor browser loop.

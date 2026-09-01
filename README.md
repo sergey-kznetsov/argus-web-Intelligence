@@ -4,7 +4,7 @@ ARGUS `0.3.0` is a server-side evidence-first web intelligence backend for Krake
 
 Core rule: **ARGUS = find + obtain + prove + store. Consumers = interpret + calculate + conclude.**
 
-ARGUS is installed and supervised by the universal Geo Analyzer server-module manager, but it is intentionally hidden from the user analysis selection UI. Its runtime manifest sets `analysis_launch_toggle=false`; consumers call the ARGUS collection API directly.
+ARGUS is one standalone server-level infrastructure service. Geo Analyzer does not install, update, stop or delete it. TEST, PROD and analytical consumers call the same localhost ARGUS API through a server-owned endpoint and token-file contract.
 
 ## Current product architecture
 
@@ -44,39 +44,18 @@ ARGUS currently provides:
 
 Discovery results and navigation hints are not facts. Search snippets, Sitemap entries and archive navigation metadata only seed factual retrieval. A destination page must be fetched before it can become page Evidence. Embedded JSON-LD is evidence only because it is contained in the already fetched page.
 
-## Server deployment through Geo Analyzer
+## Standalone server deployment
 
-The repository root contains `geo-analyzer-module.json`. The universal manager can install ARGUS without ARGUS-specific branches in Geo Analyzer.
+ARGUS is deployed independently of Geo Analyzer under `C:\\argus` with configuration and secrets under `C:\\ProgramData\\ARGUS`. On Windows Server the service is composed of `ARGUS-API` and `ARGUS-Worker` SYSTEM scheduled tasks, both loopback-only.
 
-The deployment contract requires:
+Geo Analyzer consumers receive only these generic server variables:
 
-- isolated Python virtual environment;
-- Chromium installation for Playwright;
-- shared PostgreSQL supplied through `GEOANALYZER_DATABASE_DSN` / `GEOANALYZER_DATABASE_DSN_FILE`;
-- ARGUS migrations and schema check before process startup;
-- a separate generated Bearer token file through `ARGUS_TOKEN_FILE`;
-- localhost-only API and worker-probe ports;
-- one API process with `ARGUS_EXECUTION_ROLE=api`;
-- one collection worker with `ARGUS_EXECUTION_ROLE=worker`;
-- authenticated `/v1/manifest` and `/v1/health` checks;
-- automatic registration/enablement only after readiness succeeds.
-
-The API process is not considered ready merely because its HTTP socket is open. In server mode `/v1/health` requires both a healthy PostgreSQL schema and at least one fresh worker heartbeat. If the worker does not start, dies, or becomes stale, readiness degrades and `HEAD /v1/health` returns `503`.
-
-The runtime manifest identifies the service as `argus.web.intelligence` and publishes:
-
-```json
-{
-  "ui": {
-    "optional": false,
-    "default_enabled": true,
-    "analysis_launch_toggle": false,
-    "capability_card": false
-  }
-}
+```text
+ARGUS_SERVICE_BASE_URL=http://127.0.0.1:8787
+ARGUS_SERVICE_TOKEN_FILE=C:\\ProgramData\\ARGUS\\secrets\\argus.token
 ```
 
-Therefore ARGUS is manageable as a server module but does not appear as a checkbox in «Новый анализ».
+The standalone deploy performs migrations before cutover, waits for API/worker readiness and rolls back the scheduled tasks to the previous immutable release if health fails. See [`docs/SERVER_DEPLOYMENT_WINDOWS.md`](docs/SERVER_DEPLOYMENT_WINDOWS.md).
 
 ## Server queue and recovery
 

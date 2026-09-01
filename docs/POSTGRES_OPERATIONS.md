@@ -72,7 +72,7 @@ Exact schema-version matching is intentional. A custom archive from an older sch
 
 `--single-transaction` is intentional: PostgreSQL must either apply the whole restore or leave the database unchanged by that restore attempt.
 
-Before PROD restore, stop or disable ARGUS API/worker processes in the module manager so no collection writes occur while the schema is being replaced. Perform the restore in TEST first using a copy of the intended archive, then run `check`, API readiness and at least one end-to-end collection.
+Before PROD restore, stop the standalone `ARGUS-API` and `ARGUS-Worker` scheduled tasks so no collection writes occur while the schema is being replaced. Perform the restore in TEST first using a copy of the intended archive, then run `check`, API readiness and at least one end-to-end collection.
 
 ## Connection-pool saturation
 
