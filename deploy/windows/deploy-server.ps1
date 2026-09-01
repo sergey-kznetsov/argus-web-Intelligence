@@ -14,6 +14,14 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+function Assert-Administrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw "Apply mode requires an elevated PowerShell session."
+    }
+}
+
 function Read-EnvValue {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -104,7 +112,7 @@ function Invoke-Checked {
     try {
         & $FilePath @Arguments
         if ($LASTEXITCODE -ne 0) {
-            throw "Command failed with exit code $LASTEXITCODE: $FilePath"
+            throw "Command failed with exit code ${LASTEXITCODE}: $FilePath"
         }
     }
     finally {
@@ -227,6 +235,7 @@ function Show-ArgusLogs {
 if ($ApiPort -lt 1024 -or $ApiPort -gt 65535) { throw "Invalid API port" }
 if ($WorkerProbePort -lt 1024 -or $WorkerProbePort -gt 65535) { throw "Invalid worker probe port" }
 if ($ApiPort -eq $WorkerProbePort) { throw "ARGUS API and worker probe ports must differ" }
+if ($Ref -notmatch '^[0-9a-f]{40}$') { throw "ABORT: Ref must be an immutable 40-character commit SHA." }
 
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
 $DataRoot = [IO.Path]::GetFullPath($DataRoot)
@@ -261,6 +270,7 @@ if (-not $Apply) {
     exit 0
 }
 
+Assert-Administrator
 if ($freeDiskGiB -lt 5) {
     throw "ABORT: less than 5 GiB is free on C:."
 }
