@@ -29,8 +29,10 @@ def test_windows_server_deployment_is_standalone_and_loopback_only() -> None:
     assert "ARGUS_TOKEN_FILE" in deploy
     assert "ARGUS_EXECUTION_ROLE = \"api\"" in runner
     assert "ARGUS_EXECUTION_ROLE = \"worker\"" in runner
-    assert "--host 127.0.0.1" in runner
-    assert "--probe-host 127.0.0.1" in runner
+    assert '"--host", "127.0.0.1"' in runner
+    assert '"--probe-host", "127.0.0.1"' in runner
+    assert '$ErrorActionPreference = "Continue"' in runner
+    assert "exit $processExitCode" in runner
 
 
 def test_geo_analyzer_consumers_receive_generic_argus_service_contract() -> None:
