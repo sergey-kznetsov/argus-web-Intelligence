@@ -87,10 +87,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -Apply
 ```
 
-Default server database configuration source:
+Confirmed production Geo Analyzer database configuration source on this server:
 
 ```text
-C:\ProgramData\GeoAnalyzer\saas.env
+C:\server\saas.env
 ```
 
 The deployment copies only the resolved DSN value into `C:\ProgramData\ARGUS\secrets\database-dsn.txt`; runtime ARGUS does not depend on reading Geo Analyzer's environment file. ARGUS migrations remain scoped to PostgreSQL schema `argus`.
@@ -147,7 +147,7 @@ The corrected staging smoke does not install ARGUS. It requires an already-runni
 
 ## Connect Geo Analyzer PROD
 
-Production is configured only after the same Kraken flow passes in TEST. Use the same consumer script with the confirmed production Geo Analyzer environment file and scheduled-task name.
+Production is configured only after the same Kraken flow passes in TEST. Use the same consumer script with the confirmed production Geo Analyzer environment file `C:\server\saas.env` and Scheduled Task `GeoAnalyzerSaaS`.
 
 No separate production ARGUS instance is created: TEST and PROD consume the same standalone service through localhost.
 
