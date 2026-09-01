@@ -1,0 +1,67 @@
+name: one-shot-standalone-docs
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Align architecture documentation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          readme = Path("README.md")
+          text = readme.read_text(encoding="utf-8")
+          text = text.replace(
+              "ARGUS is installed and supervised by the universal Geo Analyzer server-module manager, but it is intentionally hidden from the user analysis selection UI. Its runtime manifest sets `analysis_launch_toggle=false`; consumers call the ARGUS collection API directly.",
+              "ARGUS is one standalone server-level infrastructure service. Geo Analyzer does not install, update, stop or delete it. TEST, PROD and analytical consumers call the same localhost ARGUS API through a server-owned endpoint and token-file contract."
+          )
+          start = text.index("## Server deployment through Geo Analyzer")
+          end = text.index("## Server queue and recovery")
+          replacement = """## Standalone server deployment\n\nARGUS is deployed independently of Geo Analyzer under `C:\\\\argus` with configuration and secrets under `C:\\\\ProgramData\\\\ARGUS`. On Windows Server the service is composed of `ARGUS-API` and `ARGUS-Worker` SYSTEM scheduled tasks, both loopback-only.\n\nGeo Analyzer consumers receive only these generic server variables:\n\n```text\nARGUS_SERVICE_BASE_URL=http://127.0.0.1:8787\nARGUS_SERVICE_TOKEN_FILE=C:\\\\ProgramData\\\\ARGUS\\\\secrets\\\\argus.token\n```\n\nThe standalone deploy performs migrations before cutover, waits for API/worker readiness and rolls back the scheduled tasks to the previous immutable release if health fails. See [`docs/SERVER_DEPLOYMENT_WINDOWS.md`](docs/SERVER_DEPLOYMENT_WINDOWS.md).\n\n"""
+          text = text[:start] + replacement + text[end:]
+          readme.write_text(text, encoding="utf-8")
+
+          windows = Path("docs/WINDOWS_RUNTIME.md")
+          text = windows.read_text(encoding="utf-8")
+          text = text.replace(
+              "The Geo Analyzer deployment entrypoint therefore uses this process model:",
+              "The standalone ARGUS Windows runtime therefore uses this process model:"
+          )
+          text = text.replace(
+              "`argus.runtime_entrypoint` must be used by `geo-analyzer-module.json` for PostgreSQL\nmigrations, API startup and worker startup.",
+              "`argus.runtime_entrypoint` is used by the standalone Windows deployment for PostgreSQL\nmigrations, API startup and worker startup."
+          )
+          text = text.replace(
+              "It runs the same storage migration/check entrypoints as Geo Analyzer, starts the",
+              "It runs the same storage migration/check entrypoints as the standalone server deployment, starts the"
+          )
+          windows.write_text(text, encoding="utf-8")
+
+          postgres = Path("docs/POSTGRES_OPERATIONS.md")
+          text = postgres.read_text(encoding="utf-8")
+          text = text.replace(
+              "a production update must not use manual ad-hoc SQL when the same change can be represented by an ARGUS migration or the universal Geo Analyzer module update flow.",
+              "a production update must not use manual ad-hoc SQL when the same change can be represented by an ARGUS migration or the standalone ARGUS deployment flow."
+          )
+          text = text.replace(
+              "Before PROD restore, stop or disable ARGUS API/worker processes in the module manager",
+              "Before PROD restore, stop the standalone `ARGUS-API` and `ARGUS-Worker` scheduled tasks"
+          )
+          postgres.write_text(text, encoding="utf-8")
+          PY
+      - name: Commit documentation migration and remove one-shot workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/one-shot-standalone-docs.yml
+          git add README.md docs/WINDOWS_RUNTIME.md docs/POSTGRES_OPERATIONS.md
+          git commit -m "Align ARGUS docs with standalone server lifecycle"
+          git push
