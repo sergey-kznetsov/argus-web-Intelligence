@@ -8,6 +8,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 from argus.consumer_registry import CONSUMER_PROFILE_REGISTRY
+from argus.toolpacks import TOOL_PACK_REGISTRY
 
 PROTOCOL_VERSION = "1.0.0"
 
@@ -72,6 +73,8 @@ class CollectionRequest(BaseModel):
     consumer_profile_version: int | None = Field(default=None, ge=1)
     capability: str | None = Field(default=None, min_length=1, max_length=128)
     requested_facts: list[str] = Field(default_factory=list, max_length=50)
+    tool_pack_id: str | None = Field(default=None, min_length=1, max_length=128)
+    tool_pack_version: int | None = Field(default=None, ge=1)
     analysis_id: str = Field(min_length=1, max_length=128)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
     territory: TerritoryContext
@@ -101,6 +104,27 @@ class CollectionRequest(BaseModel):
         self.consumer_profile_version = resolved.profile_version
         self.capability = resolved.capability
         self.requested_facts = list(resolved.requested_facts)
+
+        if resolved.legacy_unregistered:
+            if self.tool_pack_id is not None or self.tool_pack_version is not None:
+                raise ValueError(
+                    "UNKNOWN_CONSUMER_TOOL_PACK: unregistered consumers cannot select tool packs"
+                )
+            self.tool_pack_id = None
+            self.tool_pack_version = None
+            return self
+
+        if resolved.capability is None or resolved.tool_pack_id is None:
+            raise ValueError("PROFILE_TOOL_PACK_MISSING: profiled consumer requires a tool pack")
+        tool_pack = TOOL_PACK_REGISTRY.resolve(
+            consumer_id=resolved.consumer_id,
+            capability=resolved.capability,
+            expected_tool_pack_id=resolved.tool_pack_id,
+            requested_tool_pack_id=self.tool_pack_id,
+            requested_version=self.tool_pack_version,
+        )
+        self.tool_pack_id = tool_pack.tool_pack_id
+        self.tool_pack_version = tool_pack.version
         return self
 
 
