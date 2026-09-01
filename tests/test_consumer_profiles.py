@@ -25,6 +25,8 @@ def test_kraken_profile_resolves_default_capability_and_facts():
     assert request.consumer == "kraken.development.uds"
     assert request.consumer_profile_version == 1
     assert request.capability == "urban_signals"
+    assert request.tool_pack_id == "kraken.urban_signals"
+    assert request.tool_pack_version == 1
     assert request.requested_facts == [
         "review",
         "complaint",
@@ -47,6 +49,8 @@ def test_profiled_consumer_can_request_supported_fact_subset():
 
     assert request.capability == "urban_signals"
     assert request.requested_facts == ["review", "comment"]
+    assert request.tool_pack_id == "kraken.urban_signals"
+    assert request.tool_pack_version == 1
 
 
 def test_profiled_consumer_rejects_unknown_capability():
@@ -80,6 +84,8 @@ def test_unknown_consumer_is_legacy_compatible_without_profile_fields():
     assert request.consumer_profile_version is None
     assert request.capability is None
     assert request.requested_facts == []
+    assert request.tool_pack_id is None
+    assert request.tool_pack_version is None
 
 
 def test_unknown_consumer_cannot_use_profiled_contract_fields():
@@ -101,4 +107,5 @@ def test_catalog_exposes_kraken_module_contract():
     assert kraken["default_capability"] == "urban_signals"
     capability = kraken["capabilities"][0]
     assert capability["capability"] == "urban_signals"
+    assert capability["tool_pack_id"] == "kraken.urban_signals"
     assert "review" in capability["allowed_facts"]
