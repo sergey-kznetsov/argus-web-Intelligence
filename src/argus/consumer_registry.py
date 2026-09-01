@@ -15,6 +15,7 @@ class ConsumerContractError(ValueError):
 class ConsumerCapabilityProfile:
     capability: str
     allowed_facts: tuple[str, ...]
+    tool_pack_id: str
     default_requested_facts: tuple[str, ...] = ()
     description: str = ""
 
@@ -43,6 +44,7 @@ class ResolvedConsumerContract:
     profile_version: int | None
     capability: str | None
     requested_facts: tuple[str, ...]
+    tool_pack_id: str | None
     legacy_unregistered: bool = False
 
 
@@ -95,6 +97,7 @@ class ConsumerProfileRegistry:
                 profile_version=None,
                 capability=None,
                 requested_facts=(),
+                tool_pack_id=None,
                 legacy_unregistered=True,
             )
 
@@ -138,6 +141,7 @@ class ConsumerProfileRegistry:
             profile_version=profile.version,
             capability=capability_profile.capability,
             requested_facts=facts,
+            tool_pack_id=capability_profile.tool_pack_id,
         )
 
     @staticmethod
@@ -185,6 +189,7 @@ KRAKEN_URBAN_SIGNALS = ConsumerCapabilityProfile(
         "local_news_mention",
         "incident_mention",
     ),
+    tool_pack_id="kraken.urban_signals",
     default_requested_facts=(
         "review",
         "complaint",
@@ -218,6 +223,7 @@ CONSUMER_PROFILE_REGISTRY = ConsumerProfileRegistry(
                 ConsumerCapabilityProfile(
                     capability="generic_research",
                     allowed_facts=("*",),
+                    tool_pack_id="test.generic",
                     description="CI/manual smoke profile; not a product consumer contract.",
                 ),
             ),
@@ -245,6 +251,7 @@ def consumer_profile_catalog() -> list[dict[str, object]]:
                         "default_requested_facts": list(
                             capability.default_requested_facts
                         ),
+                        "tool_pack_id": capability.tool_pack_id,
                         "description": capability.description,
                     }
                     for capability in profile.capabilities
