@@ -51,7 +51,7 @@
         "ARGUS_LOG_LEVEL": "INFO",
         "PYTHONUNBUFFERED": "1"
       },
-      "health": {"path": "/readyz", "port": "worker_probe_port", "authenticated": false}
+      "health": {"path": "/readyz", "port_placeholder": "worker_probe_port", "authenticated": false}
     }
   ],
   "ports": {
