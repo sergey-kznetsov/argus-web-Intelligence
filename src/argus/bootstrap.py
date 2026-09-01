@@ -17,7 +17,9 @@ from argus.llm_health import OllamaRuntimeHealth
 from argus.maps.overpass import OverpassMapProvider
 from argus.maps.registry import MapProviderRegistry
 from argus.observability import OperationalMetrics
-from argus.orchestrator.evidence_status import EvidenceStatusAdaptiveResearchOrchestrator
+from argus.orchestrator.toolpack_aware import (
+    ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator,
+)
 from argus.recipes.service import RecipeManager
 from argus.research.browser_serp import DuckDuckGoFastDiscoveryProvider
 from argus.research.coverage import EvidenceAwareHeuristicFollowupResearchPlanner
@@ -284,7 +286,7 @@ def build_services(settings: Settings) -> ServiceContainer:
         target_sources_per_intent=2,
         coverage=coverage,
     )
-    orchestrator = EvidenceStatusAdaptiveResearchOrchestrator(
+    orchestrator = ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
         repository=repository,
         registry=registry,
         planner=planner,
