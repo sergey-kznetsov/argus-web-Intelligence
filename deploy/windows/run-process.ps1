@@ -43,6 +43,34 @@ function Import-EnvFile {
     }
 }
 
+function Invoke-ArgusRuntime {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$LogFile
+    )
+
+    # Windows PowerShell 5.1 promotes native stderr records to PowerShell errors.
+    # Uvicorn and the worker legitimately log startup/runtime information to stderr,
+    # so ErrorActionPreference=Stop would terminate an otherwise healthy service.
+    # Keep strict error handling for all PowerShell setup work, relax it only while
+    # the native Python process owns the foreground, then propagate its real exit code.
+    $previousPreference = $ErrorActionPreference
+    $nativeExitCode = 1
+    try {
+        $ErrorActionPreference = "Continue"
+        & $python @Arguments *>> $LogFile
+        $nativeExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+
+    if ($null -eq $nativeExitCode) {
+        return 1
+    }
+    return [int]$nativeExitCode
+}
+
 $release = [IO.Path]::GetFullPath($ReleaseRoot)
 $python = Join-Path $release ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
@@ -74,12 +102,18 @@ $logFile = Join-Path $logsRoot "$Role.log"
 if ($Role -eq "api") {
     $port = if ($env:ARGUS_PORT) { [int]$env:ARGUS_PORT } else { 8787 }
     $env:ARGUS_EXECUTION_ROLE = "api"
-    & $python -m argus.runtime_entrypoint api --host 127.0.0.1 --port $port *>> $logFile
+    $processExitCode = Invoke-ArgusRuntime -Arguments @(
+        "-m", "argus.runtime_entrypoint", "api",
+        "--host", "127.0.0.1", "--port", [string]$port
+    ) -LogFile $logFile
 }
 else {
     $probePort = if ($env:ARGUS_WORKER_PROBE_PORT) { [int]$env:ARGUS_WORKER_PROBE_PORT } else { 8788 }
     $env:ARGUS_EXECUTION_ROLE = "worker"
-    & $python -m argus.runtime_entrypoint worker --probe-host 127.0.0.1 --probe-port $probePort *>> $logFile
+    $processExitCode = Invoke-ArgusRuntime -Arguments @(
+        "-m", "argus.runtime_entrypoint", "worker",
+        "--probe-host", "127.0.0.1", "--probe-port", [string]$probePort
+    ) -LogFile $logFile
 }
 
-exit $LASTEXITCODE
+exit $processExitCode
