@@ -3,7 +3,7 @@ param(
     [string]$Ref = "main",
     [string]$InstallRoot = "C:\argus",
     [string]$DataRoot = "C:\ProgramData\ARGUS",
-    [string]$DatabaseSourceEnvFile = "C:\ProgramData\GeoAnalyzer\saas.env",
+    [string]$DatabaseSourceEnvFile = "C:\server\saas.env",
     [string]$ApiTaskName = "ARGUS-API",
     [string]$WorkerTaskName = "ARGUS-Worker",
     [int]$ApiPort = 8787,
@@ -78,7 +78,7 @@ function Get-GithubToken {
         return $env:GEO_GITHUB_TOKEN.Trim()
     }
     foreach ($candidate in @(
-        "C:\ProgramData\GeoAnalyzer\saas.env",
+        "C:\server\saas.env",
         "C:\ProgramData\GeoAnalyzerTest\saas.env"
     )) {
         $value = Read-EnvValue -Path $candidate -Name "GEO_GITHUB_TOKEN"
@@ -375,7 +375,7 @@ if ([string]::IsNullOrWhiteSpace($databaseDsn)) {
     }
 }
 if ([string]::IsNullOrWhiteSpace($databaseDsn)) {
-    throw "Production Geo Analyzer PostgreSQL DSN is not configured"
+    throw "Geo Analyzer PostgreSQL DSN is not configured in $DatabaseSourceEnvFile"
 }
 [IO.File]::WriteAllText($DatabaseDsnFile, $databaseDsn + "`n", [Text.UTF8Encoding]::new($false))
 Remove-Variable databaseDsn -ErrorAction SilentlyContinue
