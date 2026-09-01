@@ -46,9 +46,11 @@ Both are configured to start at boot and restart after process failure. The API 
 
 ## Deployment safety
 
-`deploy/windows/deploy-server.ps1` is plan-only unless `-Apply` is supplied. Apply performs these steps:
+`deploy/windows/deploy-server.ps1` is plan-only unless `-Apply` is supplied. `-Ref` must always be an immutable 40-character Git commit SHA; branch names such as `main` are rejected.
 
-1. resolves an exact GitHub commit;
+Apply performs these steps:
+
+1. verifies the exact GitHub commit;
 2. builds a new immutable release and isolated Python 3.11 virtual environment;
 3. installs Chromium for the Playwright path;
 4. preserves the server bearer token and copies the PostgreSQL DSN into an ARGUS-owned secret file;
@@ -62,30 +64,36 @@ ARGUS owns only the `argus` PostgreSQL schema. It may use the same PostgreSQL in
 
 ## Deploy
 
+Set the exact CI-green commit SHA:
+
+```powershell
+$Ref = "<40-character-CI-green-commit-SHA>"
+```
+
 Plan:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File deploy\windows\deploy-server.ps1 `
-  -Ref main
+  -Ref $Ref
 ```
 
-Apply:
+Apply only after the plan has been checked:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File deploy\windows\deploy-server.ps1 `
-  -Ref main `
+  -Ref $Ref `
   -Apply
 ```
 
-Default production database configuration source:
+Default server database configuration source:
 
 ```text
 C:\ProgramData\GeoAnalyzer\saas.env
 ```
 
-The deployment copies only the resolved DSN value into `C:\ProgramData\ARGUS\secrets\database-dsn.txt`; runtime ARGUS does not depend on reading Geo Analyzer's environment file.
+The deployment copies only the resolved DSN value into `C:\ProgramData\ARGUS\secrets\database-dsn.txt`; runtime ARGUS does not depend on reading Geo Analyzer's environment file. ARGUS migrations remain scoped to PostgreSQL schema `argus`.
 
 ## Health
 
@@ -96,6 +104,8 @@ Get-ScheduledTask -TaskName "ARGUS-*" | Select-Object TaskName,State
 ```
 
 The API is considered ready only when PostgreSQL is healthy and a worker is active.
+
+Never print `C:\ProgramData\ARGUS\secrets\argus.token` or the database DSN during diagnostics.
 
 ## Connect Geo Analyzer TEST
 
@@ -110,18 +120,37 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 Then apply the same command with `-Apply`.
 
+The consumer script writes only:
+
+```text
+ARGUS_SERVICE_BASE_URL
+ARGUS_SERVICE_TOKEN_FILE
+```
+
 After Geo Analyzer TEST restarts, install or reinstall only Kraken through the Geo Analyzer module interface. Kraken inherits the generic ARGUS service variables from Geo Analyzer and calls the already-running standalone service.
+
+## TEST acceptance
+
+The required integrated acceptance path is:
+
+```text
+Geo Analyzer TEST
+  -> Kraken installed through Module Manager
+  -> standalone ARGUS
+  -> public source
+  -> Observation/Evidence/Provenance/Coverage
+  -> Kraken analytics
+  -> Geo Analyzer result
+```
+
+The corrected staging smoke does not install ARGUS. It requires an already-running standalone service and an already-installed Kraken module.
 
 ## Connect Geo Analyzer PROD
 
-Production is configured only after the same Kraken flow passes in TEST. Use the same consumer script with:
+Production is configured only after the same Kraken flow passes in TEST. Use the same consumer script with the confirmed production Geo Analyzer environment file and scheduled-task name.
 
-```text
-EnvironmentFile = C:\ProgramData\GeoAnalyzer\saas.env
-```
-
-and the production Geo Analyzer scheduled-task name. No separate production ARGUS instance is created: TEST and PROD consume the same standalone service through localhost.
+No separate production ARGUS instance is created: TEST and PROD consume the same standalone service through localhost.
 
 ## Upgrade ARGUS
 
-Run `deploy-server.ps1` again with the desired `-Ref` and `-Apply`. Geo Analyzer and Kraken do not need reinstall merely because ARGUS is upgraded, provided the protocol remains compatible. ARGUS cutover and rollback remain entirely inside the standalone service lifecycle.
+Run `deploy-server.ps1` again with a new CI-green immutable commit SHA. Geo Analyzer and Kraken do not need reinstall merely because ARGUS is upgraded, provided the protocol remains compatible. ARGUS cutover and rollback remain entirely inside the standalone service lifecycle.
