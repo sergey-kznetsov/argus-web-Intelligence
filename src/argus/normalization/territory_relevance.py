@@ -49,7 +49,7 @@ class TerritoryRelevanceProofNormalizer:
             observation.provenance["territory_relevance"] = proof
             observation.quality["territory_relevant"] = result.matched
 
-            for item in evidence_by_observation.get(observation.observation_id, ()): 
+            for item in evidence_by_observation.get(observation.observation_id, ()):
                 item.metadata["territory_relevance_verified"] = result.matched
                 item.metadata["territory_relevance"] = {
                     "version": self.version,
