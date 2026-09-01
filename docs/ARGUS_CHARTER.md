@@ -52,9 +52,16 @@ ARGUS
 public internet / sites / maps / archives / portals / documents
 ```
 
-ARGUS is infrastructure. It must not appear as a user analysis checkbox or capability card. Geo Analyzer may install, start, health-check, update, reinstall and remove it.
+ARGUS is one standalone server-level infrastructure service. It must not appear as a user analysis checkbox, capability card or installable Geo Analyzer module. The server deployment owns ARGUS install, start, health-check, update, rollback and removal. Geo Analyzer TEST, Geo Analyzer PROD and analytical modules consume the same service through the generic deployment-owned contract:
 
-ARGUS must never branch on consumer identity (`if kraken`, `if janus`, etc.). A consumer describes the requested information through `territory`, `intents` and constraints.
+```text
+ARGUS_SERVICE_BASE_URL=http://127.0.0.1:8787
+ARGUS_SERVICE_TOKEN_FILE=C:\ProgramData\ARGUS\secrets\argus.token
+```
+
+Geo Analyzer does not contain ARGUS-specific lifecycle branches. Analytical modules decide when their methodology requires web intelligence and call ARGUS through a module-local connector.
+
+ARGUS must never branch on consumer identity (`if kraken`, `if janus`, etc.). A consumer describes the requested information through `territory`, `intents`, `requested_facts` and constraints.
 
 ## 4. Input contract
 
@@ -301,13 +308,13 @@ Persist at minimum:
 
 Crash/restart must resume from durable state without fabricating duplicate factual history.
 
-## 16. API and module integration
+## 16. API and consumer integration
 
 ARGUS exposes an internal authenticated collection API. Consumers submit a collection and later read bounded/paginated results.
 
 The API contract is consumer-neutral. The presence of `consumer` is for identity/provenance/idempotency and must not select hidden source logic.
 
-Geo Analyzer owns service lifecycle; analytical modules own the decision to call ARGUS.
+The standalone server deployment owns service lifecycle. Analytical modules own the decision to call ARGUS and consume it through `ARGUS_SERVICE_BASE_URL` and `ARGUS_SERVICE_TOKEN_FILE`. Geo Analyzer only passes its deployment environment to installed modules through generic runtime inheritance; it does not install or supervise ARGUS.
 
 ## 17. Standalone verification outside Geo Analyzer
 
