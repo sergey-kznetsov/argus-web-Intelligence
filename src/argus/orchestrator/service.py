@@ -15,6 +15,7 @@ from argus.contracts.models import (
     SourceCoverage,
     StructuredError,
 )
+from argus.normalization.territory_relevance import TerritoryRelevanceProofNormalizer
 from argus.research.discovery import DiscoveryService
 from argus.research.historical import HistoricalBranchPlanner
 from argus.research.planner import ResearchPlanner
@@ -57,6 +58,7 @@ class CollectionOrchestrator:
         historical_branch_planner: HistoricalBranchPlanner | None = None,
         *,
         auto_execute: bool = True,
+        territory_relevance=None,
     ) -> None:
         self.repository = repository
         self.registry = registry
@@ -64,6 +66,7 @@ class CollectionOrchestrator:
         self.discovery = discovery
         self.historical_branch_planner = historical_branch_planner
         self.auto_execute = auto_execute
+        self.territory_relevance = territory_relevance or TerritoryRelevanceProofNormalizer()
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._jobs: dict[str, asyncio.Task[None]] = {}
         self._cancelled: set[str] = set()
@@ -561,6 +564,11 @@ class CollectionOrchestrator:
             try:
                 fetched = await adapter.fetch(task)
                 result = await adapter.normalize(await adapter.extract(task, fetched, record.request))
+                self.territory_relevance.normalize(
+                    record.request,
+                    result.observations,
+                    result.evidence,
+                )
                 for observation in result.observations:
                     await self.repository.add_observation(observation)
                 for evidence in result.evidence:
