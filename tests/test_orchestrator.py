@@ -28,10 +28,12 @@ class FakeAdapter:
         blocked: bool = False,
         children: int = 0,
         seed_task: bool = True,
+        text: str = "evidence",
     ) -> None:
         self.blocked = blocked
         self.children = children
         self.seed_task = seed_task
+        self.text = text
 
     async def discover(self, request):
         del request
@@ -60,8 +62,8 @@ class FakeAdapter:
             source_kind="test",
             url=task.url,
             entity_type="document",
-            text="evidence",
-            content_hash=sha256_text("evidence"),
+            text=self.text,
+            content_hash=sha256_text(self.text),
         )
         children = []
         if task.depth < self.children:
@@ -162,6 +164,27 @@ async def test_discovery_can_seed_collection_without_source_seed_urls(tmp_path: 
     observations = await repo.list_observations(record.collection_id)
     assert len(observations) == 1
     assert observations[0].url == "https://example.com/discovered"
+
+
+@pytest.mark.asyncio
+async def test_classic_orchestrator_persists_territory_relevance_proof(tmp_path: Path):
+    address = "Ижевск, улица Пушкинская, дом 277"
+    repo, record = await run_collection(
+        tmp_path,
+        FakeAdapter(text=f"{address}. Жители сообщают о проблеме."),
+        territory={"city": "Ижевск", "address": address},
+    )
+
+    assert record and record.status == CollectionStatus.COMPLETED
+    observations = await repo.list_observations(record.collection_id)
+    assert len(observations) == 1
+    observation = observations[0]
+    assert observation.quality["territory_relevant"] is True
+    proof = observation.provenance["territory_relevance"]
+    assert proof["matched"] is True
+    assert proof["basis"] == "exact_address"
+    assert proof["source_backed"] is True
+    assert proof["planning_metadata_used_as_evidence"] is False
 
 
 @pytest.mark.asyncio
