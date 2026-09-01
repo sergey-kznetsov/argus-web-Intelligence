@@ -46,6 +46,8 @@ jobs:
       - run: ruff check src tests
       - name: Security lint production sources
         run: ruff check src --select S
+      - name: Verify deployment manifest contract
+        run: pytest -q tests/test_deployment_manifest.py tests/test_deployment_manifest_contract.py
       - name: Run pytest with coverage
         run: pytest -q --cov=argus --cov-report=term-missing --cov-fail-under=80 2>&1 | tee pytest.log
       - name: Preserve pytest failure log
