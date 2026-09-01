@@ -46,8 +46,8 @@ jobs:
       - run: ruff check src tests
       - name: Security lint production sources
         run: ruff check src --select S
-      - name: Verify deployment manifest contract
-        run: pytest -q tests/test_deployment_manifest.py tests/test_deployment_manifest_contract.py
+      - name: Verify standalone server deployment contract
+        run: pytest -q tests/test_server_deployment_contract.py
       - name: Run pytest with coverage
         run: pytest -q --cov=argus --cov-report=term-missing --cov-fail-under=80 2>&1 | tee pytest.log
       - name: Preserve pytest failure log
@@ -73,13 +73,33 @@ jobs:
       - run: python -m compileall -q src tests/test_windows_runtime.py
       - run: ruff check src/argus/platform_asyncio.py src/argus/runtime_entrypoint.py src/argus/crawler/browser/windows_runtime.py tests/test_windows_runtime.py
       - run: pytest -q tests/test_windows_runtime.py
+      - name: Parse standalone Windows deployment scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($script in @(
+            "deploy/windows/deploy-server.ps1",
+            "deploy/windows/run-process.ps1",
+            "deploy/windows/configure-geo-analyzer-consumer.ps1"
+          )) {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script),
+              [ref]$null,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              throw "PowerShell syntax validation failed: $script"
+            }
+          }
       - name: Start PostgreSQL 14 on Windows Server 2022
         shell: pwsh
         run: |
           Set-Service -Name postgresql-x64-14 -StartupType Manual
           Start-Service -Name postgresql-x64-14
           & "$env:PGBIN\pg_isready.exe" -h 127.0.0.1 -p 5432 -U postgres
-      - name: Geo Analyzer deployment entrypoint smoke
+      - name: Standalone runtime entrypoint smoke
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -152,7 +172,7 @@ jobs:
             $headers = @{ Authorization = "Bearer $token" }
             $manifest = Invoke-RestMethod -Uri "http://127.0.0.1:18100/v1/manifest" -Headers $headers -TimeoutSec 5
             if ($manifest.module_id -ne "argus.web.intelligence") {
-              throw "Unexpected module manifest"
+              throw "Unexpected ARGUS protocol identity"
             }
           }
           finally {
