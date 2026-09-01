@@ -182,3 +182,96 @@ jobs:
               }
             }
           }
+      - name: Standalone Windows service runner smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $release = Join-Path $env:RUNNER_TEMP "argus-runner-release"
+          $config = Join-Path $env:RUNNER_TEMP "argus-runner.env"
+          $tokenFile = Join-Path $env:RUNNER_TEMP "argus-runner.token"
+          $dsnFile = Join-Path $env:RUNNER_TEMP "argus-runner-dsn.txt"
+          $logs = Join-Path $env:RUNNER_TEMP "argus-runner-logs"
+          $runner = (Resolve-Path "deploy/windows/run-process.ps1").Path
+
+          New-Item -ItemType Directory -Path $release -Force | Out-Null
+          New-Item -ItemType Directory -Path $logs -Force | Out-Null
+          python -m venv --system-site-packages (Join-Path $release ".venv")
+
+          [IO.File]::WriteAllText($tokenFile, "ci-runner-token`n")
+          [IO.File]::WriteAllText($dsnFile, "postgresql://postgres:root@127.0.0.1:5432/postgres`n")
+          [IO.File]::WriteAllLines($config, @(
+            "ARGUS_HOST=127.0.0.1",
+            "ARGUS_PORT=18102",
+            "ARGUS_WORKER_PROBE_PORT=18103",
+            "ARGUS_TOKEN_FILE=$tokenFile",
+            "ARGUS_STORAGE_BACKEND=postgresql",
+            "ARGUS_DATABASE_DSN_FILE=$dsnFile",
+            "ARGUS_LOG_DIR=$logs",
+            "ARGUS_LLM_REQUIRED=false"
+          ))
+
+          $api = Start-Process powershell.exe -ArgumentList @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", "`"$runner`"",
+            "-Role", "api",
+            "-ReleaseRoot", "`"$release`"",
+            "-ConfigFile", "`"$config`""
+          ) -PassThru
+
+          $worker = Start-Process powershell.exe -ArgumentList @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", "`"$runner`"",
+            "-Role", "worker",
+            "-ReleaseRoot", "`"$release`"",
+            "-ConfigFile", "`"$config`""
+          ) -PassThru
+
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 60; $i++) {
+              $api.Refresh()
+              $worker.Refresh()
+              if ($api.HasExited -or $worker.HasExited) {
+                Write-Host "Runner API exited=$($api.HasExited) code=$($api.ExitCode)"
+                Write-Host "Runner worker exited=$($worker.HasExited) code=$($worker.ExitCode)"
+                foreach ($log in @("api.log", "worker.log")) {
+                  $path = Join-Path $logs $log
+                  if (Test-Path $path) {
+                    Write-Host "=== $log ==="
+                    Get-Content $path
+                  }
+                }
+                throw "ARGUS Windows service runner exited before health-check"
+              }
+
+              try {
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:18102/v1/health" -TimeoutSec 5
+                $workerHealth = Invoke-RestMethod -Uri "http://127.0.0.1:18103/readyz" -TimeoutSec 5
+                if ($health.status -eq "ok" -and $workerHealth.status -eq "ok") {
+                  $ready = $true
+                  break
+                }
+              } catch {
+                # Startup is asynchronous; retry until the bounded deadline.
+              }
+              Start-Sleep -Seconds 1
+            }
+
+            if (-not $ready) {
+              foreach ($log in @("api.log", "worker.log")) {
+                $path = Join-Path $logs $log
+                if (Test-Path $path) {
+                  Write-Host "=== $log ==="
+                  Get-Content $path
+                }
+              }
+              throw "ARGUS Windows service runner did not become healthy"
+            }
+          }
+          finally {
+            foreach ($process in @($worker, $api)) {
+              if ($null -ne $process -and -not $process.HasExited) {
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              }
+            }
+          }
