@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 import threading
 from pathlib import Path
@@ -95,12 +94,15 @@ def test_threaded_browser_runtime_dispatches_to_dedicated_loop() -> None:
     assert _FakeBrowserRuntime.shutdown_calls >= 1
 
 
-def test_deployment_manifest_uses_runtime_entrypoint() -> None:
-    manifest = json.loads(Path("geo-analyzer-module.json").read_text(encoding="utf-8"))
-    migration_commands = manifest["database"]["migrations"]
-    process_commands = [process["command"] for process in manifest["processes"]]
-    assert all("argus.runtime_entrypoint" in command for command in migration_commands)
-    assert all("argus.runtime_entrypoint" in command for command in process_commands)
+def test_standalone_windows_deployment_uses_runtime_entrypoint() -> None:
+    deploy = Path("deploy/windows/deploy-server.ps1").read_text(encoding="utf-8")
+    runner = Path("deploy/windows/run-process.ps1").read_text(encoding="utf-8")
+
+    assert '"argus.runtime_entrypoint", "storage", "migrate"' in deploy
+    assert '"argus.runtime_entrypoint", "storage", "check"' in deploy
+    assert "argus.runtime_entrypoint api" in runner
+    assert "argus.runtime_entrypoint worker" in runner
+    assert not Path("geo-analyzer-module.json").exists()
 
 
 def test_api_loop_factory_is_scoped_to_windows_postgresql() -> None:
@@ -178,48 +180,3 @@ def test_windows_postgres_and_browser_use_split_event_loops() -> None:
     assert "Proactor" in str(result["loop_type"])
     assert result["returncode"] == 0
     assert result["stdout"] == "argus-proactor-ok"
-    assert result["stderr"] == ""
-
-
-def test_runtime_entrypoint_storage_configures_policy_before_cli(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from argus import runtime_entrypoint
-    from argus.storage import cli as storage_cli
-
-    calls: list[object] = []
-
-    def _configure(storage_backend: str) -> bool:
-        calls.append(("configure", storage_backend))
-        return True
-
-    def _storage_main() -> None:
-        calls.append(("main", tuple(sys.argv)))
-
-    monkeypatch.setattr(runtime_entrypoint, "configure_windows_postgres_event_loop", _configure)
-    monkeypatch.setattr(storage_cli, "main", _storage_main)
-    original_argv = list(sys.argv)
-
-    runtime_entrypoint._run_storage(["migrate"])
-
-    assert calls[0] == ("configure", "postgresql")
-    assert calls[1] == ("main", ("python -m argus.storage.cli", "migrate"))
-    assert sys.argv == original_argv
-
-
-def test_runtime_entrypoint_parser_accepts_deployment_commands() -> None:
-    from argus.runtime_entrypoint import _parser
-
-    parser = _parser()
-    storage = parser.parse_args(["storage", "migrate"])
-    api = parser.parse_args(["api", "--port", "18100"])
-    worker = parser.parse_args(["worker", "--probe-port", "18101"])
-
-    assert storage.command == "storage"
-    assert storage.storage_args == ["migrate"]
-    assert api.command == "api"
-    assert api.host == "127.0.0.1"
-    assert api.port == 18100
-    assert worker.command == "worker"
-    assert worker.probe_host == "127.0.0.1"
-    assert worker.probe_port == 18101
