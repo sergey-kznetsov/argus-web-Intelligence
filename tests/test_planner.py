@@ -16,10 +16,12 @@ async def test_historical_context_expands_queries_and_reserves_archive_sources()
     joined = " ".join(plan.queries)
     assert "что было раньше" in joined
     assert "снос" in joined
-    assert "site:pastvu.com" in joined
-    assert "site:etomesto.ru" in joined
-    assert "site:retromap.ru" in joined
-    assert "site:photo.rgakfd.ru" in joined
+    # Generic search reserves bounded space for curated archive/catalog sources. Dedicated
+    # historical photo sources such as PastVu are handled by their own adapters instead of
+    # being duplicated as generic search queries.
+    assert "site:prlib.ru" in joined
+    assert "site:rusneb.ru" in joined
+    assert "site:archives.gov.ru" in joined
     assert plan.notes[0] == "heuristic_language=ru"
     assert any(note.startswith("curated_historical_sources=") for note in plan.notes)
 
