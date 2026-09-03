@@ -127,7 +127,7 @@ def review_result(recipe_id: str) -> SourceResult:
         source_kind="web_page",
         url="https://example.com/reviews",
         entity_type="review",
-        text="Публичный отзыв о месте.",
+        text="Пермь. Публичный отзыв о месте.",
         content_hash="a" * 64,
         provenance={"recipe_id": recipe_id},
     )
