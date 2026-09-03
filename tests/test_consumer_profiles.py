@@ -28,7 +28,6 @@ def test_kraken_profile_resolves_default_capability_and_facts():
     assert request.tool_pack_id == "kraken.urban_signals"
     assert request.tool_pack_version == 1
     assert request.requested_facts == [
-        "review",
         "complaint",
         "public_appeal",
         "post",
@@ -44,13 +43,21 @@ def test_profiled_consumer_can_request_supported_fact_subset():
         consumer="kraken.development.uds",
         consumer_profile_version=1,
         capability="urban-signals",
-        requested_facts=["review", "comment", "review"],
+        requested_facts=["complaint", "comment", "complaint"],
     )
 
     assert request.capability == "urban_signals"
-    assert request.requested_facts == ["review", "comment"]
+    assert request.requested_facts == ["complaint", "comment"]
     assert request.tool_pack_id == "kraken.urban_signals"
     assert request.tool_pack_version == 1
+
+
+def test_profiled_consumer_rejects_business_review_fact():
+    with pytest.raises(ValidationError, match="UNSUPPORTED_REQUESTED_FACT"):
+        base_request(
+            consumer="kraken.development.uds",
+            requested_facts=["review"],
+        )
 
 
 def test_profiled_consumer_rejects_unknown_capability():
@@ -108,4 +115,5 @@ def test_catalog_exposes_kraken_module_contract():
     capability = kraken["capabilities"][0]
     assert capability["capability"] == "urban_signals"
     assert capability["tool_pack_id"] == "kraken.urban_signals"
-    assert "review" in capability["allowed_facts"]
+    assert "complaint" in capability["allowed_facts"]
+    assert "review" not in capability["allowed_facts"]
