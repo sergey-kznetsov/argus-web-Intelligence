@@ -174,8 +174,10 @@ def test_urlset_emits_only_same_host_generic_web_tasks_with_limit():
         request(),
     )
 
-    assert len(result) == 2
-    assert result[0].url == "https://example.com/local_news"
+    assert [task.url for task in result] == [
+        "https://example.com/about",
+        "https://example.com/local_news",
+    ]
     assert all(task.source_id == "generic_web" for task in result)
     assert all(task.metadata["discovery_provider"] == "sitemap" for task in result)
     assert all(task.metadata["disable_site_discovery"] is True for task in result)
