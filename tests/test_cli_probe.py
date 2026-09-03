@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import http.server
+import inspect
 import socketserver
 import threading
 from pathlib import Path
@@ -10,7 +11,7 @@ import pytest
 from click.utils import strip_ansi
 from typer.testing import CliRunner
 
-from argus.cli.main import app
+from argus.cli.main import app, probe
 from argus.cli.probe import render_probe_summary, run_embedded_probe
 from argus.config import Settings
 from argus.contracts.models import (
@@ -66,7 +67,10 @@ def test_probe_command_is_exposed_by_console_app() -> None:
     assert "--seed-url" in help_text
     assert "--no-discovery" in help_text
     assert "--output" in help_text
-    assert "--require-covered-intents" in help_text
+    # Rich may ellipsize long option names at narrow terminal widths. The callback
+    # signature and the strict invocation test below verify the option contract without
+    # coupling the test to presentation width.
+    assert "require_covered_intents" in inspect.signature(probe).parameters
 
 
 @pytest.mark.asyncio
