@@ -11,7 +11,7 @@ _TEST_PROFILES: dict[str, dict[str, object]] = {
             "обсуждения, сообщения жителей, локальные новости и происшествия. Профиль "
             "только заполняет CollectionRequest и не включает скрытую логику источников."
         ),
-        "consumer": "kraken.simulation",
+        "consumer": "kraken.development.uds",
         "intents": [
             "comments",
             "discussions",
