@@ -50,7 +50,7 @@ def test_profiles_are_request_fixtures_not_source_routes():
     profiles = web_test_profiles()
 
     assert set(profiles) == {"kraken", "janus", "historical"}
-    assert profiles["kraken"]["consumer"] == "kraken.simulation"
+    assert profiles["kraken"]["consumer"] == "kraken.development.uds"
     assert "complaints" in profiles["kraken"]["intents"]
     assert "reviews" not in profiles["kraken"]["intents"]
     assert profiles["janus"]["consumer"] == "janus.simulation"
@@ -84,7 +84,7 @@ def test_web_exposes_authenticated_simulation_profiles(tmp_path: Path):
 def test_web_forwards_source_pool_and_russian_output_language(tmp_path: Path):
     stub = StubApiClient()
     payload = {
-        "consumer": "kraken.simulation",
+        "consumer": "kraken.development.uds",
         "analysis_id": "web-source-pool",
         "territory": {"city": "Пермь", "address": "Комсомольский проспект, 27"},
         "intents": ["complaints", "comments"],
