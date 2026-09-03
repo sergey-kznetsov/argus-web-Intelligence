@@ -52,8 +52,11 @@ def test_profiles_are_request_fixtures_not_source_routes():
     assert set(profiles) == {"kraken", "janus", "historical"}
     assert profiles["kraken"]["consumer"] == "kraken.simulation"
     assert "complaints" in profiles["kraken"]["intents"]
+    assert "reviews" not in profiles["kraken"]["intents"]
     assert profiles["janus"]["consumer"] == "janus.simulation"
-    assert "parking_capacity" in profiles["janus"]["intents"]
+    assert "residential_population" in profiles["janus"]["intents"]
+    assert "residential_premises_count" in profiles["janus"]["intents"]
+    assert "parking_capacity" not in profiles["janus"]["intents"]
     assert profiles["historical"]["consumer"] == "historical.simulation"
     assert "historical_context" in profiles["historical"]["intents"]
     for profile in profiles.values():
@@ -84,7 +87,7 @@ def test_web_forwards_source_pool_and_russian_output_language(tmp_path: Path):
         "consumer": "kraken.simulation",
         "analysis_id": "web-source-pool",
         "territory": {"city": "Пермь", "address": "Комсомольский проспект, 27"},
-        "intents": ["reviews", "public_mentions"],
+        "intents": ["complaints", "comments"],
         "constraints": {
             "max_pages": 30,
             "max_depth": 2,
