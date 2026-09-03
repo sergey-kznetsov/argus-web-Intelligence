@@ -35,8 +35,8 @@ consumer contract:
   "consumer_profile_version": 1,
   "capability": "urban_signals",
   "requested_facts": [
-    "review",
     "complaint",
+    "public_appeal",
     "post",
     "comment"
   ]
@@ -148,7 +148,6 @@ tool pack: kraken.urban_signals v1
 Allowed factual types:
 
 ```text
-review
 complaint
 public_appeal
 post
@@ -157,6 +156,18 @@ resident_message
 local_news_mention
 incident_mention
 ```
+
+Kraken follows the upstream SOIKA subject domain: text messages and public appeals by citizens
+about urban issues and socially relevant events. Typical subjects include housing and communal
+services, landscaping, safety, transport, roads, healthcare, education, social protection,
+construction, waste management, ecology and energy.
+
+Business or venue reviews are deliberately outside the Kraken factual contract. A restaurant,
+shop, office, institution or other nearby POI may be used as a source-backed spatial anchor to
+establish where a social problem occurred, but ARGUS must not turn that POI into a Kraken
+research subject and must not crawl its customer reviews on Kraken's behalf. Curated public-map
+review research is therefore disabled for the `urban_signals` ToolPack even though the generic
+ARGUS backend retains that capability for other consumers.
 
 The Kraken tool pack currently allows the shared factual/navigation sources required for urban
 signals:
