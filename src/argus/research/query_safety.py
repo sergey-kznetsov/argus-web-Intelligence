@@ -73,6 +73,10 @@ def sanitize_research_queries(
         query = _normalize_query(raw)
         if not query or _is_service_only_query(query, requested_intents):
             continue
+        # Reject an already-used model hint before adding the mandatory territory anchor.
+        # Otherwise the anchored form becomes a different string and can bypass deduplication.
+        if query.casefold() in seen:
+            continue
         query = _ensure_territory_anchor(query, request)
         query = query[:char_limit].rstrip()
         key = query.casefold()
