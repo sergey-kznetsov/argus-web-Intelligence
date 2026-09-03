@@ -13,6 +13,18 @@ def request(*intents: str) -> CollectionRequest:
     )
 
 
+def kraken_request(*intents: str) -> CollectionRequest:
+    return CollectionRequest(
+        consumer="kraken.development.uds",
+        consumer_profile_version=1,
+        capability="urban_signals",
+        requested_facts=["complaint"],
+        analysis_id="map-source-kraken-analysis",
+        territory={"city": "Ижевск", "address": "Пушкинская, 277"},
+        intents=list(intents),
+    )
+
+
 def observation(
     *,
     url: str,
@@ -60,6 +72,15 @@ def test_public_map_queries_do_not_run_for_unrelated_intents():
     planner = PublicMapSourceResearchPlanner()
 
     assert planner.queries(request("historical_context"), limit=3) == []
+
+
+def test_kraken_urban_signals_do_not_trigger_curated_venue_review_research():
+    planner = PublicMapSourceResearchPlanner()
+    kraken = kraken_request("complaints", "comments", "discussions")
+
+    assert planner.queries(kraken, limit=3) == []
+    assert planner.coverage_counts(kraken, []) == {}
+    assert planner.remaining_intents(kraken, []) == []
 
 
 def test_public_map_queries_expand_to_discovered_entity_names_and_dedupe_seen():
@@ -178,7 +199,7 @@ def test_source_metadata_declares_public_web_not_paid_api():
     planner = PublicMapSourceResearchPlanner()
     metadata = planner.source_metadata()
 
-    assert planner.version == "public-map-sources/3"
+    assert planner.version == "public-map-sources/4"
     assert {item["source_id"] for item in metadata} == {
         "yandex_maps_web",
         "2gis_web",
