@@ -15,12 +15,12 @@ class IntentCoverageEvaluator:
     fact. Coverage is therefore credited only from factual/source-declared shapes or
     an explicit ``intent_evidence`` quality marker.
 
-    Request context is optional for backward-compatible structural checks. Production
-    callers should supply it so broad intents such as ``public_mentions`` require
-    deterministic territorial relevance rather than trusting search navigation alone.
+    When request context is supplied, factual intent coverage additionally requires
+    source-backed territorial relevance. A semantically correct review, comment or
+    article from another address must never close the requested territory's research gap.
     """
 
-    version = "intent-evidence-coverage/5"
+    version = "intent-evidence-coverage/6"
     territory_relevance = TerritoryRelevanceEvaluator()
     _PUBLICATION_SCHEMA_TYPES = {
         "Article",
@@ -47,45 +47,57 @@ class IntentCoverageEvaluator:
             return False
 
         explicit = observation.quality.get("intent_evidence")
+        explicit_match = False
         if isinstance(explicit, dict) and explicit.get(normalized) is True:
-            return True
-        if isinstance(explicit, list) and normalized in {
+            explicit_match = True
+        elif isinstance(explicit, list) and normalized in {
             str(item).strip().casefold() for item in explicit
         }:
-            return True
+            explicit_match = True
+        if explicit_match:
+            return self._territory_supports(observation, normalized, request)
 
         entity_type = observation.entity_type.casefold().strip()
         source_kind = observation.source_kind.casefold().strip()
         schema_types = set(self._schema_types(observation))
 
         if normalized == "reviews":
-            return entity_type == "review"
+            return entity_type == "review" and self._territory_supports(
+                observation, normalized, request
+            )
         if normalized == "comments":
-            return entity_type == "comment"
+            return entity_type == "comment" and self._territory_supports(
+                observation, normalized, request
+            )
         if normalized == "discussions":
-            return entity_type == "comment" or "DiscussionForumPosting" in schema_types
+            structural = entity_type == "comment" or "DiscussionForumPosting" in schema_types
+            return structural and self._territory_supports(observation, normalized, request)
         if normalized == "local_news":
-            return (
+            structural = (
                 "NewsArticle" in schema_types
                 or source_kind in {"feed_entry", "json_feed_item"}
             )
+            return structural and self._territory_supports(observation, normalized, request)
         if normalized == "public_mentions":
             return self._is_public_mention(observation, schema_types, request=request)
         if normalized == "historical_context":
-            return (
+            structural = (
                 source_kind in self._HISTORICAL_SOURCE_KINDS
                 or self._has_archive_provenance(observation)
             )
+            return structural and self._territory_supports(observation, normalized, request)
         if normalized == "images":
-            return entity_type == "image" or source_kind == "image_reference"
+            structural = entity_type == "image" or source_kind == "image_reference"
+            return structural and self._territory_supports(observation, normalized, request)
         if normalized == "historical_images":
             image_reference = entity_type == "image" or source_kind == "image_reference"
             if not image_reference:
                 return False
-            return (
+            historical = (
                 self._has_archive_provenance(observation)
                 or self._has_historical_image_provenance(observation)
             )
+            return historical and self._territory_supports(observation, normalized, request)
 
         # Incidents, complaints and consumer-defined intents require semantic relevance,
         # not merely a page fetched for that goal. They remain uncovered until a factual
@@ -147,7 +159,22 @@ class IntentCoverageEvaluator:
             )
         if not structural:
             return False
+        return self._territory_supports(observation, "public_mentions", request)
+
+    def _territory_supports(
+        self,
+        observation: Observation,
+        intent: str,
+        request: CollectionRequest | None,
+    ) -> bool:
         if request is None:
+            return True
+        if observation.quality.get("territory_relevant") is True:
+            return True
+        if (
+            intent in {"historical_context", "historical_images"}
+            and observation.quality.get("historical_territory_relevant") is True
+        ):
             return True
         return self.territory_relevance.matches(request, observation)
 
