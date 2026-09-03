@@ -276,7 +276,7 @@ async def test_accessible_interface_can_reveal_fact_through_one_verified_navigat
     interface = fact.provenance["interface_navigation"]
     assert interface["verified_browser_replay"] is True
     assert interface["agent_output_is_evidence"] is False
-    assert task.metadata["mingkh_interface_navigation_result"] == "source_fact_revealed"
+    assert task.metadata["mingkh_interface_navigation_result"] == "source_goal_revealed"
     assert "Пермь, Комсомольский проспект, 27" in task.metadata[
         "research_input_candidates"
     ]
