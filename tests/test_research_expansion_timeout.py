@@ -10,6 +10,11 @@ from argus.orchestrator.evidence_status import EvidenceStatusAdaptiveResearchOrc
 from argus.sources.base import SourceTask
 
 
+async def _no_supervisor_preflight(self, record, *, observations, pending, visited):
+    del self, record, observations, pending, visited
+    return {}
+
+
 @pytest.mark.asyncio
 async def test_optional_research_expansion_timeout_is_contained(monkeypatch):
     async def slow_expand(self, record, task, observations, pending, visited, seen_queries):
@@ -20,6 +25,11 @@ async def test_optional_research_expansion_timeout_is_contained(monkeypatch):
         AdaptiveResearchAtomicCollectionOrchestrator,
         "_expand_historical",
         slow_expand,
+    )
+    monkeypatch.setattr(
+        EvidenceStatusAdaptiveResearchOrchestrator,
+        "_refresh_research_supervisor",
+        _no_supervisor_preflight,
     )
     orchestrator = object.__new__(EvidenceStatusAdaptiveResearchOrchestrator)
     orchestrator.research_expansion_timeout_seconds = 0.01
@@ -50,6 +60,11 @@ async def test_repeated_expansion_timeouts_increment_checkpoint_without_error_sp
         AdaptiveResearchAtomicCollectionOrchestrator,
         "_expand_historical",
         slow_expand,
+    )
+    monkeypatch.setattr(
+        EvidenceStatusAdaptiveResearchOrchestrator,
+        "_refresh_research_supervisor",
+        _no_supervisor_preflight,
     )
     orchestrator = object.__new__(EvidenceStatusAdaptiveResearchOrchestrator)
     orchestrator.research_expansion_timeout_seconds = 0.01
