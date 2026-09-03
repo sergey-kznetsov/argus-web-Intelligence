@@ -12,6 +12,7 @@ def _observation(
     entity_type: str,
     source_kind: str,
     url: str,
+    text: str = "Source-backed page text",
 ) -> Observation:
     return Observation(
         collection_id="collection-1",
@@ -22,7 +23,7 @@ def _observation(
         url=url,
         entity_type=entity_type,
         title="Map page",
-        text="Source-backed page text",
+        text=text,
         content_hash="a" * 64,
         provenance={"public_map_source": {"provider": provider}},
     )
@@ -46,6 +47,7 @@ def test_map_provider_acceptance_requires_factual_requested_intent() -> None:
         entity_type="review",
         source_kind="microdata",
         url="https://2gis.ru/izhevsk/firm/1/tab/reviews",
+        text="Ижевск. Публичный отзыв о месте.",
     )
     result = SimpleNamespace(observations=[shell_only, review], evidence=[])
 
