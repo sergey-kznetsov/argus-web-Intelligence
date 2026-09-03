@@ -10,7 +10,7 @@ from argus.toolpacks import resolved_tool_pack_from_request
 
 
 class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator):
-    """Atomic orchestrator that recursively researches factual entities found in the area."""
+    """Expand bounded area research without leaking consumer-specific domain semantics."""
 
     execution_budget_version = "execution-budget/1"
     area_entity_proof_version = "area-entity-proof/1"
@@ -65,7 +65,12 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
         pending: list[SourceTask],
         visited: set[str],
     ) -> None:
-        if self.discovery is None or self.area_entity_planner is None or not observations:
+        if self.discovery is None or self.area_entity_planner is None:
+            return
+
+        pack = resolved_tool_pack_from_request(record.request)
+        urban_signals = pack is not None and pack.planner_policy == "urban_signals"
+        if not observations and not urban_signals:
             return
 
         raw_depth = task.metadata.get("area_branch_depth", 0)
@@ -85,22 +90,32 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
             remaining_page_budget,
         )
 
-        verified_observations, entity_proofs = self._verified_area_entities(
-            record.request,
-            observations,
-        )
         street_queries = self._street_scope_queries(
             record.request,
             seen_queries=seen_queries,
             limit=query_limit,
         )
-        remaining_query_slots = max(0, query_limit - len(street_queries))
-        entity_queries = self.area_entity_planner.expand(
-            record.request,
-            verified_observations,
-            seen_queries={*seen_queries, *street_queries},
-            limit=remaining_query_slots,
-        )
+
+        # Kraken's urban_signals capability follows the upstream SOIKA domain:
+        # messages/appeals about urban problems in the territory. Nearby businesses and
+        # other map POIs may help establish spatial context, but they are not research
+        # subjects and must not trigger review crawling. Generic consumers retain normal
+        # recursive entity research.
+        entity_proofs: list[dict[str, object]] = []
+        entity_queries: list[str] = []
+        if not urban_signals:
+            verified_observations, entity_proofs = self._verified_area_entities(
+                record.request,
+                observations,
+            )
+            remaining_query_slots = max(0, query_limit - len(street_queries))
+            entity_queries = self.area_entity_planner.expand(
+                record.request,
+                verified_observations,
+                seen_queries={*seen_queries, *street_queries},
+                limit=remaining_query_slots,
+            )
+
         queries = [*street_queries, *entity_queries]
         if not queries:
             return
@@ -248,9 +263,9 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
             for char in anchor
         )
         terms = (
-            "отзывы комментарии жалобы жители обсуждают"
+            "жалобы проблемы жителей обращения происшествия обсуждения"
             if russian
-            else "reviews comments complaints residents discussion"
+            else "complaints resident problems public appeals incidents discussion"
         )
         query = f'"{anchor}" {terms}'[:512].rstrip()
         normalized_seen = {" ".join(value.split()).casefold() for value in seen_queries}
