@@ -62,7 +62,8 @@ async def test_navigation_score_is_explainable_and_not_evidence_confidence():
 
     first = outcome.tasks[0]
     assert first.url == "https://priority.test/izhevsk/news"
-    assert first.metadata["discovery_navigation_score"] == 85
+    # Navigation score is bounded to 0..100 and is not evidence confidence.
+    assert first.metadata["discovery_navigation_score"] == 100
     assert first.metadata["discovery_ranking_components"] == {
         "domain_priority": 0,
         "provider_rank": 1,
@@ -70,7 +71,7 @@ async def test_navigation_score_is_explainable_and_not_evidence_confidence():
         "https": True,
     }
     assert first.metadata["discovery_ranking_version"] == "discovery-ranking/1"
-    assert first.metadata["discovery_telemetry_version"] == "discovery-telemetry/1"
+    assert first.metadata["discovery_telemetry_version"] == "discovery-telemetry/2"
     assert first.metadata["discovery_stop_policy"] == "first_provider_with_valid_destinations"
     assert outcome.stop_reason == "first_provider_with_valid_destinations"
     assert outcome.candidates_seen == 3
