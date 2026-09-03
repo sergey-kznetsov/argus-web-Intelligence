@@ -250,15 +250,16 @@ async def test_dated_described_nearby_photo_supports_historical_context():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "overrides",
+    ("overrides", "expected_image_coverage"),
     [
-        {"year": None},
-        {"title": "Без названия"},
-        {"geo": [58.1097, 56.2394]},
+        ({"year": None}, 1),
+        ({"title": "Без названия"}, 1),
+        ({"geo": [58.1097, 56.2394]}, 0),
     ],
 )
 async def test_incomplete_or_out_of_radius_photo_does_not_fake_historical_context(
     overrides: dict[str, object],
+    expected_image_coverage: int,
 ):
     payload = _photo_payload(**overrides)
     adapter = PastVuHistoricalAdapter(_Fast(_response(payload)), _Snapshots())
@@ -278,7 +279,7 @@ async def test_incomplete_or_out_of_radius_photo_does_not_fake_historical_contex
     assert "historical_context" not in observation.quality["intent_evidence"]
     assert "historical_context" not in observation.provenance
     coverage = IntentCoverageEvaluator().counts([observation], request=request)
-    assert coverage["historical_images"] == 1
+    assert coverage.get("historical_images", 0) == expected_image_coverage
     assert coverage.get("historical_context", 0) == 0
 
 
