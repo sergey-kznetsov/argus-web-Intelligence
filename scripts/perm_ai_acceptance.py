@@ -154,11 +154,17 @@ def _acceptance_failures(overview: list[dict[str, object]]) -> list[str]:
             failures.append(f"{profile}: factual gaps remained but research supervisor never ran")
 
         if profile == "kraken":
-            if "reviews" not in covered:
-                failures.append("kraken: reviews are not factually covered")
-            secondary = {"public_mentions", "comments", "discussions", "local_news"}
-            if not covered.intersection(secondary):
-                failures.append("kraken: no secondary urban-information intent is covered")
+            social_problem_intents = {
+                "complaints",
+                "public_appeals",
+                "resident_messages",
+                "incidents",
+            }
+            if not covered.intersection(social_problem_intents):
+                failures.append("kraken: no social-problem intent is factually covered")
+            supporting_intents = {"comments", "discussions", "posts", "local_news"}
+            if not covered.intersection(supporting_intents):
+                failures.append("kraken: no supporting urban-information intent is covered")
         elif profile == "janus":
             required = {"residential_population", "residential_premises_count"}
             missing = sorted(required - covered)
