@@ -32,7 +32,7 @@ class _ProbeHandler(http.server.BaseHTTPRequestHandler):
   <body>
     <main>
       <h1>Public test fact</h1>
-      <p>The standalone collector reached the factual page.</p>
+      <p>Local deterministic probe. The standalone collector reached the factual page.</p>
     </main>
   </body>
 </html>"""
