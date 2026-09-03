@@ -27,7 +27,7 @@ class TerritoryRelevanceEvaluator:
     evidence that its reviews belong to Kraken's social-problem research domain.
     """
 
-    version = "territory-relevance/6"
+    version = "territory-relevance/7"
     navigation_ranking_version = "territory-url-ranking/2"
     point_tolerance_meters = 250
     urban_signals_default_radius_meters = 1_000
@@ -172,10 +172,12 @@ class TerritoryRelevanceEvaluator:
         if city and city in haystack:
             return TerritoryRelevanceResult(True, "city_phrase", (city,))
 
+        matched_city = self._matched_city_anchors(haystack, city)
         city_tokens = self.territory_tokens(city)
-        matched_city = [token for token in city_tokens if self.contains_token(haystack, token)]
         if city_tokens and len(matched_city) >= min(2, len(city_tokens)):
             return TerritoryRelevanceResult(True, "city_tokens", tuple(matched_city[:3]))
+        if len(city_tokens) == 1 and matched_city:
+            return TerritoryRelevanceResult(True, "city_inflected_token", tuple(matched_city[:1]))
 
         if request.territory.point is not None:
             return TerritoryRelevanceResult(False, "source_geo_missing")
@@ -360,6 +362,41 @@ class TerritoryRelevanceEvaluator:
                     return (lexical, number)
         return ()
 
+    def _matched_city_anchors(self, haystack: str, city: str) -> list[str]:
+        matched: list[str] = []
+        for token in self.territory_tokens(city):
+            aliases = self._russian_city_case_aliases(token)
+            found = next(
+                (alias for alias in aliases if self.contains_token(haystack, alias)),
+                None,
+            )
+            if found is not None:
+                matched.append(found)
+        return matched
+
+    @staticmethod
+    def _russian_city_case_aliases(token: str) -> tuple[str, ...]:
+        """Return conservative exact-token Russian locative aliases for a city name.
+
+        These aliases are navigation-independent source-text anchors, not fuzzy matching.
+        They cover common forms such as ``Пермь -> Перми``, ``Ижевск -> Ижевске`` and
+        ``Москва -> Москве`` without accepting arbitrary prefixes or edit distance matches.
+        """
+
+        value = token.casefold().strip()
+        if re.fullmatch(r"[а-яё]{3,}", value) is None:
+            return (value,)
+        aliases = [value]
+        if value.endswith("ь") and len(value) > 3:
+            aliases.append(f"{value[:-1]}и")
+        elif value.endswith("а") and len(value) > 3:
+            aliases.append(f"{value[:-1]}е")
+        elif value.endswith("я") and len(value) > 3:
+            aliases.append(f"{value[:-1]}е")
+        elif value[-1] not in "аеёиоуыэюяйьъ":
+            aliases.append(f"{value}е")
+        return tuple(dict.fromkeys(aliases))
+
     @staticmethod
     def contains_token(haystack: str, token: str) -> bool:
         return re.search(rf"(?<!\w){re.escape(token)}(?!\w)", haystack) is not None
@@ -405,7 +442,7 @@ class TerritoryRelevanceEvaluator:
         if city in haystack:
             return True
         city_tokens = self.territory_tokens(city)
-        matched = [token for token in city_tokens if self.contains_token(haystack, token)]
+        matched = self._matched_city_anchors(haystack, city)
         return bool(city_tokens) and len(matched) >= min(2, len(city_tokens))
 
     @staticmethod
