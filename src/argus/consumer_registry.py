@@ -180,7 +180,6 @@ class ConsumerProfileRegistry:
 KRAKEN_URBAN_SIGNALS = ConsumerCapabilityProfile(
     capability="urban_signals",
     allowed_facts=(
-        "review",
         "complaint",
         "public_appeal",
         "post",
@@ -191,7 +190,6 @@ KRAKEN_URBAN_SIGNALS = ConsumerCapabilityProfile(
     ),
     tool_pack_id="kraken.urban_signals",
     default_requested_facts=(
-        "review",
         "complaint",
         "public_appeal",
         "post",
@@ -201,8 +199,8 @@ KRAKEN_URBAN_SIGNALS = ConsumerCapabilityProfile(
         "incident_mention",
     ),
     description=(
-        "Public resident and local-context messages suitable for Kraken spatial-semantic "
-        "analysis."
+        "Citizen/resident messages and public local signals about urban problems suitable "
+        "for Kraken spatial-semantic analysis; establishment reviews are outside scope."
     ),
 )
 
