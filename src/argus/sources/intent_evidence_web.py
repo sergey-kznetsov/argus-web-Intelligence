@@ -105,9 +105,10 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
         if self.intent_evidence_classifier is not None:
             payload["intent_evidence_classifier"] = {
                 "version": self.intent_evidence_classifier.version,
-                "supported_intents": sorted(
-                    self.intent_evidence_classifier.supported_intents
+                "builtin_intents": sorted(
+                    self.intent_evidence_classifier.builtin_intents
                 ),
+                "custom_intents_supported": True,
                 "exact_source_excerpt_required": True,
                 "deterministic_marker_required_for": sorted(
                     self.intent_evidence_classifier.marker_required_intents
