@@ -61,6 +61,8 @@ class SourceOperationalState:
 
 
 class _TrackedSourceAdapter:
+    """Add operational telemetry without hiding adapter capabilities/configuration."""
+
     def __init__(
         self,
         adapter: SourceAdapter,
@@ -72,6 +74,9 @@ class _TrackedSourceAdapter:
         self._metrics = metrics
         self.source_id = adapter.source_id
         self.intents = adapter.intents
+
+    def __getattr__(self, name: str):
+        return getattr(self._adapter, name)
 
     async def discover(self, request: CollectionRequest) -> list[SourceTask]:
         started = time.perf_counter()
