@@ -7,43 +7,18 @@ from pathlib import Path
 
 from argus.cli.probe import render_probe_summary, run_embedded_probe
 from argus.config import Settings
-from argus.contracts.models import CollectionConstraints, CollectionRequest, TerritoryContext
+from argus.live_acceptance import (
+    acceptance_failures,
+    build_profile_request,
+    error_details,
+    mandatory_janus_source_blocked,
+    query_shape_violations,
+)
 from argus.web.profiles import web_test_profiles
 
 ADDRESS = "Комсомольский проспект, 27"
 CITY = "Пермь"
 PROFILE_IDS = ("kraken", "janus", "historical")
-ACCEPTABLE_STATUSES = {"completed", "partial"}
-JANUS_SOURCE_BLOCK_CODES = {
-    "MINGKH_ACCESS_CHALLENGE",
-    "SOURCE_ROBOTS_ACCESS_BLOCKED",
-    "SOURCE_ROBOTS_UNREACHABLE",
-}
-_QUERY_CHECKPOINT_KEYS = (
-    "queries",
-    "discovery_queries",
-    "adaptive_followup_queries",
-    "curated_historical_queries",
-    "curated_public_map_queries",
-    "llm_entity_hypothesis_queries",
-)
-
-
-def _request(profile_id: str, profile: dict[str, object]) -> CollectionRequest:
-    intents = [str(value) for value in profile.get("intents", []) if str(value).strip()]
-    return CollectionRequest(
-        consumer=str(profile["consumer"]),
-        analysis_id=f"perm-ai-acceptance-{profile_id}",
-        territory=TerritoryContext(city=CITY, address=ADDRESS),
-        intents=intents,
-        constraints=CollectionConstraints(
-            max_pages=min(int(profile.get("max_pages", 18)), 18),
-            max_depth=min(int(profile.get("max_depth", 2)), 3),
-            max_duration_seconds=720.0,
-            output_language="ru",
-        ),
-        allow_partial=True,
-    )
 
 
 def _overview(profile_id: str, report: dict[str, object]) -> dict[str, object]:
@@ -58,13 +33,13 @@ def _overview(profile_id: str, report: dict[str, object]) -> dict[str, object]:
     observations = result.get("observations")
     evidence = result.get("evidence")
     errors = result.get("errors")
-    error_details = _error_details(errors)
-    mandatory_source_blocked = _mandatory_janus_source_blocked(
+    normalized_errors = error_details(errors)
+    mandatory_source_blocked = mandatory_janus_source_blocked(
         profile_id=profile_id,
         status=str(result.get("status") or ""),
         observation_count=len(observations) if isinstance(observations, list) else 0,
         evidence_count=len(evidence) if isinstance(evidence, list) else 0,
-        error_details=error_details,
+        error_details=normalized_errors,
     )
     return {
         "profile": profile_id,
@@ -76,7 +51,7 @@ def _overview(profile_id: str, report: dict[str, object]) -> dict[str, object]:
         "observation_count": len(observations) if isinstance(observations, list) else 0,
         "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
         "error_count": len(errors) if isinstance(errors, list) else 0,
-        "error_details": error_details,
+        "error_details": normalized_errors,
         "mandatory_source_blocked": mandatory_source_blocked,
         "runtime_terminal_status_version": checkpoint.get("final_terminal_status_version"),
         "runtime_coverage_version": checkpoint.get("final_intent_coverage_version"),
@@ -97,162 +72,8 @@ def _overview(profile_id: str, report: dict[str, object]) -> dict[str, object]:
         "historical_queries": checkpoint.get("curated_historical_queries", []),
         "public_map_queries": checkpoint.get("curated_public_map_queries", []),
         "entity_hypothesis_queries": checkpoint.get("llm_entity_hypothesis_queries", []),
-        "query_shape_violations": _query_shape_violations(checkpoint),
+        "query_shape_violations": query_shape_violations(checkpoint),
     }
-
-
-def _acceptance_failures(overview: list[dict[str, object]]) -> list[str]:
-    failures: list[str] = []
-    for item in overview:
-        profile = str(item.get("profile") or "unknown")
-        status = str(item.get("status") or "")
-        expected_source_block = bool(item.get("mandatory_source_blocked"))
-        covered = {
-            str(value).strip().casefold()
-            for value in item.get("covered_intents", [])
-            if str(value).strip()
-        }
-        uncovered = {
-            str(value).strip().casefold()
-            for value in item.get("uncovered_intents", [])
-            if str(value).strip()
-        }
-        if status not in ACCEPTABLE_STATUSES and not expected_source_block:
-            failures.append(f"{profile}: terminal status is {status or 'missing'}")
-        if int(item.get("observation_count") or 0) <= 0 and not expected_source_block:
-            failures.append(f"{profile}: no factual observations")
-        if int(item.get("evidence_count") or 0) <= 0 and not expected_source_block:
-            failures.append(f"{profile}: no evidence")
-
-        runtime_version = str(item.get("runtime_terminal_status_version") or "").strip()
-        if runtime_version:
-            runtime_covered = {
-                str(value).strip().casefold()
-                for value in item.get("runtime_covered_intents", [])
-                if str(value).strip()
-            }
-            runtime_uncovered = {
-                str(value).strip().casefold()
-                for value in item.get("runtime_uncovered_intents", [])
-                if str(value).strip()
-            }
-            if runtime_covered != covered or runtime_uncovered != uncovered:
-                failures.append(
-                    f"{profile}: production runtime coverage disagrees with independent probe"
-                )
-
-        query_violations = item.get("query_shape_violations")
-        if isinstance(query_violations, list) and query_violations:
-            failures.append(
-                f"{profile}: malformed/service-shaped discovery query escaped sanitization"
-            )
-
-        supervisor = item.get("research_supervisor")
-        if uncovered and not expected_source_block and not isinstance(supervisor, dict):
-            failures.append(f"{profile}: factual gaps remained but research supervisor never ran")
-        elif uncovered and not expected_source_block and not supervisor:
-            failures.append(f"{profile}: factual gaps remained but research supervisor never ran")
-
-        if profile == "kraken":
-            social_problem_intents = {
-                "complaints",
-                "public_appeals",
-                "resident_messages",
-                "incidents",
-            }
-            if not covered.intersection(social_problem_intents):
-                failures.append("kraken: no social-problem intent is factually covered")
-            supporting_intents = {"comments", "discussions", "posts", "local_news"}
-            if not covered.intersection(supporting_intents):
-                failures.append("kraken: no supporting urban-information intent is covered")
-        elif profile == "janus":
-            required = {"residential_population", "residential_premises_count"}
-            missing = sorted(required - covered)
-            if missing and not expected_source_block:
-                failures.append(
-                    "janus: required residential intents are not factually covered: "
-                    + ", ".join(missing)
-                )
-        elif profile == "historical":
-            required = {"historical_context", "historical_images", "public_mentions"}
-            missing = sorted(required - covered)
-            if missing:
-                failures.append(
-                    "historical: required intents are not factually covered: "
-                    + ", ".join(missing)
-                )
-    return failures
-
-
-def _error_details(errors: object) -> list[dict[str, str]]:
-    if not isinstance(errors, list):
-        return []
-    result: list[dict[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for raw in errors:
-        if not isinstance(raw, dict):
-            continue
-        code = str(raw.get("code") or "").strip()
-        source_id = str(raw.get("source_id") or "").strip()
-        if not code:
-            continue
-        key = (code, source_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append({"code": code, "source_id": source_id})
-    return result
-
-
-def _mandatory_janus_source_blocked(
-    *,
-    profile_id: str,
-    status: str,
-    observation_count: int,
-    evidence_count: int,
-    error_details: list[dict[str, str]],
-) -> bool:
-    if profile_id != "janus" or status != "blocked":
-        return False
-    if observation_count != 0 or evidence_count != 0:
-        return False
-    return any(
-        item.get("code") in JANUS_SOURCE_BLOCK_CODES
-        and item.get("source_id") in {"mingkh_residential", "site_discovery"}
-        for item in error_details
-    )
-
-
-def _query_shape_violations(checkpoint: dict[str, object]) -> list[dict[str, str]]:
-    violations: list[dict[str, str]] = []
-    for key in _QUERY_CHECKPOINT_KEYS:
-        raw = checkpoint.get(key)
-        if not isinstance(raw, list):
-            continue
-        for value in raw:
-            query = " ".join(str(value).split()).strip()
-            lowered = query.casefold()
-            if not query:
-                continue
-            reason = ""
-            if query[:1] in {"{", "["}:
-                reason = "serialized_container"
-            elif any(
-                marker in lowered
-                for marker in (
-                    "metadata:",
-                    "'metadata'",
-                    '"metadata"',
-                    "'queries'",
-                    '"queries"',
-                    "'search_string'",
-                    '"search_string"',
-                )
-            ):
-                reason = "service_schema_leak"
-            if reason:
-                violations.append({"checkpoint": key, "query": query[:512], "reason": reason})
-    return violations
 
 
 async def _run_profile(profile_id: str) -> tuple[dict[str, object], list[str]]:
@@ -260,7 +81,12 @@ async def _run_profile(profile_id: str) -> tuple[dict[str, object], list[str]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     profiles = web_test_profiles()
     profile = profiles[profile_id]
-    request = _request(profile_id, profile)
+    request = build_profile_request(
+        profile_id,
+        profile,
+        city=CITY,
+        address=ADDRESS,
+    )
     settings = Settings(
         execution_role="embedded",
         storage_backend="sqlite",
@@ -283,7 +109,7 @@ async def _run_profile(profile_id: str) -> tuple[dict[str, object], list[str]]:
         encoding="utf-8",
     )
     overview = _overview(profile_id, report)
-    failures = _acceptance_failures([overview])
+    failures = acceptance_failures([overview])
     outcome = "source_blocked" if overview.get("mandatory_source_blocked") else "factual"
     summary = {
         "territory": {"city": CITY, "address": ADDRESS},
