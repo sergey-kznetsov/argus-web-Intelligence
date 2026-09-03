@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from scripts.perm_ai_acceptance import _acceptance_failures
+from argus.live_acceptance import acceptance_failures
 
 
 _REQUIRED = {"historical_context", "historical_images", "public_mentions"}
@@ -22,9 +22,9 @@ def _overview(covered: set[str]) -> dict[str, object]:
 
 
 def test_historical_live_acceptance_requires_all_requested_outputs():
-    assert _acceptance_failures([_overview(_REQUIRED)]) == []
+    assert acceptance_failures([_overview(_REQUIRED)]) == []
 
-    failures = _acceptance_failures(
+    failures = acceptance_failures(
         [_overview({"historical_context", "public_mentions"})]
     )
     assert failures == [
