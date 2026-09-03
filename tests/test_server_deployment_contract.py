@@ -35,6 +35,31 @@ def test_windows_server_deployment_is_standalone_and_loopback_only() -> None:
     assert "exit $processExitCode" in runner
 
 
+def test_windows_runtime_replaces_only_verified_stale_argus_port_owner() -> None:
+    runner = RUNNER.read_text(encoding="utf-8")
+
+    assert "function Ensure-ArgusRuntimePort" in runner
+    assert "Get-NetTCPConnection" in runner
+    assert "Get-CimInstance Win32_Process" in runner
+    assert "argus.runtime_entrypoint" in runner
+    assert "taskkill.exe" in runner
+    assert "previous-release" in runner
+    assert "same-release" in runner
+    assert "refusing to terminate it" in runner
+
+
+def test_deployment_health_must_be_served_by_the_new_release() -> None:
+    deploy = DEPLOY.read_text(encoding="utf-8")
+
+    assert "function Assert-ArgusListenersOwnedByRelease" in deploy
+    assert "Get-NetTCPConnection" in deploy
+    assert "Get-CimInstance Win32_Process" in deploy
+    assert "ExpectedRelease" in deploy
+    assert "is served by a different release" in deploy
+    assert "-ExpectedRelease $releaseDir" in deploy
+    assert "-ExpectedRelease $previousRelease" in deploy
+
+
 def test_geo_analyzer_consumers_receive_generic_argus_service_contract() -> None:
     consumer = CONSUMER.read_text(encoding="utf-8")
 
