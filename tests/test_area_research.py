@@ -114,6 +114,8 @@ async def test_followup_planner_requests_missing_intents_and_stops_when_covered(
     assert any("жалобы" in query for query in missing.queries)
     assert any("архив" in query or "история" in query for query in missing.queries)
 
+    # research_goals alone are navigation metadata. These fixtures carry explicit factual
+    # intent evidence plus independently established territorial relevance.
     covered_observations = [
         Observation(
             collection_id="collection",
@@ -122,9 +124,14 @@ async def test_followup_planner_requests_missing_intents_and_stops_when_covered(
             source="generic_web",
             source_kind="web_page",
             url="https://example.org/reviews",
-            entity_type="document",
+            entity_type="review",
             title="Отзывы",
+            text="Ижевск, Пушкинская, 277. Жители жалуются на проблему.",
             data={"research_goals": ["reviews", "complaints"]},
+            quality={
+                "territory_relevant": True,
+                "intent_evidence": {"complaints": True},
+            },
             content_hash="b" * 64,
         ),
         Observation(
@@ -136,7 +143,9 @@ async def test_followup_planner_requests_missing_intents_and_stops_when_covered(
             url="https://web.archive.org/example",
             entity_type="historical_page_version",
             title="История",
+            text="Архивная страница об Ижевске, Пушкинской, 277.",
             data={"research_goals": ["historical_context"]},
+            quality={"historical_territory_relevant": True},
             content_hash="c" * 64,
         ),
     ]
