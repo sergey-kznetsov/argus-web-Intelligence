@@ -177,6 +177,8 @@ def test_default_ollama_followup_marks_actual_review_as_evidenced():
         entity_type="review",
         source_kind="json_ld",
         goals=["public_mentions"],
+    ).model_copy(
+        update={"text": "Ижевск, Пушкинская, 277. Публичный отзыв о месте."}
     )
 
     summary = planner._summary(request("reviews"), [review])
@@ -257,7 +259,13 @@ async def test_followup_planner_keeps_searching_when_review_goal_has_no_review_f
 @pytest.mark.asyncio
 async def test_followup_planner_stops_review_query_after_actual_review_fact():
     planner = EvidenceAwareHeuristicFollowupResearchPlanner(target_hits_per_intent=1)
-    review = observation(entity_type="review", source_kind="json_ld", goals=["reviews"])
+    review = observation(
+        entity_type="review",
+        source_kind="json_ld",
+        goals=["reviews"],
+    ).model_copy(
+        update={"text": "Ижевск, Пушкинская, 277. Публичный отзыв о месте."}
+    )
 
     plan = await planner.plan_followups(
         request("reviews"),
