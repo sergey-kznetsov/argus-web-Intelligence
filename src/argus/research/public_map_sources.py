@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from argus.contracts.models import CollectionRequest, Observation
 from argus.normalization.public_map_provenance import classify_public_map_url
 from argus.research.intent_coverage import IntentCoverageEvaluator
+from argus.toolpacks import resolved_tool_pack_from_request
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,9 +30,13 @@ class PublicMapSourceResearchPlanner:
     successfully opened card shells do not stop research. Only observations from known
     public-map web surfaces that actually evidence a requested intent count toward the
     target. This keeps the planner aligned with ARGUS' evidence-first research lifecycle.
+
+    Consumer capabilities can disable this research family through their resolved ToolPack.
+    In particular, Kraken ``urban_signals`` researches citizen messages about urban problems;
+    nearby venues may be spatial context but their map-card reviews are not Kraken evidence.
     """
 
-    version = "public-map-sources/3"
+    version = "public-map-sources/4"
     supported_intents = frozenset(
         {
             "reviews",
@@ -142,6 +147,9 @@ class PublicMapSourceResearchPlanner:
         ]
 
     def _requested_intents(self, request: CollectionRequest) -> list[str]:
+        pack = resolved_tool_pack_from_request(request)
+        if pack is not None and pack.planner_policy == "urban_signals":
+            return []
         return list(
             dict.fromkeys(
                 intent
