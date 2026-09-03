@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from argus.live_acceptance import acceptance_failures, build_profile_request
 from argus.web.profiles import web_test_profiles
-from scripts.perm_ai_acceptance import _acceptance_failures, _request
 
 
 _REQUIRED = {"residential_population", "residential_premises_count"}
@@ -26,15 +26,22 @@ def test_janus_simulation_requests_only_residential_building_facts():
     assert set(profile["intents"]) == _REQUIRED
     assert not any(str(intent).startswith("parking_") for intent in profile["intents"])
 
-    request = _request("janus", profile)
+    request = build_profile_request(
+        "janus",
+        profile,
+        city="Пермь",
+        address="Комсомольский проспект, 27",
+    )
     assert set(request.intents) == _REQUIRED
     assert request.consumer == "janus.simulation"
+    assert request.constraints.max_pages == 18
+    assert request.constraints.max_depth == 2
 
 
 def test_janus_live_acceptance_requires_both_residential_facts():
-    assert _acceptance_failures([_janus_overview(_REQUIRED)]) == []
+    assert acceptance_failures([_janus_overview(_REQUIRED)]) == []
 
-    failures = _acceptance_failures(
+    failures = acceptance_failures(
         [_janus_overview({"residential_population"})]
     )
     assert failures == [
