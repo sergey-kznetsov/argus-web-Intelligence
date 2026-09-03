@@ -235,6 +235,6 @@ async def test_non_goal_residential_fact_does_not_activate_population_recipe(tmp
     assert verification["source_backed"] is False
     candidates = verification["candidates"]
     assert candidates[-1]["goal_verified"] is False
-    assert candidates[-1]["status"] == "rejected"
+    assert candidates[-1]["status"] == "invalidated"
     assert candidates[-1]["reason"] == "semantic_goal_not_satisfied"
     await repository.close()
