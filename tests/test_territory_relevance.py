@@ -85,7 +85,7 @@ def test_city_only_request_accepts_city_source_context():
     )
 
     assert result.matched is True
-    assert result.basis == "city_phrase"
+    assert result.basis == "city_tokens"
 
 
 def test_point_source_geo_inside_radius_is_relevant():
