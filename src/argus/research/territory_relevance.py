@@ -27,7 +27,7 @@ class TerritoryRelevanceEvaluator:
     evidence that its reviews belong to Kraken's social-problem research domain.
     """
 
-    version = "territory-relevance/7"
+    version = "territory-relevance/8"
     navigation_ranking_version = "territory-url-ranking/2"
     point_tolerance_meters = 250
     urban_signals_default_radius_meters = 1_000
@@ -134,10 +134,16 @@ class TerritoryRelevanceEvaluator:
             address_tokens = [token for token in address_tokens if token not in city_tokens]
             number_tokens = [token for token in address_tokens if self._is_address_number(token)]
             lexical_tokens = [token for token in address_tokens if token not in number_tokens]
-            nearby = self._nearby_address_anchors(haystack, lexical_tokens, number_tokens)
+            lexical_aliases = self.address_text_aliases(lexical_tokens)
+            nearby = self._nearby_address_anchors(haystack, lexical_aliases, number_tokens)
 
             if nearby:
-                return TerritoryRelevanceResult(True, "street_and_house_number", nearby)
+                basis = (
+                    "street_and_house_number"
+                    if nearby[0] in lexical_tokens
+                    else "street_and_house_number_inflected"
+                )
+                return TerritoryRelevanceResult(True, basis, nearby)
 
             latin_aliases = self.latin_address_aliases(lexical_tokens)
             nearby_latin = self._nearby_address_anchors(
@@ -153,9 +159,7 @@ class TerritoryRelevanceEvaluator:
                 )
 
             if not number_tokens:
-                matched_lexical = [
-                    token for token in lexical_tokens if self.contains_token(haystack, token)
-                ]
+                matched_lexical = self._matched_address_tokens(haystack, lexical_tokens)
                 if len(matched_lexical) >= min(2, len(lexical_tokens)):
                     return TerritoryRelevanceResult(
                         True,
@@ -198,9 +202,7 @@ class TerritoryRelevanceEvaluator:
         street_tokens = self.territory_tokens(street)
         if not street_tokens:
             return None
-        matched_street = [
-            token for token in street_tokens if self.contains_token(haystack, token)
-        ]
+        matched_street = self._matched_address_tokens(haystack, street_tokens)
         if len(matched_street) < min(2, len(street_tokens)):
             return None
         if not self._city_matches(haystack, city):
@@ -286,6 +288,17 @@ class TerritoryRelevanceEvaluator:
                 break
         return result
 
+    def address_text_aliases(self, lexical_tokens: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for token in lexical_tokens:
+            for value in self._russian_address_case_aliases(token):
+                if not value or value in seen:
+                    continue
+                seen.add(value)
+                result.append(value)
+        return result
+
     def latin_address_aliases(self, lexical_tokens: list[str]) -> list[str]:
         result: list[str] = []
         seen: set[str] = set()
@@ -362,6 +375,21 @@ class TerritoryRelevanceEvaluator:
                     return (lexical, number)
         return ()
 
+    def _matched_address_tokens(self, haystack: str, tokens: list[str]) -> list[str]:
+        matched: list[str] = []
+        for token in tokens:
+            found = next(
+                (
+                    alias
+                    for alias in self._russian_address_case_aliases(token)
+                    if self.contains_token(haystack, alias)
+                ),
+                None,
+            )
+            if found is not None:
+                matched.append(found)
+        return matched
+
     def _matched_city_anchors(self, haystack: str, city: str) -> list[str]:
         matched: list[str] = []
         for token in self.territory_tokens(city):
@@ -373,6 +401,33 @@ class TerritoryRelevanceEvaluator:
             if found is not None:
                 matched.append(found)
         return matched
+
+    @staticmethod
+    def _russian_address_case_aliases(token: str) -> tuple[str, ...]:
+        """Return exact-token case forms for common Russian address adjectives.
+
+        The transformation is intentionally narrow and always remains tied to the source
+        house number when used for a full address match. It is not fuzzy or edit-distance
+        matching.
+        """
+
+        value = token.casefold().strip()
+        if re.fullmatch(r"[а-яё]{4,}", value) is None:
+            return (value,)
+        aliases = [value]
+        if value.endswith("ский"):
+            aliases.append(f"{value[:-4]}ском")
+        elif value.endswith("цкий"):
+            aliases.append(f"{value[:-4]}цком")
+        elif value.endswith("ый"):
+            aliases.append(f"{value[:-2]}ом")
+        elif value.endswith("ой"):
+            aliases.append(f"{value[:-2]}ом")
+        elif value.endswith("ий"):
+            aliases.append(f"{value[:-2]}ем")
+        elif value.endswith("ая"):
+            aliases.append(f"{value[:-2]}ой")
+        return tuple(dict.fromkeys(aliases))
 
     @staticmethod
     def _russian_city_case_aliases(token: str) -> tuple[str, ...]:
