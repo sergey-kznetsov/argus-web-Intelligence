@@ -181,4 +181,6 @@ def test_queue_priority_uses_current_factual_gaps_not_already_covered_goals():
     orchestrator._prioritize_pending(record, pending)
 
     assert pending[0] is reviews
-    assert record.checkpoint["research_queue_priority_version"] == "research-queue-priority/3"
+    assert record.checkpoint["research_queue_priority_version"] == (
+        orchestrator.research_queue_priority_version
+    )
