@@ -46,7 +46,7 @@ def _request(consumer: str = "kraken.development.uds", **overrides) -> Collectio
             "city": "Ижевск",
             "address": "Ижевск, Пушкинская, 277",
         },
-        "intents": ["reviews"],
+        "intents": ["complaints"],
     }
     payload.update(overrides)
     return CollectionRequest(**payload)
@@ -85,11 +85,13 @@ def test_legacy_consumer_cannot_select_tool_pack():
 
 def test_kraken_tool_pack_blocks_residential_and_historical_only_sources():
     registry = SourceRegistry()
-    registry.register(_Adapter("generic_web", {"reviews", "residential_population"}))
+    registry.register(_Adapter("generic_web", {"complaints", "residential_population"}))
     registry.register(_Adapter("mingkh_residential", {"residential_population"}))
     registry.register(_Adapter("pastvu_historical", {"historical_context"}))
 
-    request = _request(intents=["reviews", "residential_population", "historical_context"])
+    request = _request(
+        intents=["complaints", "residential_population", "historical_context"]
+    )
     pack = resolved_tool_pack_from_request(request)
     assert pack is not None
 
@@ -105,8 +107,8 @@ def test_kraken_tool_pack_blocks_residential_and_historical_only_sources():
 
 def test_source_registry_can_resolve_selection_directly_from_request():
     registry = SourceRegistry()
-    registry.register(_Adapter("generic_web", {"reviews"}))
-    registry.register(_Adapter("mingkh_residential", {"reviews"}))
+    registry.register(_Adapter("generic_web", {"complaints"}))
+    registry.register(_Adapter("mingkh_residential", {"complaints"}))
 
     selected = {adapter.source_id for adapter in registry.for_request(_request())}
 
