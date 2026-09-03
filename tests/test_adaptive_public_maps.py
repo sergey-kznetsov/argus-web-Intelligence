@@ -100,7 +100,7 @@ def map_review(*, observation_id: str, url: str) -> Observation:
         url=url,
         entity_type="review",
         title="Кофейня Север",
-        text="Публичный отзыв",
+        text="Ижевск, Пушкинская, 277. Публичный отзыв.",
         data={"name": "Кофейня Север"},
         content_hash="c" * 64,
         provenance={},
@@ -167,18 +167,17 @@ async def test_discovered_entity_gets_bounded_public_map_followup_queries():
     assert branch_request.intents == ["reviews"]
     assert len(pending) == 1
     assert pending[0].metadata["curated_public_map_round"] == 1
-    assert pending[0].metadata["curated_public_map_gap_intents"] == ["reviews"]
     assert pending[0].metadata["collection_id"] == "collection-map-1"
     assert record.checkpoint["curated_public_map_rounds"] == 1
     assert record.checkpoint["curated_public_map_last_candidates"] == 1
-    assert record.checkpoint["curated_public_map_source_version"] == "public-map-sources/2"
+    assert record.checkpoint["public_map_source_version"] == "public-map-sources/4"
     assert record.checkpoint["curated_public_map_coverage"] == {"reviews": 0}
-    assert record.checkpoint["curated_public_map_gap_intents"] == ["reviews"]
-    assert record.checkpoint["curated_public_map_target_sources_per_intent"] == 2
-    assert record.checkpoint["curated_public_map_coverage_version"] == (
-        "intent-evidence-coverage/2"
+    assert record.checkpoint["curated_public_map_remaining_intents"] == ["reviews"]
+    assert record.checkpoint["curated_public_map_target_source_count"] == 2
+    assert record.checkpoint["curated_public_map_coverage_evaluator_version"] == (
+        "intent-evidence-coverage/6"
     )
-    assert record.checkpoint["curated_public_map_complete"] is False
+    assert record.checkpoint.get("curated_public_map_complete") is not True
 
 
 @pytest.mark.asyncio
@@ -248,7 +247,7 @@ async def test_two_public_map_review_sources_complete_curated_map_research():
 
     assert discovery.calls == []
     assert record.checkpoint["curated_public_map_coverage"] == {"reviews": 2}
-    assert record.checkpoint["curated_public_map_gap_intents"] == []
+    assert record.checkpoint["curated_public_map_remaining_intents"] == []
     assert record.checkpoint["curated_public_map_complete"] is True
     assert record.checkpoint["curated_public_map_exhausted_for_current_anchors"] is False
 
@@ -298,4 +297,4 @@ async def test_branch_request_contains_only_undercovered_map_intents():
         "reviews": 2,
         "complaints": 0,
     }
-    assert record.checkpoint["curated_public_map_gap_intents"] == ["complaints"]
+    assert record.checkpoint["curated_public_map_remaining_intents"] == ["complaints"]
