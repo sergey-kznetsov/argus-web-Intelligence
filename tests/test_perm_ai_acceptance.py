@@ -1,4 +1,4 @@
-from scripts.perm_ai_acceptance import _acceptance_failures, _query_shape_violations
+from argus.live_acceptance import acceptance_failures, query_shape_violations
 
 
 def base_overview() -> dict[str, object]:
@@ -21,13 +21,13 @@ def test_live_acceptance_rejects_runtime_probe_coverage_disagreement():
     item = base_overview()
     item["runtime_uncovered_intents"] = ["incidents", "local_news"]
 
-    failures = _acceptance_failures([item])
+    failures = acceptance_failures([item])
 
     assert "kraken: production runtime coverage disagrees with independent probe" in failures
 
 
 def test_live_acceptance_accepts_matching_runtime_probe_coverage():
-    failures = _acceptance_failures([base_overview()])
+    failures = acceptance_failures([base_overview()])
 
     assert failures == []
 
@@ -36,9 +36,19 @@ def test_live_acceptance_rejects_uncovered_gaps_when_supervisor_never_ran():
     item = base_overview()
     item["research_supervisor"] = {}
 
-    failures = _acceptance_failures([item])
+    failures = acceptance_failures([item])
 
     assert "kraken: factual gaps remained but research supervisor never ran" in failures
+
+
+def test_live_acceptance_rejects_venue_review_only_coverage():
+    item = base_overview()
+    item["covered_intents"] = ["reviews", "comments"]
+    item["runtime_covered_intents"] = ["reviews", "comments"]
+
+    failures = acceptance_failures([item])
+
+    assert "kraken: no social-problem intent is factually covered" in failures
 
 
 def test_query_shape_check_detects_old_serialized_llm_plan_regression():
@@ -52,10 +62,24 @@ def test_query_shape_check_detects_old_serialized_llm_plan_regression():
         ],
     }
 
-    violations = _query_shape_violations(checkpoint)
+    violations = query_shape_violations(checkpoint)
 
     assert len(violations) == 2
     assert {item["reason"] for item in violations} == {"serialized_container"}
+
+
+def test_query_shape_check_detects_service_schema_leak():
+    checkpoint = {
+        "discovery_queries": ["search_string: complaints metadata: public"],
+    }
+
+    assert query_shape_violations(checkpoint) == [
+        {
+            "checkpoint": "discovery_queries",
+            "query": "search_string: complaints metadata: public",
+            "reason": "service_schema_leak",
+        }
+    ]
 
 
 def test_query_shape_check_allows_normal_social_problem_queries():
@@ -66,4 +90,4 @@ def test_query_shape_check_allows_normal_social_problem_queries():
         ],
     }
 
-    assert _query_shape_violations(checkpoint) == []
+    assert query_shape_violations(checkpoint) == []
