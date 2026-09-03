@@ -7,6 +7,7 @@ import re
 from urllib.parse import unquote, urlsplit
 
 from argus.contracts.models import CollectionRequest, Observation, Point
+from argus.toolpacks import resolved_tool_pack_from_request
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,14 +21,15 @@ class TerritoryRelevanceResult:
 class TerritoryRelevanceEvaluator:
     """Deterministically verify that a factual page belongs to the requested territory.
 
-    Search queries and consumer metadata are intentionally ignored: they explain why ARGUS
-    visited a URL, but do not prove that the fetched page is geographically relevant. The
-    evaluator uses source-backed text/data or explicit source coordinates only.
+    Search queries and consumer metadata are intentionally ignored as evidence. For an
+    urban-signals tool pack, the requested street and a verified nearby-entity chain are
+    accepted scopes, but the fetched source must still contain the street/entity anchor.
     """
 
-    version = "territory-relevance/4"
+    version = "territory-relevance/5"
     navigation_ranking_version = "territory-url-ranking/2"
     point_tolerance_meters = 250
+    urban_signals_default_radius_meters = 1_000
     max_address_anchor_distance_tokens = 8
     max_data_chars = 30_000
     max_tokens = 12
@@ -160,7 +162,19 @@ class TerritoryRelevanceEvaluator:
                         tuple(matched_lexical[:3]),
                     )
 
+            street_match = self._urban_signal_street_match(request, haystack, city)
+            if street_match is not None:
+                return street_match
+
+            entity_match = self._verified_nearby_entity_match(request, observation, haystack, city)
+            if entity_match is not None:
+                return entity_match
+
             return TerritoryRelevanceResult(False, "address_anchor_missing")
+
+        entity_match = self._verified_nearby_entity_match(request, observation, haystack, city)
+        if entity_match is not None:
+            return entity_match
 
         if city and city in haystack:
             return TerritoryRelevanceResult(True, "city_phrase", (city,))
@@ -174,13 +188,85 @@ class TerritoryRelevanceEvaluator:
             return TerritoryRelevanceResult(False, "source_geo_missing")
         return TerritoryRelevanceResult(False, "territory_anchor_missing")
 
-    def navigation_url_score(self, url: str, request: CollectionRequest) -> float:
-        """Score a URL only for navigation ordering; the score is never factual evidence.
+    def _urban_signal_street_match(
+        self,
+        request: CollectionRequest,
+        haystack: str,
+        city: str,
+    ) -> TerritoryRelevanceResult | None:
+        if self._planner_policy(request) != "urban_signals":
+            return None
+        raw_street = request.territory.metadata.get("street")
+        if not isinstance(raw_street, str) or not raw_street.strip():
+            return None
+        street = self.normalize_text(raw_street)
+        street_tokens = self.territory_tokens(street)
+        if not street_tokens:
+            return None
+        matched_street = [
+            token for token in street_tokens if self.contains_token(haystack, token)
+        ]
+        if len(matched_street) < min(2, len(street_tokens)):
+            return None
+        if not self._city_matches(haystack, city):
+            return None
+        anchors = tuple([*matched_street[:2], *self.territory_tokens(city)[:1]])
+        return TerritoryRelevanceResult(True, "urban_signal_street_scope", anchors)
 
-        An exact city path segment is deliberately much stronger than a regional prefix.
-        This keeps ``/permskiy-kray/perm/...`` ahead of all other settlements inside Perm
-        Krai while still allowing ``permskiy`` to act as a weak regional navigation hint.
-        """
+    def _verified_nearby_entity_match(
+        self,
+        request: CollectionRequest,
+        observation: Observation,
+        haystack: str,
+        city: str,
+    ) -> TerritoryRelevanceResult | None:
+        if self._planner_policy(request) != "urban_signals":
+            return None
+        branch = observation.provenance.get("area_entity_branch")
+        if not isinstance(branch, dict) or branch.get("source_backed") is not True:
+            return None
+        entities = branch.get("entities")
+        if not isinstance(entities, list):
+            return None
+        if city and not self._city_matches(haystack, city):
+            return None
+        for entity in entities:
+            if not isinstance(entity, dict) or entity.get("source_backed") is not True:
+                continue
+            if entity.get("relevance_basis") != "source_geo_within_radius":
+                continue
+            anchors = entity.get("anchors")
+            if not isinstance(anchors, list):
+                continue
+            for raw_anchor in sorted(
+                (value for value in anchors if isinstance(value, str)),
+                key=len,
+                reverse=True,
+            ):
+                anchor = self.normalize_text(raw_anchor)
+                anchor_tokens = self.territory_tokens(anchor)
+                if not anchor_tokens:
+                    continue
+                matched = [
+                    token for token in anchor_tokens if self.contains_token(haystack, token)
+                ]
+                if len(matched) < min(2, len(anchor_tokens)):
+                    continue
+                distance = entity.get("distance_meters")
+                return TerritoryRelevanceResult(
+                    True,
+                    "source_backed_nearby_entity",
+                    tuple(matched[:3]),
+                    distance_meters=(
+                        float(distance)
+                        if isinstance(distance, int | float) and not isinstance(distance, bool)
+                        else None
+                    ),
+                )
+        return None
+
+    def navigation_url_score(self, url: str, request: CollectionRequest) -> float:
+        """Score a URL only for navigation ordering; the score is never factual evidence."""
 
         path = unquote(urlsplit(str(url)).path).casefold()
         url_tokens = [
@@ -343,7 +429,11 @@ class TerritoryRelevanceEvaluator:
 
     @staticmethod
     def _is_address_number(token: str) -> bool:
-        return re.fullmatch(r"\d+[a-zа-яё]?(?:[-/]\d+[a-zа-яё]?)?", token, flags=re.IGNORECASE) is not None
+        return re.fullmatch(
+            r"\d+[a-zа-яё]?(?:[-/]\d+[a-zа-яё]?)?",
+            token,
+            flags=re.IGNORECASE,
+        ) is not None
 
     def _point_match(
         self,
@@ -355,12 +445,32 @@ class TerritoryRelevanceEvaluator:
         if requested is None or observed is None:
             return None
         distance = self._distance_meters(requested, observed)
-        allowed = float(request.territory.radius_meters or self.point_tolerance_meters)
+        configured_radius = request.territory.radius_meters
+        if configured_radius is not None:
+            allowed = float(configured_radius)
+        elif self._planner_policy(request) == "urban_signals":
+            allowed = float(self.urban_signals_default_radius_meters)
+        else:
+            allowed = float(self.point_tolerance_meters)
         return TerritoryRelevanceResult(
             distance <= allowed,
             "source_geo_within_radius" if distance <= allowed else "source_geo_outside_radius",
             distance_meters=round(distance, 3),
         )
+
+    def _city_matches(self, haystack: str, city: str) -> bool:
+        if not city:
+            return True
+        if city in haystack:
+            return True
+        city_tokens = self.territory_tokens(city)
+        matched = [token for token in city_tokens if self.contains_token(haystack, token)]
+        return bool(city_tokens) and len(matched) >= min(2, len(city_tokens))
+
+    @staticmethod
+    def _planner_policy(request: CollectionRequest) -> str:
+        pack = resolved_tool_pack_from_request(request)
+        return pack.planner_policy if pack is not None else "universal"
 
     @staticmethod
     def _distance_meters(left: Point, right: Point) -> float:
