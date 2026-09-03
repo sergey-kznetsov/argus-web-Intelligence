@@ -17,26 +17,23 @@ class PublicMapSourceProfile:
 
 
 PUBLIC_MAP_SOURCES: tuple[PublicMapSourceProfile, ...] = (
-    PublicMapSourceProfile("yandex_maps_web", "yandex.ru/maps", "map_cards_reviews", 10),
-    PublicMapSourceProfile("2gis_web", "2gis.ru", "map_cards_reviews", 20),
-    PublicMapSourceProfile("google_maps_web", "google.com/maps", "map_cards_reviews", 30),
+    PublicMapSourceProfile("yandex_maps_web", "yandex.ru/maps", "map_cards_ugc", 10),
+    PublicMapSourceProfile("2gis_web", "2gis.ru", "map_cards_ugc", 20),
+    PublicMapSourceProfile("google_maps_web", "google.com/maps", "map_cards_ugc", 30),
 )
 
 
 class PublicMapSourceResearchPlanner:
-    """Target public map/card pages through normal web discovery, never paid map APIs.
+    """Discover public map UGC through the normal ARGUS web research contour.
 
-    Curated map research is driven by factual coverage gaps. Navigation metadata and
-    successfully opened card shells do not stop research. Only observations from known
-    public-map web surfaces that actually evidence a requested intent count toward the
-    target. This keeps the planner aligned with ARGUS' evidence-first research lifecycle.
-
-    Consumer capabilities can disable this research family through their resolved ToolPack.
-    In particular, Kraken ``urban_signals`` researches citizen messages about urban problems;
-    nearby venues may be spatial context but their map-card reviews are not Kraken evidence.
+    Public maps are only source surfaces. They are discovered through normal web search and
+    opened through the same FAST -> BROWSER -> AGENT stack as any other public website. A
+    navigation query may use a word such as ``reviews`` to locate the UGC surface, but that
+    word never upgrades an establishment review into a Kraken fact. Factual coverage remains
+    request-aware and requires source-backed evidence for the requested intent.
     """
 
-    version = "public-map-sources/4"
+    version = "public-map-sources/5"
     supported_intents = frozenset(
         {
             "reviews",
@@ -88,7 +85,11 @@ class PublicMapSourceResearchPlanner:
         if not anchors:
             return []
         language = self._language(request, anchors[0])
-        suffix = self._suffix(remaining_intents, language)
+        suffix = self._suffix(
+            remaining_intents,
+            language,
+            public_ugc_navigation=self._is_urban_signals(request),
+        )
 
         result: list[str] = []
         for anchor in anchors:
@@ -147,16 +148,17 @@ class PublicMapSourceResearchPlanner:
         ]
 
     def _requested_intents(self, request: CollectionRequest) -> list[str]:
-        pack = resolved_tool_pack_from_request(request)
-        if pack is not None and pack.planner_policy == "urban_signals":
-            return []
-        return list(
-            dict.fromkeys(
-                intent
-                for intent in request.intents
-                if intent in self.supported_intents
-            )
-        )
+        requested = [
+            intent
+            for intent in request.intents
+            if intent in self.supported_intents
+        ]
+        if self._is_urban_signals(request):
+            # ``reviews`` can be a navigation word used to find an open UGC surface, but an
+            # establishment review is not a Kraken factual goal. Only the social intents are
+            # allowed to close coverage for urban_signals.
+            requested = [intent for intent in requested if intent != "reviews"]
+        return list(dict.fromkeys(requested))
 
     def _anchors(
         self,
@@ -165,8 +167,18 @@ class PublicMapSourceResearchPlanner:
     ) -> list[str]:
         values: list[str] = []
         seen: set[str] = set()
+
+        if self._is_urban_signals(request):
+            street = request.territory.metadata.get("street")
+            city = (request.territory.city or "").strip()
+            if isinstance(street, str) and street.strip():
+                street = " ".join(street.split()).strip()
+                street_anchor = f"{city}, {street}" if city else street
+                values.append(street_anchor)
+                seen.add(street_anchor.casefold())
+
         territory = self._territory_text(request)
-        if territory:
+        if territory and territory.casefold() not in seen:
             values.append(territory)
             seen.add(territory.casefold())
         for observation in observations:
@@ -189,10 +201,17 @@ class PublicMapSourceResearchPlanner:
         return values
 
     @staticmethod
-    def _suffix(intents: list[str], language: str) -> str:
+    def _suffix(
+        intents: list[str],
+        language: str,
+        *,
+        public_ugc_navigation: bool = False,
+    ) -> str:
         requested = set(intents)
         if language == "ru":
             terms: list[str] = []
+            if public_ugc_navigation:
+                terms.append("отзывы")
             if "reviews" in requested:
                 terms.append("отзывы")
             if "comments" in requested:
@@ -201,8 +220,10 @@ class PublicMapSourceResearchPlanner:
                 terms.append("жалобы")
             if "discussions" in requested:
                 terms.append("обсуждения")
-            return " ".join(terms[:3]) or "отзывы рейтинг"
+            return " ".join(dict.fromkeys(terms))[:160] or "отзывы комментарии"
         terms = []
+        if public_ugc_navigation:
+            terms.append("reviews")
         if "reviews" in requested:
             terms.append("reviews")
         if "comments" in requested:
@@ -211,7 +232,7 @@ class PublicMapSourceResearchPlanner:
             terms.append("complaints")
         if "discussions" in requested:
             terms.append("discussion")
-        return " ".join(terms[:3]) or "reviews rating"
+        return " ".join(dict.fromkeys(terms))[:160] or "reviews comments"
 
     @staticmethod
     def _query(profile: PublicMapSourceProfile, anchor: str, suffix: str) -> str:
@@ -252,3 +273,8 @@ class PublicMapSourceResearchPlanner:
             if any("а" <= char.lower() <= "я" or char.lower() == "ё" for char in anchor)
             else "en"
         )
+
+    @staticmethod
+    def _is_urban_signals(request: CollectionRequest) -> bool:
+        pack = resolved_tool_pack_from_request(request)
+        return pack is not None and pack.planner_policy == "urban_signals"
