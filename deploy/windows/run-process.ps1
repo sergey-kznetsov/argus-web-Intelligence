@@ -43,6 +43,76 @@ function Import-EnvFile {
     }
 }
 
+function Ensure-ArgusRuntimePort {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][string]$ReleasesRoot,
+        [Parameter(Mandatory = $true)][string]$CurrentPython,
+        [Parameter(Mandatory = $true)][string]$RuntimeRole
+    )
+
+    $listeners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+    if ($listeners.Count -eq 0) {
+        return
+    }
+
+    $ownerIds = @($listeners | Select-Object -ExpandProperty OwningProcess -Unique)
+    if ($ownerIds.Count -ne 1) {
+        throw "ARGUS $RuntimeRole port $Port has multiple listeners; refusing unsafe cleanup"
+    }
+
+    $ownerId = [int]$ownerIds[0]
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerId" -ErrorAction SilentlyContinue
+    if ($null -eq $process) {
+        throw "ARGUS $RuntimeRole port $Port is occupied by an unknown process PID $ownerId"
+    }
+
+    $executable = [string]$process.ExecutablePath
+    $commandLine = [string]$process.CommandLine
+    if ([string]::IsNullOrWhiteSpace($executable) -or [string]::IsNullOrWhiteSpace($commandLine)) {
+        throw "ARGUS $RuntimeRole port $Port is occupied by an unverifiable process PID $ownerId"
+    }
+
+    $normalizedExecutable = [IO.Path]::GetFullPath($executable)
+    $normalizedReleasesRoot = [IO.Path]::GetFullPath($ReleasesRoot).TrimEnd('\') + '\'
+    $ownedRuntime = $normalizedExecutable.StartsWith(
+        $normalizedReleasesRoot,
+        [StringComparison]::OrdinalIgnoreCase
+    ) -and $commandLine.Contains("argus.runtime_entrypoint")
+
+    if (-not $ownedRuntime) {
+        throw "ARGUS $RuntimeRole port $Port is occupied by unmanaged process PID $ownerId; refusing to terminate it"
+    }
+
+    $normalizedCurrentPython = [IO.Path]::GetFullPath($CurrentPython)
+    $ownerKind = if ($normalizedExecutable.Equals(
+        $normalizedCurrentPython,
+        [StringComparison]::OrdinalIgnoreCase
+    )) { "same-release" } else { "previous-release" }
+    Write-Host "Stopping stale $ownerKind ARGUS $RuntimeRole runtime PID $ownerId on port $Port"
+
+    $taskkill = Join-Path $env:SystemRoot "System32\taskkill.exe"
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $taskkill /PID ([string]$ownerId) /T /F *> $null
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+
+    $deadline = (Get-Date).AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 200
+        $remaining = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+        if ($remaining.Count -eq 0) {
+            return
+        }
+    } while ((Get-Date) -lt $deadline)
+
+    throw "ARGUS $RuntimeRole port $Port remained occupied after stopping managed runtime PID $ownerId"
+}
+
 function Invoke-ArgusRuntime {
     param(
         [Parameter(Mandatory = $true)][string[]]$Arguments,
@@ -72,6 +142,7 @@ function Invoke-ArgusRuntime {
 }
 
 $release = [IO.Path]::GetFullPath($ReleaseRoot)
+$releasesRoot = Split-Path -Parent $release
 $python = Join-Path $release ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
     throw "ARGUS Python runtime not found: $python"
@@ -102,6 +173,11 @@ $logFile = Join-Path $logsRoot "$Role.log"
 if ($Role -eq "api") {
     $port = if ($env:ARGUS_PORT) { [int]$env:ARGUS_PORT } else { 8787 }
     $env:ARGUS_EXECUTION_ROLE = "api"
+    Ensure-ArgusRuntimePort `
+        -Port $port `
+        -ReleasesRoot $releasesRoot `
+        -CurrentPython $python `
+        -RuntimeRole "api"
     $processExitCode = Invoke-ArgusRuntime -Arguments @(
         "-m", "argus.runtime_entrypoint", "api",
         "--host", "127.0.0.1", "--port", [string]$port
@@ -110,6 +186,11 @@ if ($Role -eq "api") {
 else {
     $probePort = if ($env:ARGUS_WORKER_PROBE_PORT) { [int]$env:ARGUS_WORKER_PROBE_PORT } else { 8788 }
     $env:ARGUS_EXECUTION_ROLE = "worker"
+    Ensure-ArgusRuntimePort `
+        -Port $probePort `
+        -ReleasesRoot $releasesRoot `
+        -CurrentPython $python `
+        -RuntimeRole "worker"
     $processExitCode = Invoke-ArgusRuntime -Arguments @(
         "-m", "argus.runtime_entrypoint", "worker",
         "--probe-host", "127.0.0.1", "--probe-port", [string]$probePort
