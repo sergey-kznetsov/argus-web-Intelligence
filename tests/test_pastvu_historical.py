@@ -273,7 +273,7 @@ async def test_incomplete_or_out_of_radius_photo_does_not_fake_historical_contex
     result = await adapter.extract(task, _response(payload), request)
 
     observation = result.observations[0]
-    assert observation.quality["historical_images"] is True
+    assert observation.quality["historical_image"] is True
     assert observation.quality["historical_context_qualified"] is False
     assert "historical_context" not in observation.quality["intent_evidence"]
     assert "historical_context" not in observation.provenance
