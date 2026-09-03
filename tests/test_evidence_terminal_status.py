@@ -9,7 +9,7 @@ from argus.orchestrator.evidence_status import EvidenceStatusAdaptiveResearchOrc
 from argus.research.planner import HeuristicResearchPlanner
 from argus.sources.base import SourceResult, SourceTask
 from argus.sources.registry import SourceRegistry
-from argus.storage.sqlite import SQLiteRepository
+from argus.storage.atomic_sqlite import AtomicSQLiteRepository
 
 
 class OnePageAdapter:
@@ -51,7 +51,7 @@ class OnePageAdapter:
 
 
 async def run(tmp_path: Path, *, intents: list[str], allow_partial: bool = True):
-    repository = SQLiteRepository(tmp_path / "db.sqlite")
+    repository = AtomicSQLiteRepository(tmp_path / "db.sqlite")
     registry = SourceRegistry()
     registry.register(OnePageAdapter())
     orchestrator = EvidenceStatusAdaptiveResearchOrchestrator(
