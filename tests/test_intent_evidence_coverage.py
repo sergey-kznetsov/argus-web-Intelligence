@@ -117,7 +117,7 @@ def test_public_mention_requires_territory_relevance_when_request_is_known():
     assert evaluator.counts([relevant], request=current_request)["public_mentions"] == 1
 
 
-def test_city_only_public_mention_accepts_city_text():
+def test_city_only_public_mention_accepts_conservative_city_case_form():
     evaluator = IntentCoverageEvaluator()
     current_request = CollectionRequest(
         consumer="coverage-test",
@@ -125,12 +125,13 @@ def test_city_only_public_mention_accepts_city_text():
         territory={"city": "Ижевск"},
         intents=["public_mentions"],
     )
-    page = observation().model_copy(update={"text": "Новый объект открылся в Ижевске."})
+    inflected = observation().model_copy(
+        update={"text": "Новый объект открылся в Ижевске."}
+    )
 
-    # Exact word forms are intentionally conservative: source text must contain the
-    # configured anchor, not merely a search-engine navigation hint.
-    assert evaluator.supports(page, "public_mentions", request=current_request) is False
-    exact = page.model_copy(update={"text": "Ижевск: новый объект открылся сегодня."})
+    # ARGUS accepts a bounded exact-token Russian locative alias, not fuzzy matching.
+    assert evaluator.supports(inflected, "public_mentions", request=current_request) is True
+    exact = inflected.model_copy(update={"text": "Ижевск: новый объект открылся сегодня."})
     assert evaluator.supports(exact, "public_mentions", request=current_request) is True
 
 
