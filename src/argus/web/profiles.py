@@ -7,19 +7,20 @@ _TEST_PROFILES: dict[str, dict[str, object]] = {
     "kraken": {
         "label": "Имитировать запрос Kraken",
         "description": (
-            "Публичные городские сообщения, отзывы, жалобы, обсуждения, локальные новости "
-            "и происшествия. Профиль только заполняет CollectionRequest и не включает скрытую "
-            "логику источников."
+            "Публичные сообщения граждан о городских проблемах: жалобы, обращения, "
+            "обсуждения, сообщения жителей, локальные новости и происшествия. Профиль "
+            "только заполняет CollectionRequest и не включает скрытую логику источников."
         ),
         "consumer": "kraken.simulation",
         "intents": [
-            "public_mentions",
-            "reviews",
             "comments",
-            "complaints",
             "discussions",
-            "local_news",
+            "complaints",
             "incidents",
+            "posts",
+            "public_appeals",
+            "resident_messages",
+            "local_news",
         ],
         "max_pages": 40,
         "max_depth": 3,
