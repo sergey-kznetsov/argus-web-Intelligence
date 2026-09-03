@@ -22,11 +22,12 @@ class TerritoryRelevanceEvaluator:
     """Deterministically verify that a factual page belongs to the requested territory.
 
     Search queries and consumer metadata are intentionally ignored as evidence. For an
-    urban-signals tool pack, the requested street and a verified nearby-entity chain are
-    accepted scopes, but the fetched source must still contain the street/entity anchor.
+    urban-signals tool pack, source-backed coordinates inside the radius and source-backed
+    street mentions are accepted scopes. A nearby business or other POI is not, by itself,
+    evidence that its reviews belong to Kraken's social-problem research domain.
     """
 
-    version = "territory-relevance/5"
+    version = "territory-relevance/6"
     navigation_ranking_version = "territory-url-ranking/2"
     point_tolerance_meters = 250
     urban_signals_default_radius_meters = 1_000
@@ -166,15 +167,7 @@ class TerritoryRelevanceEvaluator:
             if street_match is not None:
                 return street_match
 
-            entity_match = self._verified_nearby_entity_match(request, observation, haystack, city)
-            if entity_match is not None:
-                return entity_match
-
             return TerritoryRelevanceResult(False, "address_anchor_missing")
-
-        entity_match = self._verified_nearby_entity_match(request, observation, haystack, city)
-        if entity_match is not None:
-            return entity_match
 
         if city and city in haystack:
             return TerritoryRelevanceResult(True, "city_phrase", (city,))
@@ -212,58 +205,6 @@ class TerritoryRelevanceEvaluator:
             return None
         anchors = tuple([*matched_street[:2], *self.territory_tokens(city)[:1]])
         return TerritoryRelevanceResult(True, "urban_signal_street_scope", anchors)
-
-    def _verified_nearby_entity_match(
-        self,
-        request: CollectionRequest,
-        observation: Observation,
-        haystack: str,
-        city: str,
-    ) -> TerritoryRelevanceResult | None:
-        if self._planner_policy(request) != "urban_signals":
-            return None
-        branch = observation.provenance.get("area_entity_branch")
-        if not isinstance(branch, dict) or branch.get("source_backed") is not True:
-            return None
-        entities = branch.get("entities")
-        if not isinstance(entities, list):
-            return None
-        if city and not self._city_matches(haystack, city):
-            return None
-        for entity in entities:
-            if not isinstance(entity, dict) or entity.get("source_backed") is not True:
-                continue
-            if entity.get("relevance_basis") != "source_geo_within_radius":
-                continue
-            anchors = entity.get("anchors")
-            if not isinstance(anchors, list):
-                continue
-            for raw_anchor in sorted(
-                (value for value in anchors if isinstance(value, str)),
-                key=len,
-                reverse=True,
-            ):
-                anchor = self.normalize_text(raw_anchor)
-                anchor_tokens = self.territory_tokens(anchor)
-                if not anchor_tokens:
-                    continue
-                matched = [
-                    token for token in anchor_tokens if self.contains_token(haystack, token)
-                ]
-                if len(matched) < min(2, len(anchor_tokens)):
-                    continue
-                distance = entity.get("distance_meters")
-                return TerritoryRelevanceResult(
-                    True,
-                    "source_backed_nearby_entity",
-                    tuple(matched[:3]),
-                    distance_meters=(
-                        float(distance)
-                        if isinstance(distance, int | float) and not isinstance(distance, bool)
-                        else None
-                    ),
-                )
-        return None
 
     def navigation_url_score(self, url: str, request: CollectionRequest) -> float:
         """Score a URL only for navigation ordering; the score is never factual evidence."""
