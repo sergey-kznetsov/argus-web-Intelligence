@@ -56,7 +56,7 @@ class LeaseTransferFetchAdapter:
         return SimpleNamespace(
             blocked=False,
             final_url=task.url,
-            text="lease-transfer-fact",
+            text="Ижевск. lease-transfer-fact",
             content_type="text/plain",
         )
 
@@ -74,6 +74,7 @@ class LeaseTransferFetchAdapter:
             entity_type="document",
             text=fetched.text,
             content_hash=content_hash,
+            quality={"intent_evidence": {"lease_transfer_fetch": True}},
         )
         evidence = Evidence(
             evidence_id=f"lease-transfer-evidence-{collection_id}",
