@@ -172,6 +172,7 @@ class GeoJsonAwareWebAdapter(SchemaAwareSemanticWebAdapter):
                 "geometry_type": "Point",
                 "coordinate_dimensions": dimensions,
                 "coordinates": coordinates,
+                "research_goals": list(research_goals),
             },
             geo=point,
             content_hash=content_hash,
@@ -257,3 +258,9 @@ class GeoJsonAwareWebAdapter(SchemaAwareSemanticWebAdapter):
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return None
+
+    async def health(self) -> dict[str, object]:
+        payload = dict(await super().health())
+        payload["geojson_point_normalization"] = True
+        payload["geojson_point_extractor"] = self.extractor_version
+        return payload
