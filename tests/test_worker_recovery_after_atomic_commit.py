@@ -119,7 +119,7 @@ class HistoricalSeedRecoveryAdapter:
         return SimpleNamespace(
             blocked=False,
             final_url=task.url,
-            text="Дом купца Иванова",
+            text="Ижевск, Советская, 1. Дом купца Иванова",
             content_type="text/plain",
         )
 
