@@ -203,14 +203,55 @@ function Start-ArgusTasks {
     Start-ScheduledTask -TaskName $ApiTaskName
 }
 
+function Assert-ArgusListenersOwnedByRelease {
+    param([Parameter(Mandatory = $true)][string]$Release)
+
+    $expectedPython = [IO.Path]::GetFullPath((Join-Path $Release ".venv\Scripts\python.exe"))
+    foreach ($port in @($ApiPort, $WorkerProbePort)) {
+        $listeners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+        if ($listeners.Count -eq 0) {
+            throw "ARGUS expected listener is missing on port $port"
+        }
+
+        $ownerIds = @($listeners | Select-Object -ExpandProperty OwningProcess -Unique)
+        if ($ownerIds.Count -ne 1) {
+            throw "ARGUS port $port has multiple listener owners"
+        }
+
+        $ownerId = [int]$ownerIds[0]
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerId" -ErrorAction SilentlyContinue
+        if ($null -eq $process) {
+            throw "ARGUS port $port listener PID $ownerId could not be verified"
+        }
+
+        $executable = [string]$process.ExecutablePath
+        $commandLine = [string]$process.CommandLine
+        if ([string]::IsNullOrWhiteSpace($executable) -or [string]::IsNullOrWhiteSpace($commandLine)) {
+            throw "ARGUS port $port listener PID $ownerId has unverifiable process metadata"
+        }
+
+        $normalizedExecutable = [IO.Path]::GetFullPath($executable)
+        if (-not $normalizedExecutable.Equals($expectedPython, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "ARGUS port $port is served by a different release PID $ownerId"
+        }
+        if (-not $commandLine.Contains("argus.runtime_entrypoint")) {
+            throw "ARGUS port $port is not served by an ARGUS runtime entrypoint"
+        }
+    }
+}
+
 function Wait-ArgusHealth {
-    param([int]$TimeoutSeconds = 120)
+    param(
+        [int]$TimeoutSeconds = 120,
+        [Parameter(Mandatory = $true)][string]$ExpectedRelease
+    )
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         try {
             $api = Invoke-RestMethod -Uri "http://127.0.0.1:$ApiPort/v1/health" -TimeoutSec 5
             $worker = Invoke-RestMethod -Uri "http://127.0.0.1:$WorkerProbePort/readyz" -TimeoutSec 5
             if ($api.status -eq "ok" -and $worker.status -eq "ok") {
+                Assert-ArgusListenersOwnedByRelease -Release $ExpectedRelease
                 return $api
             }
         }
@@ -406,7 +447,7 @@ Register-ArgusTask -TaskName $ApiTaskName -Role "api" -Release $releaseDir
 Start-ArgusTasks
 
 try {
-    $health = Wait-ArgusHealth -TimeoutSeconds 120
+    $health = Wait-ArgusHealth -TimeoutSeconds 120 -ExpectedRelease $releaseDir
 }
 catch {
     Show-ArgusLogs
@@ -416,7 +457,7 @@ catch {
         Register-ArgusTask -TaskName $WorkerTaskName -Role "worker" -Release $previousRelease
         Register-ArgusTask -TaskName $ApiTaskName -Role "api" -Release $previousRelease
         Start-ArgusTasks
-        Wait-ArgusHealth -TimeoutSeconds 120 | Out-Null
+        Wait-ArgusHealth -TimeoutSeconds 120 -ExpectedRelease $previousRelease | Out-Null
     }
     throw
 }
