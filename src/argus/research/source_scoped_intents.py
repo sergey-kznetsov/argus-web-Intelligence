@@ -5,6 +5,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 
 from argus.contracts.models import CollectionRequest, Observation, Point
+from argus.llm_health import OllamaRuntimeHealth
 from argus.normalization.public_map_provenance import public_map_surface_kind
 from argus.research.intent_evidence import IntentEvidenceFinding, OllamaIntentEvidenceClassifier
 from argus.sources.base import SourceResult
@@ -420,13 +421,14 @@ class DeterministicUrbanSignalEvidenceClassifier:
 class SourceScopedIntentEvidenceClassifier:
     """Apply source-scoped gates and a keyless evidence-first urban-signal fallback."""
 
-    version = "source-scoped-intent-evidence/2"
+    version = "source-scoped-intent-evidence/3"
 
     def __init__(
         self,
         delegate: OllamaIntentEvidenceClassifier,
         *,
         source_scoped_intents: Iterable[str],
+        llm_health: OllamaRuntimeHealth | None = None,
     ) -> None:
         self.delegate = delegate
         self.source_scoped_intents = frozenset(
@@ -435,6 +437,7 @@ class SourceScopedIntentEvidenceClassifier:
             if str(item).strip()
         )
         self.urban_signals = DeterministicUrbanSignalEvidenceClassifier(delegate)
+        self.llm_health = llm_health
 
     async def annotate(self, request: CollectionRequest, result: SourceResult) -> SourceResult:
         generic_intents = [
@@ -448,17 +451,10 @@ class SourceScopedIntentEvidenceClassifier:
 
         if request.capability == "urban_signals":
             result = await self.urban_signals.annotate(scoped_request, result)
-            settings = getattr(self.delegate, "settings", None)
-            if settings is not None and not bool(getattr(settings, "llm_required", False)):
-                non_social = [
-                    intent
-                    for intent in generic_intents
-                    if str(intent).strip().casefold()
-                    not in self.urban_signals.social_intents
-                ]
-                if not non_social:
+            if self.llm_health is not None:
+                health = await self.llm_health.check()
+                if not health.ready:
                     return result
-                scoped_request = scoped_request.model_copy(update={"intents": non_social})
 
         return await self.delegate.annotate(scoped_request, result)
 
