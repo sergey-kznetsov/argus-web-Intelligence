@@ -419,9 +419,9 @@ class DeterministicUrbanSignalEvidenceClassifier:
 
 
 class SourceScopedIntentEvidenceClassifier:
-    """Apply source-scoped gates and a keyless evidence-first urban-signal fallback."""
+    """Apply source-scoped gates, keyless urban fallback and cached LLM availability."""
 
-    version = "source-scoped-intent-evidence/3"
+    version = "source-scoped-intent-evidence/4"
 
     def __init__(
         self,
@@ -451,10 +451,11 @@ class SourceScopedIntentEvidenceClassifier:
 
         if request.capability == "urban_signals":
             result = await self.urban_signals.annotate(scoped_request, result)
-            if self.llm_health is not None:
-                health = await self.llm_health.check()
-                if not health.ready:
-                    return result
+
+        if self.llm_health is not None:
+            health = await self.llm_health.check()
+            if not health.ready:
+                return result
 
         return await self.delegate.annotate(scoped_request, result)
 
