@@ -433,16 +433,14 @@ if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
 Invoke-Checked -FilePath $venvPython -Arguments @("-m", "pip", "install", "--disable-pip-version-check", ".") -WorkingDirectory $releaseDir
 Invoke-Checked -FilePath $venvPython -Arguments @("-m", "playwright", "install", "chromium") -WorkingDirectory $releaseDir
 
-$dbIdentityScript = @'
-import json
-import sys
-from pathlib import Path
-from psycopg.conninfo import conninfo_to_dict
-info = conninfo_to_dict(Path(sys.argv[1]).read_text(encoding="utf-8").strip())
-print(json.dumps({"dbname": info.get("dbname", ""), "user": info.get("user", "")}))
-'@
-$dbIdentityJson = (& $venvPython -c $dbIdentityScript $DatabaseDsnFile).Trim()
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($dbIdentityJson)) {
+$dbIdentityHelper = Join-Path $releaseDir "deploy\windows\read-dsn-identity.py"
+if (-not (Test-Path -LiteralPath $dbIdentityHelper -PathType Leaf)) {
+    throw "ARGUS PostgreSQL DSN identity helper not found: $dbIdentityHelper"
+}
+$dbIdentityOutput = @(& $venvPython $dbIdentityHelper $DatabaseDsnFile)
+$dbIdentityExitCode = $LASTEXITCODE
+$dbIdentityJson = ($dbIdentityOutput -join [Environment]::NewLine).Trim()
+if ($dbIdentityExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($dbIdentityJson)) {
     throw "ARGUS PostgreSQL DSN identity could not be verified"
 }
 $dbIdentity = $dbIdentityJson | ConvertFrom-Json

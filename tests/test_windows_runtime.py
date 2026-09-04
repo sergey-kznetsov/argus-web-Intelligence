@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -100,12 +102,53 @@ def test_standalone_windows_deployment_uses_runtime_entrypoint() -> None:
 
     assert '"argus.runtime_entrypoint", "storage", "migrate"' in deploy
     assert '"argus.runtime_entrypoint", "storage", "check"' in deploy
+    assert "read-dsn-identity.py" in deploy
+    assert "$venvPython -c $dbIdentityScript" not in deploy
     assert '"-m", "argus.runtime_entrypoint", "api"' in runner
     assert '"-m", "argus.runtime_entrypoint", "worker"' in runner
     assert '$ErrorActionPreference = "Continue"' in runner
     assert "$ErrorActionPreference = $previousPreference" in runner
     assert "exit $processExitCode" in runner
     assert not Path("geo-analyzer-module.json").exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="PowerShell native invocation is Windows-specific")
+def test_windows_powershell_can_read_dsn_identity_without_inline_python(tmp_path: Path) -> None:
+    helper = Path("deploy/windows/read-dsn-identity.py").resolve()
+    dsn_file = tmp_path / "database-dsn.txt"
+    dsn_file.write_text(
+        "postgresql://argus:test-password@127.0.0.1:5432/argus\n",
+        encoding="utf-8",
+    )
+
+    python_literal = str(Path(sys.executable).resolve()).replace("'", "''")
+    helper_literal = str(helper).replace("'", "''")
+    dsn_literal = str(dsn_file.resolve()).replace("'", "''")
+    script_file = tmp_path / "invoke-dsn-helper.ps1"
+    script_file.write_text(
+        "$ErrorActionPreference = \"Stop\"\n"
+        f"$output = @(& '{python_literal}' '{helper_literal}' '{dsn_literal}')\n"
+        "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
+        "[Console]::Out.Write(($output -join [Environment]::NewLine))\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_file),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {"dbname": "argus", "user": "argus"}
 
 
 def test_api_loop_factory_is_scoped_to_windows_postgresql() -> None:
