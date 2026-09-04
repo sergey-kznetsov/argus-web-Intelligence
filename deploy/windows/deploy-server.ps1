@@ -431,7 +431,7 @@ $managedEnv = [ordered]@{
     ARGUS_STORAGE_BACKEND = "postgresql"
     ARGUS_DATABASE_DSN_FILE = $DatabaseDsnFile
     ARGUS_LOG_DIR = $LogsRoot
-    ARGUS_LLM_REQUIRED = "false"
+    ARGUS_LLM_REQUIRED = "true"
 }
 Write-ManagedEnv -Path $ConfigFile -Values $managedEnv
 icacls.exe $ConfigFile /inheritance:r /grant:r "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" | Out-Null
