@@ -184,6 +184,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     intent_evidence_classifier = SourceScopedIntentEvidenceClassifier(
         base_intent_evidence_classifier,
         source_scoped_intents=RESIDENTIAL_INTENTS,
+        llm_health=llm_health,
     )
     historical_source_planner = HistoricalSourceResearchPlanner(
         catalog_file=settings.historical_source_catalog_file
