@@ -170,7 +170,7 @@ async def test_discovered_entity_gets_bounded_public_map_followup_queries():
     assert pending[0].metadata["collection_id"] == "collection-map-1"
     assert record.checkpoint["curated_public_map_rounds"] == 1
     assert record.checkpoint["curated_public_map_last_candidates"] == 1
-    assert record.checkpoint["public_map_source_version"] == "public-map-sources/4"
+    assert record.checkpoint["public_map_source_version"] == "public-map-sources/5"
     assert record.checkpoint["curated_public_map_coverage"] == {"reviews": 0}
     assert record.checkpoint["curated_public_map_remaining_intents"] == ["reviews"]
     assert record.checkpoint["curated_public_map_target_source_count"] == 2
