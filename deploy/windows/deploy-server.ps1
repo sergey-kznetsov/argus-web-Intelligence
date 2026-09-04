@@ -3,7 +3,6 @@ param(
     [string]$Ref = "main",
     [string]$InstallRoot = "C:\argus",
     [string]$DataRoot = "C:\ProgramData\ARGUS",
-    [string]$DatabaseSourceEnvFile = "C:\server\saas.env",
     [string]$ApiTaskName = "ARGUS-API",
     [string]$WorkerTaskName = "ARGUS-Worker",
     [int]$ApiPort = 8787,
@@ -22,37 +21,13 @@ function Assert-Administrator {
     }
 }
 
-function Read-EnvValue {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Name
-    )
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        return ""
-    }
-    foreach ($rawLine in Get-Content -LiteralPath $Path -Encoding UTF8) {
-        $line = $rawLine.Trim()
-        if (-not $line -or $line.StartsWith("#")) { continue }
-        $separator = $line.IndexOf("=")
-        if ($separator -le 0) { continue }
-        if ($line.Substring(0, $separator).Trim() -ne $Name) { continue }
-        $value = $line.Substring($separator + 1).Trim()
-        if ($value.Length -ge 2 -and (
-            ($value.StartsWith('"') -and $value.EndsWith('"')) -or
-            ($value.StartsWith("'") -and $value.EndsWith("'"))
-        )) {
-            $value = $value.Substring(1, $value.Length - 2)
-        }
-        return $value
-    }
-    return ""
-}
-
 function Import-EnvFile {
     param([Parameter(Mandatory = $true)][string]$Path)
+
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "Environment file not found: $Path"
     }
+
     foreach ($rawLine in Get-Content -LiteralPath $Path -Encoding UTF8) {
         $line = $rawLine.Trim()
         if (-not $line -or $line.StartsWith("#")) { continue }
@@ -74,23 +49,25 @@ function Import-EnvFile {
 }
 
 function Get-GithubToken {
-    if (-not [string]::IsNullOrWhiteSpace($env:GEO_GITHUB_TOKEN)) {
-        return $env:GEO_GITHUB_TOKEN.Trim()
+    param([Parameter(Mandatory = $true)][string]$TokenFile)
+
+    if (-not [string]::IsNullOrWhiteSpace($env:ARGUS_GITHUB_TOKEN)) {
+        return $env:ARGUS_GITHUB_TOKEN.Trim()
     }
-    foreach ($candidate in @(
-        "C:\server\saas.env",
-        "C:\ProgramData\GeoAnalyzerTest\saas.env"
-    )) {
-        $value = Read-EnvValue -Path $candidate -Name "GEO_GITHUB_TOKEN"
+
+    if (Test-Path -LiteralPath $TokenFile -PathType Leaf) {
+        $value = (Get-Content -LiteralPath $TokenFile -Raw -Encoding UTF8).Trim()
         if (-not [string]::IsNullOrWhiteSpace($value)) {
-            return $value.Trim()
+            return $value
         }
     }
+
     return ""
 }
 
 function Github-Headers {
     param([string]$Token)
+
     $headers = @{
         "Accept" = "application/vnd.github+json"
         "X-GitHub-Api-Version" = "2022-11-28"
@@ -108,6 +85,7 @@ function Invoke-Checked {
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [Parameter(Mandatory = $true)][string]$WorkingDirectory
     )
+
     Push-Location $WorkingDirectory
     try {
         & $FilePath @Arguments
@@ -125,6 +103,7 @@ function Write-ManagedEnv {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Values
     )
+
     $result = New-Object System.Collections.Generic.List[string]
     $written = @{}
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
@@ -173,10 +152,12 @@ function Register-ArgusTask {
         [Parameter(Mandatory = $true)][ValidateSet("api", "worker")][string]$Role,
         [Parameter(Mandatory = $true)][string]$Release
     )
+
     $runner = Join-Path $Release "deploy\windows\run-process.ps1"
     if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) {
         throw "ARGUS process runner not found: $runner"
     }
+
     $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$runner`" -Role $Role -ReleaseRoot `"$Release`" -ConfigFile `"$ConfigFile`""
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments
     $trigger = New-ScheduledTaskTrigger -AtStartup
@@ -188,6 +169,7 @@ function Register-ArgusTask {
         -StartWhenAvailable `
         -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries
+
     Register-ScheduledTask `
         -TaskName $TaskName `
         -Action $action `
@@ -203,10 +185,53 @@ function Start-ArgusTasks {
     Start-ScheduledTask -TaskName $ApiTaskName
 }
 
+function Test-ProcessBelongsToRelease {
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [Parameter(Mandatory = $true)][string]$Release
+    )
+
+    $normalizedRelease = [IO.Path]::GetFullPath($Release).TrimEnd('\') + '\'
+    $expectedPython = [IO.Path]::GetFullPath((Join-Path $Release ".venv\Scripts\python.exe"))
+    $currentId = $ProcessId
+
+    for ($depth = 0; $depth -lt 8 -and $currentId -gt 0; $depth++) {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $currentId" -ErrorAction SilentlyContinue
+        if ($null -eq $process) { break }
+
+        $executable = [string]$process.ExecutablePath
+        $commandLine = [string]$process.CommandLine
+
+        if (-not [string]::IsNullOrWhiteSpace($executable)) {
+            try {
+                $normalizedExecutable = [IO.Path]::GetFullPath($executable)
+                if ($normalizedExecutable.Equals($expectedPython, [StringComparison]::OrdinalIgnoreCase)) {
+                    return $true
+                }
+            }
+            catch {
+                # Continue with command-line and parent-chain verification.
+            }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($commandLine)) {
+            if (
+                $commandLine.Contains("run-process.ps1") -and
+                $commandLine.IndexOf($normalizedRelease, [StringComparison]::OrdinalIgnoreCase) -ge 0
+            ) {
+                return $true
+            }
+        }
+
+        $currentId = [int]$process.ParentProcessId
+    }
+
+    return $false
+}
+
 function Assert-ArgusListenersOwnedByRelease {
     param([Parameter(Mandatory = $true)][string]$Release)
 
-    $expectedPython = [IO.Path]::GetFullPath((Join-Path $Release ".venv\Scripts\python.exe"))
     foreach ($port in @($ApiPort, $WorkerProbePort)) {
         $listeners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
         if ($listeners.Count -eq 0) {
@@ -224,18 +249,13 @@ function Assert-ArgusListenersOwnedByRelease {
             throw "ARGUS port $port listener PID $ownerId could not be verified"
         }
 
-        $executable = [string]$process.ExecutablePath
         $commandLine = [string]$process.CommandLine
-        if ([string]::IsNullOrWhiteSpace($executable) -or [string]::IsNullOrWhiteSpace($commandLine)) {
-            throw "ARGUS port $port listener PID $ownerId has unverifiable process metadata"
+        if ([string]::IsNullOrWhiteSpace($commandLine) -or -not $commandLine.Contains("argus.runtime_entrypoint")) {
+            throw "ARGUS port $port is not served by an ARGUS runtime entrypoint"
         }
 
-        $normalizedExecutable = [IO.Path]::GetFullPath($executable)
-        if (-not $normalizedExecutable.Equals($expectedPython, [StringComparison]::OrdinalIgnoreCase)) {
+        if (-not (Test-ProcessBelongsToRelease -ProcessId $ownerId -Release $Release)) {
             throw "ARGUS port $port is served by a different release PID $ownerId"
-        }
-        if (-not $commandLine.Contains("argus.runtime_entrypoint")) {
-            throw "ARGUS port $port is not served by an ARGUS runtime entrypoint"
         }
     }
 }
@@ -245,6 +265,7 @@ function Wait-ArgusHealth {
         [int]$TimeoutSeconds = 120,
         [Parameter(Mandatory = $true)][string]$ExpectedRelease
     )
+
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         try {
@@ -260,6 +281,7 @@ function Wait-ArgusHealth {
         }
         Start-Sleep -Seconds 2
     }
+
     throw "ARGUS did not become healthy within $TimeoutSeconds seconds"
 }
 
@@ -287,20 +309,28 @@ $ConfigFile = Join-Path $DataRoot "argus.env"
 $StateFile = Join-Path $DataRoot "deployment.json"
 $TokenFile = Join-Path $SecretsRoot "argus.token"
 $DatabaseDsnFile = Join-Path $SecretsRoot "database-dsn.txt"
+$GithubTokenFile = Join-Path $SecretsRoot "github-token.txt"
 
 $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
 $freeDiskGiB = [math]::Round(([double]$disk.FreeSpace / 1GB), 2)
+$databaseConfigured = (
+    (Test-Path -LiteralPath $DatabaseDsnFile -PathType Leaf) -and
+    -not [string]::IsNullOrWhiteSpace((Get-Content -LiteralPath $DatabaseDsnFile -Raw -Encoding UTF8).Trim())
+)
+
 $plan = [ordered]@{
     Repository = $Repository
     Ref = $Ref
     InstallRoot = $InstallRoot
     DataRoot = $DataRoot
     ConfigFile = $ConfigFile
+    DatabaseDsnFile = $DatabaseDsnFile
+    DatabaseConfigured = $databaseConfigured
+    GithubTokenFile = $GithubTokenFile
     ApiTaskName = $ApiTaskName
     WorkerTaskName = $WorkerTaskName
     ApiEndpoint = "http://127.0.0.1:$ApiPort"
     WorkerProbe = "http://127.0.0.1:$WorkerProbePort/readyz"
-    DatabaseSourceEnvFile = $DatabaseSourceEnvFile
     FreeDiskGiB = $freeDiskGiB
     Mode = if ($Apply) { "apply" } else { "plan-only" }
 }
@@ -315,9 +345,6 @@ Assert-Administrator
 if ($freeDiskGiB -lt 5) {
     throw "ABORT: less than 5 GiB is free on C:."
 }
-if (-not (Test-Path -LiteralPath $DatabaseSourceEnvFile -PathType Leaf)) {
-    throw "Geo Analyzer production environment file not found: $DatabaseSourceEnvFile"
-}
 
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $ReleasesRoot -Force | Out-Null
@@ -325,7 +352,14 @@ New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $SecretsRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $LogsRoot -Force | Out-Null
 
-$githubToken = Get-GithubToken
+if (-not (Test-Path -LiteralPath $DatabaseDsnFile -PathType Leaf)) {
+    throw "ARGUS-owned PostgreSQL DSN file not found: $DatabaseDsnFile"
+}
+if ([string]::IsNullOrWhiteSpace((Get-Content -LiteralPath $DatabaseDsnFile -Raw -Encoding UTF8).Trim())) {
+    throw "ARGUS-owned PostgreSQL DSN file is empty: $DatabaseDsnFile"
+}
+
+$githubToken = Get-GithubToken -TokenFile $GithubTokenFile
 $headers = Github-Headers -Token $githubToken
 $metadata = Invoke-RestMethod `
     -Uri "https://api.github.com/repos/$Repository/commits/$Ref" `
@@ -399,6 +433,25 @@ if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
 Invoke-Checked -FilePath $venvPython -Arguments @("-m", "pip", "install", "--disable-pip-version-check", ".") -WorkingDirectory $releaseDir
 Invoke-Checked -FilePath $venvPython -Arguments @("-m", "playwright", "install", "chromium") -WorkingDirectory $releaseDir
 
+$dbIdentityJson = (& $venvPython -c @'
+import json
+import sys
+from pathlib import Path
+from psycopg.conninfo import conninfo_to_dict
+info = conninfo_to_dict(Path(sys.argv[1]).read_text(encoding="utf-8").strip())
+print(json.dumps({"dbname": info.get("dbname", ""), "user": info.get("user", "")}))
+'@ $DatabaseDsnFile).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($dbIdentityJson)) {
+    throw "ARGUS PostgreSQL DSN identity could not be verified"
+}
+$dbIdentity = $dbIdentityJson | ConvertFrom-Json
+if ([string]$dbIdentity.dbname -ne "argus") {
+    throw "ABORT: standalone ARGUS must use PostgreSQL database 'argus'."
+}
+if ([string]$dbIdentity.user -ne "argus") {
+    throw "ABORT: standalone ARGUS must use PostgreSQL service role 'argus'."
+}
+
 if (-not (Test-Path -LiteralPath $TokenFile -PathType Leaf)) {
     $newToken = (& $venvPython -c "import secrets; print(secrets.token_urlsafe(48))").Trim()
     if ([string]::IsNullOrWhiteSpace($newToken)) {
@@ -407,19 +460,6 @@ if (-not (Test-Path -LiteralPath $TokenFile -PathType Leaf)) {
     [IO.File]::WriteAllText($TokenFile, $newToken + "`n", [Text.UTF8Encoding]::new($false))
     Remove-Variable newToken -ErrorAction SilentlyContinue
 }
-
-$databaseDsn = Read-EnvValue -Path $DatabaseSourceEnvFile -Name "GEOANALYZER_DATABASE_DSN"
-if ([string]::IsNullOrWhiteSpace($databaseDsn)) {
-    $sourceDsnFile = Read-EnvValue -Path $DatabaseSourceEnvFile -Name "GEOANALYZER_DATABASE_DSN_FILE"
-    if (-not [string]::IsNullOrWhiteSpace($sourceDsnFile) -and (Test-Path -LiteralPath $sourceDsnFile -PathType Leaf)) {
-        $databaseDsn = (Get-Content -LiteralPath $sourceDsnFile -Raw -Encoding UTF8).Trim()
-    }
-}
-if ([string]::IsNullOrWhiteSpace($databaseDsn)) {
-    throw "Geo Analyzer PostgreSQL DSN is not configured in $DatabaseSourceEnvFile"
-}
-[IO.File]::WriteAllText($DatabaseDsnFile, $databaseDsn + "`n", [Text.UTF8Encoding]::new($false))
-Remove-Variable databaseDsn -ErrorAction SilentlyContinue
 
 icacls.exe $SecretsRoot /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)(F)" "*S-1-5-32-544:(OI)(CI)(F)" | Out-Null
 
@@ -470,6 +510,7 @@ $statePayload = [ordered]@{
     previous_release = if ($previousRelease -and $previousRelease -ne $releaseDir) { $previousRelease } else { $null }
     api_endpoint = "http://127.0.0.1:$ApiPort"
     token_file = $TokenFile
+    database_dsn_file = $DatabaseDsnFile
     deployed_at_utc = [DateTime]::UtcNow.ToString("o")
 }
 [IO.File]::WriteAllText(
@@ -489,4 +530,6 @@ foreach ($dir in Get-ChildItem -LiteralPath $ReleasesRoot -Directory) {
 Write-Host "ARGUS standalone deployment succeeded."
 Write-Host "Commit: $commit"
 Write-Host "Endpoint: http://127.0.0.1:$ApiPort"
+Write-Host "Database: argus"
+Write-Host "Database role: argus"
 Write-Host "Health: $($health.status)"
