@@ -180,6 +180,33 @@ async def test_ready_llm_enriches_urban_signals_even_when_not_required_on_start(
 
 
 @pytest.mark.asyncio
+async def test_keyless_urban_evidence_is_source_agnostic_for_open_web():
+    problem = "Жители жалуются: во дворе опасно идти по разбитому тротуару."
+    observation = _observation(
+        observation_id="open-forum-problem",
+        url="https://forum.example/public/thread/42",
+        entity_type="comment",
+        text=f"Ижевск, Пушкинская, 277. {problem}",
+    )
+    result = SourceResult(observations=[observation])
+
+    await _urban_classifier().annotate(
+        _urban_request("complaints", "comments"),
+        result,
+    )
+
+    assert observation.quality["intent_evidence"] == {
+        "complaints": True,
+        "comments": True,
+    }
+    assert {item.metadata.get("intent") for item in result.evidence} == {
+        "complaints",
+        "comments",
+    }
+    assert all(item.source.url == observation.url for item in result.evidence)
+
+
+@pytest.mark.asyncio
 async def test_keyless_urban_problem_is_exact_source_backed_complaint():
     complaint = "Мне на перекрестке под машину бросаться или что?"
     observation = _observation(
