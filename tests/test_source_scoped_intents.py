@@ -25,6 +25,16 @@ class _Classifier:
         return result
 
 
+class _Health:
+    def __init__(self, ready: bool) -> None:
+        self.ready = ready
+        self.calls = 0
+
+    async def check(self):
+        self.calls += 1
+        return SimpleNamespace(ready=self.ready)
+
+
 def _request(*intents: str) -> CollectionRequest:
     return CollectionRequest(
         consumer="source-scope-test",
@@ -88,6 +98,7 @@ def _urban_classifier() -> SourceScopedIntentEvidenceClassifier:
     return SourceScopedIntentEvidenceClassifier(
         OllamaIntentEvidenceClassifier(settings),
         source_scoped_intents={"residential_population", "residential_premises_count"},
+        llm_health=_Health(False),  # type: ignore[arg-type]
     )
 
 
@@ -124,6 +135,48 @@ async def test_mixed_request_passes_only_unscoped_intents_to_generic_classifier(
 
     assert delegate.received == ["local_news", "complaints"]
     assert classifier.supported_intents == {"*"}
+
+
+@pytest.mark.asyncio
+async def test_unavailable_llm_stops_after_keyless_urban_layer():
+    delegate = _Classifier()
+    delegate.settings.llm_required = False
+    health = _Health(False)
+    classifier = SourceScopedIntentEvidenceClassifier(
+        delegate,
+        source_scoped_intents=set(),
+        llm_health=health,  # type: ignore[arg-type]
+    )
+    result = SourceResult(observations=[])
+
+    returned = await classifier.annotate(
+        _urban_request("complaints", "comments"),
+        result,
+    )
+
+    assert returned is result
+    assert health.calls == 1
+    assert delegate.received is None
+
+
+@pytest.mark.asyncio
+async def test_ready_llm_enriches_urban_signals_even_when_not_required_on_start():
+    delegate = _Classifier()
+    delegate.settings.llm_required = False
+    health = _Health(True)
+    classifier = SourceScopedIntentEvidenceClassifier(
+        delegate,
+        source_scoped_intents=set(),
+        llm_health=health,  # type: ignore[arg-type]
+    )
+
+    await classifier.annotate(
+        _urban_request("complaints", "comments"),
+        SourceResult(observations=[]),
+    )
+
+    assert health.calls == 1
+    assert delegate.received == ["complaints", "comments"]
 
 
 @pytest.mark.asyncio
