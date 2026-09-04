@@ -145,12 +145,14 @@ class Settings(BaseSettings):
     wayback_max_captures: int = Field(default=5, ge=1, le=20)
     wayback_min_interval_seconds: float = Field(default=2.0, ge=0, le=300)
 
+    # Legacy LLM settings remain parseable so old environment files do not break during
+    # an immutable release cutover. The crawler runtime does not construct or call Ollama.
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
-    llm_required: bool = True
+    llm_required: bool = False
     llm_health_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     llm_health_cache_seconds: float = Field(default=10.0, ge=0, le=300)
-    agent_backend: str = "ollama-recipe"
+    agent_backend: str = "disabled"
     agent_enabled: bool = False
     allow_internal_targets: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
