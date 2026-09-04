@@ -1,15 +1,33 @@
 from __future__ import annotations
 
+from typing import Protocol
+
 from argus.contracts.models import CollectionRequest
 from argus.research.historical_relevance import HistoricalTerritoryRelevanceEvaluator
-from argus.research.intent_evidence import OllamaIntentEvidenceClassifier
 from argus.sources.base import SourceResult, SourceTask
 from argus.sources.public_map_web import PublicMapProvenanceWebAdapter
 from argus.sources.web_content import extract_readable_text
 
 
+class IntentEvidenceAnnotator(Protocol):
+    version: str
+    builtin_intents: frozenset[str]
+    marker_required_intents: frozenset[str]
+
+    async def annotate(
+        self,
+        request: CollectionRequest,
+        result: SourceResult,
+    ) -> SourceResult: ...
+
+
 class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
-    """Add exact-excerpt semantic intent evidence to the complete generic web stack."""
+    """Generic web acquisition with optional source-backed intent annotations.
+
+    The production crawler-only runtime does not attach a semantic annotator. The optional
+    protocol is retained only as a neutral extension seam for deterministic annotators and
+    backwards-compatible tests; this adapter has no LLM dependency.
+    """
 
     historical_archive_provenance_version = "historical-archive-page/1"
     historical_relevance = HistoricalTerritoryRelevanceEvaluator()
@@ -17,7 +35,7 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
     def __init__(
         self,
         *args,
-        intent_evidence_classifier: OllamaIntentEvidenceClassifier | None = None,
+        intent_evidence_classifier: IntentEvidenceAnnotator | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -112,15 +130,12 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
         if self.intent_evidence_classifier is not None:
             payload["intent_evidence_classifier"] = {
                 "version": self.intent_evidence_classifier.version,
-                "builtin_intents": sorted(
-                    self.intent_evidence_classifier.builtin_intents
-                ),
+                "builtin_intents": sorted(self.intent_evidence_classifier.builtin_intents),
                 "custom_intents_supported": True,
                 "exact_source_excerpt_required": True,
                 "deterministic_marker_required_for": sorted(
                     self.intent_evidence_classifier.marker_required_intents
                 ),
-                "semantic_label_model_assisted": True,
                 "model_output_is_evidence": False,
             }
         return payload
