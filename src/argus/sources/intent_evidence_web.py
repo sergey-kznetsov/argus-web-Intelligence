@@ -5,6 +5,7 @@ from argus.research.historical_relevance import HistoricalTerritoryRelevanceEval
 from argus.research.intent_evidence import OllamaIntentEvidenceClassifier
 from argus.sources.base import SourceResult, SourceTask
 from argus.sources.public_map_web import PublicMapProvenanceWebAdapter
+from argus.sources.web_content import extract_readable_text
 
 
 class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
@@ -32,6 +33,12 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
         self._attach_historical_archive_provenance(task, request, result)
         await self._finalize_recipe_goal_verification(task, request, result)
         return result
+
+    @staticmethod
+    def _main_text(content: str, content_type: str | None) -> str:
+        """Keep generic document Evidence focused on readable page content."""
+
+        return extract_readable_text(content, content_type)
 
     @classmethod
     def _attach_historical_archive_provenance(
