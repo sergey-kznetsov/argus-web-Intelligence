@@ -433,14 +433,15 @@ if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
 Invoke-Checked -FilePath $venvPython -Arguments @("-m", "pip", "install", "--disable-pip-version-check", ".") -WorkingDirectory $releaseDir
 Invoke-Checked -FilePath $venvPython -Arguments @("-m", "playwright", "install", "chromium") -WorkingDirectory $releaseDir
 
-$dbIdentityJson = (& $venvPython -c @'
+$dbIdentityScript = @'
 import json
 import sys
 from pathlib import Path
 from psycopg.conninfo import conninfo_to_dict
 info = conninfo_to_dict(Path(sys.argv[1]).read_text(encoding="utf-8").strip())
 print(json.dumps({"dbname": info.get("dbname", ""), "user": info.get("user", "")}))
-'@ $DatabaseDsnFile).Trim()
+'@
+$dbIdentityJson = (& $venvPython -c $dbIdentityScript $DatabaseDsnFile).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($dbIdentityJson)) {
     throw "ARGUS PostgreSQL DSN identity could not be verified"
 }
