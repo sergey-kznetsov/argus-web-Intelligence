@@ -63,6 +63,16 @@ def test_kraken_contract_resolves_versioned_tool_pack():
     assert pack.capability == "urban_signals"
     assert pack.planner_policy == "urban_signals"
     assert pack.recipe_namespace == "kraken.urban_signals"
+    assert pack.result_delivery_policy == "broad_evidence_stream"
+    assert pack.result_dedup_policy == "canonical_text_v1"
+
+
+def test_non_kraken_pack_keeps_default_result_policy():
+    pack = resolved_tool_pack_from_request(_request(consumer="test"))
+
+    assert pack is not None
+    assert pack.result_delivery_policy == "intent_evidence"
+    assert pack.result_dedup_policy == "none"
 
 
 def test_caller_cannot_override_profile_tool_pack():
@@ -140,9 +150,14 @@ def test_tool_pack_context_is_isolated_between_concurrent_collections():
 def test_tool_pack_catalog_is_explicit_and_consumer_scoped():
     catalog = {item["tool_pack_id"]: item for item in tool_pack_catalog()}
     kraken = catalog["kraken.urban_signals"]
+    generic = catalog["test.generic"]
 
     assert kraken["consumer_id"] == "kraken.development.uds"
     assert kraken["capability"] == "urban_signals"
+    assert kraken["result_delivery_policy"] == "broad_evidence_stream"
+    assert kraken["result_dedup_policy"] == "canonical_text_v1"
     assert "generic_web" in kraken["allowed_source_ids"]
     assert "mingkh_residential" not in kraken["allowed_source_ids"]
     assert "pastvu_historical" not in kraken["allowed_source_ids"]
+    assert generic["result_delivery_policy"] == "intent_evidence"
+    assert generic["result_dedup_policy"] == "none"
