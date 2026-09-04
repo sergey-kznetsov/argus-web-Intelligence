@@ -49,6 +49,8 @@ class ToolPack:
     planner_policy: str = "universal"
     recipe_namespace: str = "shared"
     extractor_policy: str = "universal"
+    result_delivery_policy: str = "intent_evidence"
+    result_dedup_policy: str = "none"
     description: str = ""
 
     def allows_source(self, source_id: str) -> bool:
@@ -66,6 +68,8 @@ class ResolvedToolPack:
     planner_policy: str
     recipe_namespace: str
     extractor_policy: str
+    result_delivery_policy: str
+    result_dedup_policy: str
 
     def allows_source(self, source_id: str) -> bool:
         return "*" in self.allowed_source_ids or source_id in self.allowed_source_ids
@@ -165,6 +169,8 @@ class ToolPackRegistry:
             planner_policy=pack.planner_policy,
             recipe_namespace=pack.recipe_namespace,
             extractor_policy=pack.extractor_policy,
+            result_delivery_policy=pack.result_delivery_policy,
+            result_dedup_policy=pack.result_dedup_policy,
         )
 
     def by_contract(self, *, consumer_id: str, capability: str) -> ToolPack | None:
@@ -204,9 +210,13 @@ KRAKEN_URBAN_SIGNALS_TOOL_PACK = ToolPack(
     planner_policy="urban_signals",
     recipe_namespace="kraken.urban_signals",
     extractor_policy="urban_signals",
+    result_delivery_policy="broad_evidence_stream",
+    result_dedup_policy="canonical_text_v1",
     description=(
-        "Public resident/local-context research for Kraken. Residential registry and "
-        "historical-only adapters are intentionally excluded."
+        "Broad public-web research for Kraken. ARGUS discovers, acquires, normalizes, "
+        "deduplicates exact source-backed content and preserves Evidence/Provenance; "
+        "Kraken performs downstream domain relevance and social-problem filtering. "
+        "Residential registry and historical-only adapters are intentionally excluded."
     ),
 )
 
@@ -289,6 +299,8 @@ def tool_pack_catalog() -> list[dict[str, object]]:
             "planner_policy": pack.planner_policy,
             "recipe_namespace": pack.recipe_namespace,
             "extractor_policy": pack.extractor_policy,
+            "result_delivery_policy": pack.result_delivery_policy,
+            "result_dedup_policy": pack.result_dedup_policy,
             "description": pack.description,
         }
         for pack in TOOL_PACK_REGISTRY.all()
