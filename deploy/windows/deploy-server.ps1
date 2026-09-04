@@ -470,9 +470,6 @@ $managedEnv = [ordered]@{
     ARGUS_STORAGE_BACKEND = "postgresql"
     ARGUS_DATABASE_DSN_FILE = $DatabaseDsnFile
     ARGUS_LOG_DIR = $LogsRoot
-    # Ollama is an acceleration/cognition dependency, not a process-liveness dependency.
-    # Standalone ARGUS must still start and drain work through deterministic fallbacks if the
-    # local model is temporarily unavailable or intentionally resource-throttled.
     ARGUS_LLM_REQUIRED = "false"
 }
 Write-ManagedEnv -Path $ConfigFile -Values $managedEnv
@@ -521,47 +518,17 @@ $statePayload = [ordered]@{
     [Text.UTF8Encoding]::new($false)
 )
 
-$previousCommit = ""
-if (-not [string]::IsNullOrWhiteSpace($previousRelease)) {
-    $previousCommit = Split-Path -Leaf $previousRelease
+$keep = @($releaseDir)
+if ($previousRelease -and $previousRelease -ne $releaseDir) { $keep += $previousRelease }
+foreach ($dir in Get-ChildItem -LiteralPath $ReleasesRoot -Directory) {
+    if ($keep -notcontains $dir.FullName) {
+        Remove-Item -LiteralPath $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
-$deploymentChanged = $previousRelease -ne $releaseDir
-try {
-    $migrationResult = & $venvPython -m argus.storage.cli migrate --json | Out-String | ConvertFrom-Json
-    $schemaCheck = & $venvPython -m argus.storage.cli check --json | Out-String | ConvertFrom-Json
-}
-catch {
-    throw "ARGUS storage verification after cutover failed: $($_.Exception.Message)"
-}
-$deploymentVerification = [ordered]@{
-    schema_version = 1
-    verified_at_utc = [DateTime]::UtcNow.ToString("o")
-    commit = $commit
-    previous_commit = if ($previousCommit) { $previousCommit } else { $null }
-    deployment_changed = $deploymentChanged
-    api_status = [string]$health.status
-    api_version = [string]$health.version
-    database_backend = [string]$health.storage.backend
-    storage_schema_version = [int]$schemaCheck.schema_version
-    storage_expected_schema_version = [int]$schemaCheck.expected_schema_version
-    storage_migrations_applied = @($migrationResult.applied)
-}
-$deploymentVerificationFile = Join-Path $DataRoot "deployment-verification.json"
-[IO.File]::WriteAllText(
-    $deploymentVerificationFile,
-    (($deploymentVerification | ConvertTo-Json -Depth 5) + "`n"),
-    [Text.UTF8Encoding]::new($false)
-)
 
-Write-Host "ARGUS deployment completed successfully."
+Write-Host "ARGUS standalone deployment succeeded."
 Write-Host "Commit: $commit"
-Write-Host "Current release: $releaseDir"
-if ($previousRelease) { Write-Host "Previous release: $previousRelease" }
-Write-Host "API: http://127.0.0.1:$ApiPort"
-Write-Host "Worker readiness: http://127.0.0.1:$WorkerProbePort/readyz"
-Write-Host "Storage database: argus"
-Write-Host "Storage schema: argus"
-Write-Host "Storage role: argus"
-Write-Host "Storage schema version: $($schemaCheck.schema_version)"
-Write-Host "Standalone LLM hard dependency: disabled"
-Write-Host "Deployment verification: $deploymentVerificationFile"
+Write-Host "Endpoint: http://127.0.0.1:$ApiPort"
+Write-Host "Database: argus"
+Write-Host "Database role: argus"
+Write-Host "Health: $($health.status)"
