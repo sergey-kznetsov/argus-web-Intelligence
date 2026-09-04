@@ -7,6 +7,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from argus.config import Settings
+from argus.crawler.block_detection import looks_like_blocked_page
 from argus.crawler.lifecycle import FetchBroker
 from argus.crawler.models import FetchResult
 from argus.crawler.request_manager import build_request_manager
@@ -230,8 +231,4 @@ class FastCrawlerRuntime:
 
     @staticmethod
     def _looks_blocked(text: str, content_type: str | None = None) -> bool:
-        if content_type and "html" not in content_type.casefold():
-            return False
-        sample = text[:50_000].lower()
-        markers = ("captcha", "verify you are human", "access denied", "robot check")
-        return any(marker in sample for marker in markers)
+        return looks_like_blocked_page(text, content_type)
