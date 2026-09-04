@@ -77,10 +77,40 @@ function Wait-HttpOk {
     throw "Endpoint did not become ready within $TimeoutSeconds seconds: $Uri"
 }
 
+function Get-AffinityMask {
+    param([Parameter(Mandatory = $true)][int]$LogicalProcessorCount)
+
+    if ($LogicalProcessorCount -lt 1 -or $LogicalProcessorCount -gt 63) {
+        throw "CPU affinity guard supports between 1 and 63 logical processors."
+    }
+    [Int64]$mask = 0
+    for ($index = 0; $index -lt $LogicalProcessorCount; $index++) {
+        $mask = $mask -bor ([Int64]1 -shl $index)
+    }
+    return $mask
+}
+
+function Set-OllamaProcessBudget {
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [Parameter(Mandatory = $true)][Int64]$AffinityMask
+    )
+
+    $process = Get-Process -Id $ProcessId -ErrorAction Stop
+    $process.ProcessorAffinity = [IntPtr]$AffinityMask
+    try {
+        $process.PriorityClass = [Diagnostics.ProcessPriorityClass]::BelowNormal
+    }
+    catch {
+        Write-Warning "Could not lower Ollama process priority for PID $ProcessId. CPU affinity remains enforced."
+    }
+}
+
 function Restart-OllamaServerSafely {
     param(
         [Parameter(Mandatory = $true)][string]$OllamaExe,
-        [Parameter(Mandatory = $true)][int]$Port
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][Int64]$AffinityMask
     )
 
     $listeners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
@@ -110,7 +140,12 @@ function Restart-OllamaServerSafely {
         }
     }
 
-    Start-Process -FilePath $OllamaExe -ArgumentList @("serve") -WindowStyle Hidden
+    $ollamaProcess = Start-Process `
+        -FilePath $OllamaExe `
+        -ArgumentList @("serve") `
+        -WindowStyle Hidden `
+        -PassThru
+    Set-OllamaProcessBudget -ProcessId $ollamaProcess.Id -AffinityMask $AffinityMask
     Wait-HttpOk -Uri "http://127.0.0.1:$Port/api/tags" -TimeoutSeconds 60 | Out-Null
 }
 
@@ -147,6 +182,10 @@ $resolvedThreads = if ($NumThread -gt 0) { $NumThread } else { $recommendedThrea
 if ($resolvedThreads -lt 1 -or $resolvedThreads -gt $logicalProcessors) {
     throw "NumThread must be between 1 and the detected logical processor count ($logicalProcessors)."
 }
+if ($resolvedThreads -gt 63) {
+    throw "NumThread above 63 is not supported by this Windows CPU affinity guard."
+}
+$affinityMask = Get-AffinityMask -LogicalProcessorCount $resolvedThreads
 
 $ConfigFile = Join-Path $DataRoot "argus.env"
 $BackupFile = Join-Path $DataRoot "argus.env.pre-ollama-cpu-tuning"
@@ -169,6 +208,7 @@ $ollamaEnvironment = [ordered]@{
 }
 $argusEnvironment = [ordered]@{
     ARGUS_OLLAMA_MODEL = $TunedModel
+    ARGUS_LLM_REQUIRED = "false"
     ARGUS_WORKER_CONCURRENCY = "1"
     ARGUS_MAX_CONCURRENCY = "2"
     ARGUS_BROWSER_MAX_CONCURRENCY = "1"
@@ -177,7 +217,9 @@ $argusEnvironment = [ordered]@{
 $plan = [ordered]@{
     Mode = if ($Apply) { "apply" } else { "plan-only" }
     LogicalProcessors = $logicalProcessors
-    OllamaInferenceThreads = $resolvedThreads
+    OllamaCpuAffinityProcessors = $resolvedThreads
+    OllamaCpuAffinityMask = $affinityMask
+    OllamaPriority = "BelowNormal"
     BaseModel = $BaseModel
     TunedModel = $TunedModel
     QwenThinking = "disabled_via_system_no_think"
@@ -187,6 +229,7 @@ $plan = [ordered]@{
     OllamaLoadedModels = 1
     OllamaQueueLimit = $MaxQueue
     OllamaKeepAliveSeconds = $KeepAliveSeconds
+    ArgusLlmRequired = $false
     ArgusWorkerConcurrency = 1
     ArgusFetchConcurrency = 2
     ArgusBrowserConcurrency = 1
@@ -216,11 +259,28 @@ foreach ($name in $ollamaEnvironment.Keys) {
     [Environment]::SetEnvironmentVariable($name, [string]$ollamaEnvironment[$name], "Process")
 }
 
+# Recover/restart Ollama before issuing CLI model commands. This is intentionally before
+# `ollama show/create`: a wedged server must not make the tuning operation impossible.
+if ($RestartOllama) {
+    Restart-OllamaServerSafely `
+        -OllamaExe $OllamaExe `
+        -Port $OllamaPort `
+        -AffinityMask $affinityMask
+}
+else {
+    $listeners = @(Get-NetTCPConnection -LocalPort $OllamaPort -State Listen -ErrorAction SilentlyContinue)
+    if ($listeners.Count -eq 1) {
+        Set-OllamaProcessBudget `
+            -ProcessId ([int]$listeners[0].OwningProcess) `
+            -AffinityMask $affinityMask
+    }
+    Write-Warning "OLLAMA_* server limits are persisted but require an Ollama server restart to take effect."
+}
+
 $tempModelFile = Join-Path ([IO.Path]::GetTempPath()) ("argus-ollama-" + [Guid]::NewGuid().ToString("N") + ".Modelfile")
 try {
     $modelFileContent = @"
 FROM $BaseModel
-PARAMETER num_thread $resolvedThreads
 PARAMETER num_ctx $NumCtx
 PARAMETER num_predict $NumPredict
 PARAMETER temperature 0
@@ -245,13 +305,6 @@ finally {
     Remove-Item -LiteralPath $tempModelFile -Force -ErrorAction SilentlyContinue
 }
 
-if ($RestartOllama) {
-    Restart-OllamaServerSafely -OllamaExe $OllamaExe -Port $OllamaPort
-}
-else {
-    Write-Warning "OLLAMA_* server limits are persisted but require an Ollama server restart to take effect. The tuned model thread/output limits apply when ARGUS loads the tuned model."
-}
-
 & $OllamaExe stop $BaseModel *> $null
 & $OllamaExe stop $TunedModel *> $null
 
@@ -259,10 +312,12 @@ Set-EnvFileValues -Path $ConfigFile -Values $argusEnvironment
 Restart-ArgusTasks
 
 $state = [ordered]@{
-    schema_version = 1
+    schema_version = 2
     applied_at_utc = [DateTime]::UtcNow.ToString("o")
     logical_processors = $logicalProcessors
-    ollama_inference_threads = $resolvedThreads
+    ollama_cpu_affinity_processors = $resolvedThreads
+    ollama_cpu_affinity_mask = $affinityMask
+    ollama_priority = "BelowNormal"
     base_model = $BaseModel
     tuned_model = $TunedModel
     qwen_thinking = "disabled_via_system_no_think"
@@ -270,6 +325,7 @@ $state = [ordered]@{
     num_predict = $NumPredict
     max_queue = $MaxQueue
     keep_alive_seconds = $KeepAliveSeconds
+    argus_llm_required = $false
     restart_ollama_requested = [bool]$RestartOllama
     previous_machine_environment = $previousMachineEnvironment
     argus_env_backup = $BackupFile
@@ -282,8 +338,10 @@ $state = [ordered]@{
 
 Write-Host "ARGUS Ollama CPU profile applied."
 Write-Host "Tuned model: $TunedModel"
-Write-Host "Inference threads: $resolvedThreads of $logicalProcessors logical processors"
+Write-Host "Ollama CPU affinity: $resolvedThreads of $logicalProcessors logical processors"
+Write-Host "Ollama priority: BelowNormal"
 Write-Host "Qwen thinking: disabled for the derived ARGUS model"
+Write-Host "ARGUS LLM hard dependency: disabled (deterministic fallbacks remain available)"
 Write-Host "ARGUS worker concurrency: 1"
 Write-Host "ARGUS source concurrency: 2"
 Write-Host "ARGUS browser concurrency: 1"
