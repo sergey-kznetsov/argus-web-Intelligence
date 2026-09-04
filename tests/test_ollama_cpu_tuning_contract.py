@@ -32,6 +32,7 @@ def test_cpu_profile_builds_resource_bounded_derived_model() -> None:
     assert "PARAMETER num_ctx $NumCtx" in script
     assert "PARAMETER num_predict $NumPredict" in script
     assert "PARAMETER temperature 0" in script
+    assert "/no_think" in script
     assert '[Math]::Min(2,' in script
 
 
