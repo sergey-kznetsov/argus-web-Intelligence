@@ -1,10 +1,25 @@
 # PostgreSQL operations
 
-ARGUS uses the shared Geo Analyzer PostgreSQL instance but owns only the `argus` schema. Operational procedures must therefore remain schema-scoped and must never drop, dump or restore unrelated Geo Analyzer schemas.
+ARGUS is a standalone infrastructure service and owns its PostgreSQL database lifecycle independently from Geo Analyzer TEST and PROD. The canonical server deployment uses the PostgreSQL instance reachable by ARGUS, but the service database and login are dedicated to ARGUS:
+
+- database: `argus`;
+- service role: `argus`;
+- application schema: `argus`;
+- DSN secret: `C:\ProgramData\ARGUS\secrets\database-dsn.txt`.
+
+Geo Analyzer databases and environment files are consumer concerns and must never be used as the ARGUS database configuration source. In particular, the ARGUS deployment must not read or copy `GEOANALYZER_DATABASE_DSN`, `GEOANALYZER_DATABASE_DSN_FILE`, PROD `saas.env`, or TEST `saas.env`.
+
+The PostgreSQL server itself may be shared operational infrastructure, but database ownership, credentials, backup/restore and lifecycle remain isolated. ARGUS database procedures must never drop, dump or restore unrelated Geo Analyzer databases or schemas.
 
 ## Deployment rule
 
-Database-changing procedures are validated in TEST before PROD. A production update must not use manual ad-hoc SQL when the same change can be represented by an ARGUS migration or the universal Geo Analyzer module update flow.
+ARGUS has one canonical standalone deployment. Geo Analyzer TEST and PROD are consumers of the same ARGUS service and do not create separate ARGUS instances.
+
+`deploy/windows/deploy-server.ps1` requires an existing ARGUS-owned DSN file. It validates that the DSN targets `database=argus` with service role `user=argus` and refuses deployment otherwise. The deployment script never provisions the PostgreSQL administrator account and never derives the ARGUS DSN from a Geo Analyzer environment file.
+
+The GitHub credential used for deployment is also ARGUS-owned. When authentication is required, provide either process-local `ARGUS_GITHUB_TOKEN` or `C:\ProgramData\ARGUS\secrets\github-token.txt`. Do not reuse Geo Analyzer environment files as a deployment dependency.
+
+Database-changing procedures are validated through the isolated ARGUS storage contract before consumer E2E testing. Consumer changes are validated in Geo Analyzer TEST before being connected or promoted in PROD.
 
 The expected schema version is defined by `argus.storage.postgres_migrations.EXPECTED_SCHEMA_VERSION`. API and worker startup reject a database that has not been migrated to that version.
 
@@ -23,7 +38,7 @@ Existing migration versions are immutable. Changing the name or SQL of an alread
 
 ## Backup
 
-ARGUS backup is schema-scoped and uses PostgreSQL custom archive format:
+ARGUS backup is schema-scoped inside the dedicated `argus` database and uses PostgreSQL custom archive format:
 
 ```bash
 python -m argus.storage.cli backup --output /secure/path/argus.dump
@@ -68,11 +83,11 @@ The restore path:
 5. runs normal migration verification after restore;
 6. verifies the resulting schema version.
 
-Exact schema-version matching is intentional. A custom archive from an older schema does not know about objects introduced by newer migrations; selectively cleaning such an archive over a newer live schema can leave dependency conflicts or mixed-version objects. To restore an older backup, run the matching ARGUS version, restore and verify it there, then update ARGUS through the normal migration/module-update path.
+Exact schema-version matching is intentional. A custom archive from an older schema does not know about objects introduced by newer migrations; selectively cleaning such an archive over a newer live schema can leave dependency conflicts or mixed-version objects. To restore an older backup, run the matching ARGUS version, restore and verify it there, then update ARGUS through the normal migration/update path.
 
 `--single-transaction` is intentional: PostgreSQL must either apply the whole restore or leave the database unchanged by that restore attempt.
 
-Before PROD restore, stop the standalone `ARGUS-API` and `ARGUS-Worker` scheduled tasks so no collection writes occur while the schema is being replaced. Perform the restore in TEST first using a copy of the intended archive, then run `check`, API readiness and at least one end-to-end collection.
+Before restoring the canonical server database, stop the standalone `ARGUS-API` and `ARGUS-Worker` scheduled tasks so no collection writes occur while the schema is being replaced. Restore and verify into an isolated recovery database first whenever practical, then run `check`, API readiness and at least one end-to-end consumer collection before considering the recovery complete.
 
 ## Connection-pool saturation
 
