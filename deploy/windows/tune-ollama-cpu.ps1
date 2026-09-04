@@ -180,6 +180,7 @@ $plan = [ordered]@{
     OllamaInferenceThreads = $resolvedThreads
     BaseModel = $BaseModel
     TunedModel = $TunedModel
+    QwenThinking = "disabled_via_system_no_think"
     ContextTokens = $NumCtx
     MaxOutputTokens = $NumPredict
     OllamaParallelRequests = 1
@@ -223,6 +224,10 @@ PARAMETER num_thread $resolvedThreads
 PARAMETER num_ctx $NumCtx
 PARAMETER num_predict $NumPredict
 PARAMETER temperature 0
+SYSTEM """
+/no_think
+You are the local ARGUS structured research component. Follow the caller prompt exactly and return only the requested concise structured output. Never add chain-of-thought or an explanation unless the caller explicitly requests it.
+"""
 "@
     [IO.File]::WriteAllText($tempModelFile, $modelFileContent, [Text.UTF8Encoding]::new($false))
 
@@ -244,7 +249,7 @@ if ($RestartOllama) {
     Restart-OllamaServerSafely -OllamaExe $OllamaExe -Port $OllamaPort
 }
 else {
-    Write-Warning "OLLAMA_* server limits are persisted but require an Ollama server restart to take effect. The tuned model thread limit applies when ARGUS loads the tuned model."
+    Write-Warning "OLLAMA_* server limits are persisted but require an Ollama server restart to take effect. The tuned model thread/output limits apply when ARGUS loads the tuned model."
 }
 
 & $OllamaExe stop $BaseModel *> $null
@@ -260,6 +265,7 @@ $state = [ordered]@{
     ollama_inference_threads = $resolvedThreads
     base_model = $BaseModel
     tuned_model = $TunedModel
+    qwen_thinking = "disabled_via_system_no_think"
     num_ctx = $NumCtx
     num_predict = $NumPredict
     max_queue = $MaxQueue
@@ -277,6 +283,7 @@ $state = [ordered]@{
 Write-Host "ARGUS Ollama CPU profile applied."
 Write-Host "Tuned model: $TunedModel"
 Write-Host "Inference threads: $resolvedThreads of $logicalProcessors logical processors"
+Write-Host "Qwen thinking: disabled for the derived ARGUS model"
 Write-Host "ARGUS worker concurrency: 1"
 Write-Host "ARGUS source concurrency: 2"
 Write-Host "ARGUS browser concurrency: 1"
