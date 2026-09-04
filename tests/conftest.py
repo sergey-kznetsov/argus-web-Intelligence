@@ -13,6 +13,19 @@ _POSTGRES_TEST_NODE_MARKERS = (
 
 
 @pytest.fixture(autouse=True)
+def disable_required_ollama_in_test_environment(monkeypatch: pytest.MonkeyPatch):
+    """Run ordinary automated tests without requiring a local Ollama daemon.
+
+    Production Settings and the standalone Windows deployment require Ollama by default.
+    Tests that exercise the required-LLM path pass ``llm_required=True`` explicitly, so this
+    fixture only keeps unrelated unit/integration tests independent of runner-local services.
+    """
+
+    monkeypatch.setenv("ARGUS_LLM_REQUIRED", "false")
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolate_postgres_schema(request: pytest.FixtureRequest):
     """Give every PostgreSQL integration test an independent ARGUS schema.
 
