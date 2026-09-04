@@ -35,6 +35,27 @@ def test_windows_server_deployment_is_standalone_and_loopback_only() -> None:
     assert "exit $processExitCode" in runner
 
 
+def test_deployment_owns_its_database_and_github_configuration() -> None:
+    deploy = DEPLOY.read_text(encoding="utf-8")
+
+    assert 'database-dsn.txt' in deploy
+    assert 'github-token.txt' in deploy
+    assert "ARGUS_GITHUB_TOKEN" in deploy
+    assert "standalone ARGUS must use PostgreSQL database 'argus'" in deploy
+    assert "standalone ARGUS must use PostgreSQL service role 'argus'" in deploy
+    assert "database_dsn_file" in deploy
+
+    forbidden = (
+        "DatabaseSourceEnvFile",
+        "GEOANALYZER_DATABASE_DSN",
+        "GEOANALYZER_DATABASE_DSN_FILE",
+        "C:\\server\\saas.env",
+        "C:\\ProgramData\\GeoAnalyzerTest\\saas.env",
+    )
+    for value in forbidden:
+        assert value not in deploy
+
+
 def test_windows_runtime_replaces_only_verified_stale_argus_port_owner() -> None:
     runner = RUNNER.read_text(encoding="utf-8")
 
@@ -51,9 +72,11 @@ def test_windows_runtime_replaces_only_verified_stale_argus_port_owner() -> None
 def test_deployment_health_must_be_served_by_the_new_release() -> None:
     deploy = DEPLOY.read_text(encoding="utf-8")
 
+    assert "function Test-ProcessBelongsToRelease" in deploy
     assert "function Assert-ArgusListenersOwnedByRelease" in deploy
     assert "Get-NetTCPConnection" in deploy
     assert "Get-CimInstance Win32_Process" in deploy
+    assert "run-process.ps1" in deploy
     assert "ExpectedRelease" in deploy
     assert "is served by a different release" in deploy
     assert "-ExpectedRelease $releaseDir" in deploy
