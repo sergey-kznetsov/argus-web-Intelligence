@@ -109,6 +109,7 @@ jobs:
           $env:GEOANALYZER_DATABASE_DSN = "postgresql://postgres:root@127.0.0.1:5432/postgres"
           $env:ARGUS_TOKEN_FILE = Join-Path $env:RUNNER_TEMP "argus-token"
           $env:ARGUS_STORAGE_BACKEND = "postgresql"
+          $env:ARGUS_LLM_REQUIRED = "false"
           $env:ARGUS_WAYBACK_CDX_URL = "https://web.archive.org/cdx/search/cdx"
           $env:PYTHONUNBUFFERED = "1"
 
