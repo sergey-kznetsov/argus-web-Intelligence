@@ -143,7 +143,7 @@ class Settings(BaseSettings):
 
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
-    llm_required: bool = False
+    llm_required: bool = True
     llm_health_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     llm_health_cache_seconds: float = Field(default=10.0, ge=0, le=300)
     agent_backend: str = "ollama-recipe"
