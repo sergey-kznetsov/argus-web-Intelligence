@@ -5,6 +5,7 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from argus.config import Settings
+from argus.crawler.block_detection import looks_like_blocked_page
 from argus.crawler.lifecycle import FetchBroker
 from argus.crawler.models import FetchResult
 from argus.crawler.request_manager import build_request_manager
@@ -190,18 +191,13 @@ class BrowserCrawlerRuntime:
                 links = await context.page.locator("a[href]").evaluate_all(
                     "els => els.map(a => a.href).filter(Boolean).slice(0, 1000)"
                 )
-                text_sample = (await context.page.locator("body").inner_text())[:50_000].lower()
+                text_sample = (await context.page.locator("body").inner_text())[:50_000]
                 status_code = document_response.status
-                blocked = status_code in {401, 403, 429} or any(
-                    marker in text_sample
-                    for marker in (
-                        "captcha",
-                        "verify you are human",
-                        "access denied",
-                        "robot check",
-                    )
-                )
                 content_type = await document_response.header_value("content-type") or "text/html"
+                blocked = status_code in {401, 403, 429} or looks_like_blocked_page(
+                    text_sample,
+                    content_type,
+                )
                 metadata: dict[str, object] = {}
                 if recipe is not None:
                     metadata = {
