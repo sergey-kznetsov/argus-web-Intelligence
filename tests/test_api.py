@@ -55,9 +55,14 @@ def test_health_and_auth(tmp_path: Path):
         assert payload["runtimes"] == ["fast", "browser"]
         assert payload["agent_enabled"] is False
         assert payload["agent_backend"] is None
-        assert payload["agent_backends"] == ["ollama-recipe"]
-        assert payload["unavailable_agent_backends"]["browser-use"]["status"] == "unavailable"
-        assert payload["unavailable_agent_backends"]["stagehand"]["status"] == "unavailable"
+        assert payload["agent_backends"] == []
+        assert payload["research_intelligence"]["backend"] == "deterministic"
+        assert payload["research_intelligence"]["llm_backend"] is None
+        assert payload["unavailable_agent_backends"]["llm-agent"]["status"] == "disabled"
+        assert (
+            payload["unavailable_agent_backends"]["llm-agent"]["reason_code"]
+            == "CRAWLER_ONLY_RUNTIME"
+        )
         assert payload["result_delivery"] == {
             "full_result_max_items": 100,
             "full_result_max_bytes": 4 * 1024 * 1024,
