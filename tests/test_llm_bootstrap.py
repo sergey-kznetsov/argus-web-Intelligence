@@ -16,8 +16,8 @@ def _settings(tmp_path, **updates) -> Settings:
     return Settings(**values)
 
 
-def test_bootstrap_wires_local_llm_health_without_making_it_required_by_default(tmp_path):
-    services = build_services(_settings(tmp_path))
+def test_bootstrap_wires_local_llm_health_and_respects_explicit_optional_override(tmp_path):
+    services = build_services(_settings(tmp_path, llm_required=False))
 
     assert isinstance(services.llm_health, OllamaRuntimeHealth)
     assert services.llm_required_on_start is False
