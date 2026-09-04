@@ -5,20 +5,13 @@ from collections.abc import Iterable
 from argus.config import Settings
 from argus.contracts.models import PROTOCOL_VERSION
 
-OPERATIONAL_AGENT_BACKENDS = ("ollama-recipe",)
+OPERATIONAL_AGENT_BACKENDS: tuple[str, ...] = ()
 UNAVAILABLE_AGENT_BACKENDS = {
-    "browser-use": {
-        "status": "unavailable",
-        "reason_code": "UPSTREAM_DEPENDENCY_CONFLICT",
-        "detail": (
-            "browser-use 0.13.x pins pypdf==6.14.2 while ARGUS requires "
-            "pypdf>=6.16.1 for the patched PDF security baseline"
-        ),
-    },
-    "stagehand": {
-        "status": "unavailable",
-        "reason_code": "LOCAL_LLM_INTEGRATION_NOT_VALIDATED",
-    },
+    "llm-agent": {
+        "status": "disabled",
+        "reason_code": "CRAWLER_ONLY_RUNTIME",
+        "detail": "ARGUS runs without an LLM dependency; FAST and BROWSER own acquisition.",
+    }
 }
 
 STRUCTURED_EXTRACTORS = (
@@ -55,34 +48,24 @@ def runtime_capabilities(
     archive_providers: Iterable[str],
     map_providers: Iterable[str],
 ) -> dict[str, object]:
-    """Return capabilities configured in the current ARGUS process.
+    """Return capabilities configured in the deterministic ARGUS crawler process."""
 
-    Ollama planner/supervisor/classifier use deterministic fallbacks when the local
-    endpoint is unavailable; their configuration therefore does not claim current LLM
-    health. AGENT is advertised as active only when explicitly enabled.
-    """
     server_queue = settings.execution_role in {"api", "worker"}
-    agent_operational = (
-        settings.agent_enabled and settings.agent_backend in OPERATIONAL_AGENT_BACKENDS
-    )
-    runtimes = ["fast", "browser"]
-    if agent_operational:
-        runtimes.append("agent")
-
-    configured_agent = settings.agent_backend if settings.agent_enabled else None
     return {
         "protocol_version": PROTOCOL_VERSION,
-        "runtimes": runtimes,
+        "runtimes": ["fast", "browser"],
         "storage": settings.storage_backend,
         "execution_role": settings.execution_role,
         "api_max_request_bytes": settings.api_max_request_bytes,
         "research_intelligence": {
-            "llm_backend": "ollama",
-            "llm_url": settings.ollama_url,
-            "model": settings.ollama_model,
-            "planner": "ollama_with_heuristic_fallback",
-            "supervisor": "ollama_with_evidence_aware_fallback",
-            "semantic_exact_excerpt_classifier": True,
+            "backend": "deterministic",
+            "llm_backend": None,
+            "model": None,
+            "planner": "heuristic_curated_sources",
+            "supervisor": "evidence_aware_heuristic",
+            "recursive_followups": True,
+            "semantic_exact_excerpt_classifier": False,
+            "consumer_domain_interpretation": True,
             "custom_consumer_neutral_intents": True,
             "model_output_is_evidence": False,
         },
@@ -152,8 +135,8 @@ def runtime_capabilities(
         "geocoding_providers": list(geocoding_providers),
         "archive_providers": list(archive_providers),
         "map_providers": list(map_providers),
-        "agent_enabled": agent_operational,
-        "agent_backend": configured_agent if agent_operational else None,
-        "agent_backends": list(OPERATIONAL_AGENT_BACKENDS),
+        "agent_enabled": False,
+        "agent_backend": None,
+        "agent_backends": [],
         "unavailable_agent_backends": dict(UNAVAILABLE_AGENT_BACKENDS),
     }
