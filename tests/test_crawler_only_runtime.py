@@ -42,3 +42,7 @@ def test_capabilities_advertise_fast_browser_crawler_without_llm() -> None:
     assert research["model"] is None
     assert research["recursive_followups"] is True
     assert research["consumer_domain_interpretation"] is True
+
+
+def test_windows_deployment_has_no_ollama_tuning_tool() -> None:
+    assert not (ROOT / "deploy" / "windows" / "tune-ollama-cpu.ps1").exists()
