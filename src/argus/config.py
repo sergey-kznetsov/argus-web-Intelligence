@@ -115,7 +115,11 @@ class Settings(BaseSettings):
     direct_provider_retry_base_seconds: float = Field(default=1.0, ge=0, le=300)
     direct_provider_retry_max_seconds: float = Field(default=30.0, ge=0, le=3600)
 
-    discovery_max_queries: int = Field(default=8, ge=1, le=50)
+    # Kraken currently asks for eight distinct urban-signal intents. Keeping only eight
+    # discovery queries consumed the whole primary-intent budget and left no room for the
+    # curated Yandex/2GIS/Google public-map queries. Twelve preserves every primary intent
+    # and still leaves three bounded map-source slots plus one spare query.
+    discovery_max_queries: int = Field(default=12, ge=1, le=50)
     searxng_url: str | None = None
     searxng_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     searxng_max_results_per_query: int = Field(default=10, ge=1, le=50)
