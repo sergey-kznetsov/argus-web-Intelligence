@@ -104,6 +104,8 @@ def test_standalone_windows_deployment_uses_runtime_entrypoint() -> None:
     assert '"argus.runtime_entrypoint", "storage", "check"' in deploy
     assert "read-dsn-identity.py" in deploy
     assert "$venvPython -c $dbIdentityScript" not in deploy
+    assert 'ARGUS_LLM_REQUIRED = "false"' in deploy
+    assert 'ARGUS_LLM_REQUIRED = "true"' not in deploy
     assert '"-m", "argus.runtime_entrypoint", "api"' in runner
     assert '"-m", "argus.runtime_entrypoint", "worker"' in runner
     assert '$ErrorActionPreference = "Continue"' in runner
