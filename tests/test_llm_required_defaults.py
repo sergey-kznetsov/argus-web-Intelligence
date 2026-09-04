@@ -11,10 +11,10 @@ def test_ollama_is_required_by_product_default() -> None:
     assert fields["ollama_model"].default == "qwen3:8b"
 
 
-def test_standalone_deployment_requires_ollama() -> None:
+def test_standalone_deployment_keeps_ollama_non_blocking_for_process_liveness() -> None:
     script = (
         Path(__file__).resolve().parents[1] / "deploy" / "windows" / "deploy-server.ps1"
     ).read_text(encoding="utf-8")
 
-    assert 'ARGUS_LLM_REQUIRED = "true"' in script
-    assert 'ARGUS_LLM_REQUIRED = "false"' not in script
+    assert 'ARGUS_LLM_REQUIRED = "false"' in script
+    assert 'ARGUS_LLM_REQUIRED = "true"' not in script
