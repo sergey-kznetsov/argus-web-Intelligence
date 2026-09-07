@@ -43,10 +43,73 @@ function Import-EnvFile {
     }
 }
 
+function Test-ProcessChainContainsPath {
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [Parameter(Mandatory = $true)][string]$PathPrefix,
+        [string]$ExactPython = ""
+    )
+
+    $normalizedPrefix = [IO.Path]::GetFullPath($PathPrefix).TrimEnd('\') + '\'
+    $normalizedExactPython = ""
+    if (-not [string]::IsNullOrWhiteSpace($ExactPython)) {
+        $normalizedExactPython = [IO.Path]::GetFullPath($ExactPython)
+    }
+
+    $currentId = $ProcessId
+    for ($depth = 0; $depth -lt 8 -and $currentId -gt 0; $depth++) {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $currentId" -ErrorAction SilentlyContinue
+        if ($null -eq $process) {
+            break
+        }
+
+        $executable = [string]$process.ExecutablePath
+        $commandLine = [string]$process.CommandLine
+
+        if (-not [string]::IsNullOrWhiteSpace($executable)) {
+            try {
+                $normalizedExecutable = [IO.Path]::GetFullPath($executable)
+                if (
+                    -not [string]::IsNullOrWhiteSpace($normalizedExactPython) -and
+                    $normalizedExecutable.Equals(
+                        $normalizedExactPython,
+                        [StringComparison]::OrdinalIgnoreCase
+                    )
+                ) {
+                    return $true
+                }
+                if ($normalizedExecutable.StartsWith(
+                    $normalizedPrefix,
+                    [StringComparison]::OrdinalIgnoreCase
+                )) {
+                    return $true
+                }
+            }
+            catch {
+                # Fall through to command-line and parent-chain verification.
+            }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($commandLine)) {
+            if ($commandLine.IndexOf(
+                $normalizedPrefix,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -ge 0) {
+                return $true
+            }
+        }
+
+        $currentId = [int]$process.ParentProcessId
+    }
+
+    return $false
+}
+
 function Ensure-ArgusRuntimePort {
     param(
         [Parameter(Mandatory = $true)][int]$Port,
         [Parameter(Mandatory = $true)][string]$ReleasesRoot,
+        [Parameter(Mandatory = $true)][string]$CurrentRelease,
         [Parameter(Mandatory = $true)][string]$CurrentPython,
         [Parameter(Mandatory = $true)][string]$RuntimeRole
     )
@@ -67,28 +130,29 @@ function Ensure-ArgusRuntimePort {
         throw "ARGUS $RuntimeRole port $Port is occupied by an unknown process PID $ownerId"
     }
 
-    $executable = [string]$process.ExecutablePath
     $commandLine = [string]$process.CommandLine
-    if ([string]::IsNullOrWhiteSpace($executable) -or [string]::IsNullOrWhiteSpace($commandLine)) {
-        throw "ARGUS $RuntimeRole port $Port is occupied by an unverifiable process PID $ownerId"
+    if (
+        [string]::IsNullOrWhiteSpace($commandLine) -or
+        -not $commandLine.Contains("argus.runtime_entrypoint")
+    ) {
+        throw "ARGUS $RuntimeRole port $Port is occupied by an unmanaged process PID $ownerId; refusing to terminate it"
     }
 
-    $normalizedExecutable = [IO.Path]::GetFullPath($executable)
-    $normalizedReleasesRoot = [IO.Path]::GetFullPath($ReleasesRoot).TrimEnd('\') + '\'
-    $ownedRuntime = $normalizedExecutable.StartsWith(
-        $normalizedReleasesRoot,
-        [StringComparison]::OrdinalIgnoreCase
-    ) -and $commandLine.Contains("argus.runtime_entrypoint")
-
+    # CPython venvs on Windows can expose the base interpreter as ExecutablePath while
+    # the venv launcher/release path is visible only in the command line or parent chain.
+    # Never use ExecutablePath alone as the ownership proof.
+    $ownedRuntime = Test-ProcessChainContainsPath `
+        -ProcessId $ownerId `
+        -PathPrefix $ReleasesRoot
     if (-not $ownedRuntime) {
-        throw "ARGUS $RuntimeRole port $Port is occupied by unmanaged process PID $ownerId; refusing to terminate it"
+        throw "ARGUS $RuntimeRole port $Port is occupied by an unverifiable ARGUS process PID $ownerId; refusing unsafe cleanup"
     }
 
-    $normalizedCurrentPython = [IO.Path]::GetFullPath($CurrentPython)
-    $ownerKind = if ($normalizedExecutable.Equals(
-        $normalizedCurrentPython,
-        [StringComparison]::OrdinalIgnoreCase
-    )) { "same-release" } else { "previous-release" }
+    $sameRelease = Test-ProcessChainContainsPath `
+        -ProcessId $ownerId `
+        -PathPrefix $CurrentRelease `
+        -ExactPython $CurrentPython
+    $ownerKind = if ($sameRelease) { "same-release" } else { "previous-release" }
     Write-Host "Stopping stale $ownerKind ARGUS $RuntimeRole runtime PID $ownerId on port $Port"
 
     $taskkill = Join-Path $env:SystemRoot "System32\taskkill.exe"
@@ -176,6 +240,7 @@ if ($Role -eq "api") {
     Ensure-ArgusRuntimePort `
         -Port $port `
         -ReleasesRoot $releasesRoot `
+        -CurrentRelease $release `
         -CurrentPython $python `
         -RuntimeRole "api"
     $processExitCode = Invoke-ArgusRuntime -Arguments @(
@@ -189,6 +254,7 @@ else {
     Ensure-ArgusRuntimePort `
         -Port $probePort `
         -ReleasesRoot $releasesRoot `
+        -CurrentRelease $release `
         -CurrentPython $python `
         -RuntimeRole "worker"
     $processExitCode = Invoke-ArgusRuntime -Arguments @(
