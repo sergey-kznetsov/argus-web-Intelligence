@@ -157,6 +157,32 @@ async def test_overpass_retries_503_then_succeeds():
     assert result.places == []
 
 
+@pytest.mark.asyncio
+async def test_overpass_504_fails_over_to_next_endpoint():
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        if request.url.host == "overpass.example":
+            return httpx.Response(504, text="gateway timeout")
+        return httpx.Response(200, json={"elements": []})
+
+    provider = OverpassMapProvider(
+        settings(direct_provider_max_retries=1),
+        transport=httpx.MockTransport(handler),
+        fallback_endpoints=("https://overpass-mirror.example/api/interpreter",),
+    )
+    result = await provider.search(map_request())
+
+    assert result.errors == []
+    assert len(calls) == 2
+    assert calls[0].startswith("https://overpass.example/")
+    assert calls[1].startswith("https://overpass-mirror.example/")
+    health = await provider.health()
+    assert health["endpoint_count"] == 2
+    assert health["endpoint_failover"] is True
+
+
 def test_overpass_text_query_is_regex_escaped():
     provider = OverpassMapProvider(settings())
     raw = 'Школа [1] "центр"'
