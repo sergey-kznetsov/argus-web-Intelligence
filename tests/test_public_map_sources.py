@@ -218,7 +218,7 @@ def test_source_metadata_declares_public_web_not_paid_api():
     planner = PublicMapSourceResearchPlanner()
     metadata = planner.source_metadata()
 
-    assert planner.version == "public-map-sources/5"
+    assert planner.version == "public-map-sources/6"
     assert {item["source_id"] for item in metadata} == {
         "yandex_maps_web",
         "2gis_web",
@@ -226,3 +226,9 @@ def test_source_metadata_declares_public_web_not_paid_api():
     }
     assert all(item["access"] == "public_web_browser" for item in metadata)
     assert all(item["paid_api"] is False for item in metadata)
+    direct = {
+        item["source_id"]
+        for item in metadata
+        if item["direct_navigation"] is True
+    }
+    assert direct == {"2gis_web", "google_maps_web"}
