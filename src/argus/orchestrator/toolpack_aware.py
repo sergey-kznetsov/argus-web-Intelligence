@@ -110,10 +110,8 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
         states_raw = record.checkpoint.get("source_contours")
         states = dict(states_raw) if isinstance(states_raw, dict) else {}
         all_queries = list(record.checkpoint.get("source_contour_queries", []))
-        queue_version = (
-            ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator.
-            source_contour_queue_priority_version
-        )
+        orchestrator_type = ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator
+        queue_version = orchestrator_type.source_contour_queue_priority_version
 
         record.stage = "discovery:source_contours"
         record.updated_at = now()
