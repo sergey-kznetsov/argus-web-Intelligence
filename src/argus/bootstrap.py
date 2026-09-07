@@ -240,6 +240,9 @@ def build_services(settings: Settings) -> ServiceContainer:
     metrics = OperationalMetrics()
     discovery = build_discovery(settings, guard, fast)
     geocoder = build_geocoder(settings)
+    auto_enabled_overpass = (
+        settings.overpass_url is None and settings.execution_role in {"api", "worker"}
+    )
     map_settings = effective_map_settings(settings)
     map_registry = build_map_registry(map_settings)
     structured_extractor = build_structured_data_extractor(settings)
@@ -300,7 +303,14 @@ def build_services(settings: Settings) -> ServiceContainer:
     registry.register(SitemapDiscoveryAdapter(settings, fast))
     if map_settings.overpass_url:
         overpass_provider = map_registry.get("openstreetmap_overpass")
-        registry.register(OverpassSourceAdapter(overpass_provider, snapshots, geocoder))
+        registry.register(
+            OverpassSourceAdapter(
+                overpass_provider,
+                snapshots,
+                geocoder,
+                skip_ungeocoded_discovery=auto_enabled_overpass,
+            )
+        )
     if settings.wayback_cdx_url:
         registry.register(WaybackSourceAdapter(WaybackCDXProvider(settings), snapshots))
 
