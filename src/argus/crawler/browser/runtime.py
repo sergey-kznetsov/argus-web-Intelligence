@@ -72,6 +72,57 @@ class BrowserCrawlerRuntime:
             },
         }
 
+    @staticmethod
+    def _is_navigation_context_error(error: Exception) -> bool:
+        message = str(error).casefold()
+        return any(
+            marker in message
+            for marker in (
+                "execution context was destroyed",
+                "cannot find context with specified id",
+                "most likely because of a navigation",
+            )
+        )
+
+    async def _page_links(self, page: Any) -> list[str]:
+        """Read links without failing an otherwise valid SPA snapshot on navigation races."""
+
+        for attempt in range(3):
+            try:
+                values = await page.locator("a[href]").evaluate_all(
+                    "els => els.map(a => a.href).filter(Boolean).slice(0, 1000)"
+                )
+                return [str(item) for item in values if item]
+            except Exception as exc:
+                if not self._is_navigation_context_error(exc):
+                    raise
+                if attempt >= 2:
+                    return []
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=1500)
+                except Exception:
+                    pass
+                await asyncio.sleep(0.1)
+        return []
+
+    async def _page_body_text(self, page: Any, html: str) -> str:
+        """Read body text with an HTML fallback when an SPA replaces its execution context."""
+
+        for attempt in range(3):
+            try:
+                return (await page.locator("body").inner_text())[:50_000]
+            except Exception as exc:
+                if not self._is_navigation_context_error(exc):
+                    raise
+                if attempt >= 2:
+                    return html[:50_000]
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=1500)
+                except Exception:
+                    pass
+                await asyncio.sleep(0.1)
+        return html[:50_000]
+
     async def _ensure_started(self) -> None:
         if self._crawler is not None and self._run_task is not None and not self._run_task.done():
             return
@@ -188,10 +239,8 @@ class BrowserCrawlerRuntime:
                 if len(html.encode("utf-8", errors="replace")) > self.settings.max_response_bytes:
                     raise ValueError("browser content exceeds configured limit")
                 title = await context.page.title()
-                links = await context.page.locator("a[href]").evaluate_all(
-                    "els => els.map(a => a.href).filter(Boolean).slice(0, 1000)"
-                )
-                text_sample = (await context.page.locator("body").inner_text())[:50_000]
+                links = await self._page_links(context.page)
+                text_sample = await self._page_body_text(context.page, html)
                 status_code = document_response.status
                 content_type = await document_response.header_value("content-type") or "text/html"
                 blocked = status_code in {401, 403, 429} or looks_like_blocked_page(
