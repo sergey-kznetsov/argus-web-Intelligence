@@ -19,6 +19,21 @@ def perm_request(*intents: str) -> CollectionRequest:
     )
 
 
+def radius_request(*intents: str) -> CollectionRequest:
+    return CollectionRequest(
+        consumer="kraken-simulation",
+        analysis_id="radius-query-safety",
+        territory={
+            "city": "Ижевск",
+            "address": "Пушкинская улица, 277",
+            "point": {"latitude": 56.8527, "longitude": 53.2115},
+            "radius_meters": 1000,
+            "metadata": {"street": "Пушкинская улица", "house": "277"},
+        },
+        intents=list(intents) or ["public_mentions"],
+    )
+
+
 def test_nested_llm_query_objects_do_not_leak_schema_words_into_search():
     values = [
         "{'queries': ['public_mentions', 'around: Comsomol Street 27, Perm', 'metadata: public']}",
@@ -71,6 +86,29 @@ def test_city_and_house_without_specific_street_token_are_reanchored():
     ) == ['"Пермь, Комсомольский проспект, 27" Пермь public comments near avenue 27']
 
 
+def test_radius_search_does_not_reinsert_exact_house_into_street_query():
+    query = 'site:yandex.ru/maps "Ижевск, Пушкинская улица" отзывы жалобы'
+
+    assert sanitize_research_queries(
+        [query],
+        radius_request("reviews", "complaints"),
+        max_queries=2,
+    ) == [query]
+
+
+def test_radius_search_uses_city_as_minimum_anchor_for_nearby_entity_query():
+    query = '"Кафе Север" отзывы'
+
+    sanitized = sanitize_research_queries(
+        [query],
+        radius_request("reviews"),
+        max_queries=2,
+    )
+
+    assert sanitized == ['"Ижевск" "Кафе Север" отзывы']
+    assert "277" not in sanitized[0]
+
+
 def test_bare_custom_intent_is_rejected_and_seen_query_is_deduplicated():
     queries = sanitize_research_queries(
         ["parking_capacity", "парковка вместимость"],
@@ -105,7 +143,7 @@ async def test_research_planner_uses_deterministic_fallback_when_llm_output_has_
     plan = await planner.plan(perm_request("reviews"))
 
     assert plan.queries == ['"Пермь, Комсомольский проспект, 27" отзывы']
-    assert plan.notes[-1] == "query_safety=query-safety/2"
+    assert plan.notes[-1] == "query_safety=query-safety/3"
 
 
 class BadFollowupPlanner:
@@ -135,4 +173,4 @@ async def test_followup_planner_uses_fallback_when_only_bare_intent_survives_sha
     )
 
     assert plan.queries == ['"Пермь, Комсомольский проспект, 27" новости СМИ']
-    assert plan.notes[-1] == "query_safety=query-safety/2"
+    assert plan.notes[-1] == "query_safety=query-safety/3"
