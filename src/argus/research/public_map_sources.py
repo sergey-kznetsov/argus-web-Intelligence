@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import quote, quote_plus
 
 from argus.contracts.models import CollectionRequest, Observation
 from argus.normalization.public_map_provenance import classify_public_map_url
 from argus.research.intent_coverage import IntentCoverageEvaluator
+from argus.sources.base import SourceTask
 from argus.toolpacks import resolved_tool_pack_from_request
 
 
@@ -14,26 +16,38 @@ class PublicMapSourceProfile:
     domain_scope: str
     kind: str
     priority: int
+    direct_search_mode: str | None = None
 
 
 PUBLIC_MAP_SOURCES: tuple[PublicMapSourceProfile, ...] = (
     PublicMapSourceProfile("yandex_maps_web", "yandex.ru/maps", "map_cards_ugc", 10),
-    PublicMapSourceProfile("2gis_web", "2gis.ru", "map_cards_ugc", 20),
-    PublicMapSourceProfile("google_maps_web", "google.com/maps", "map_cards_ugc", 30),
+    PublicMapSourceProfile(
+        "2gis_web",
+        "2gis.ru",
+        "map_cards_ugc",
+        20,
+        direct_search_mode="2gis_path",
+    ),
+    PublicMapSourceProfile(
+        "google_maps_web",
+        "google.com/maps",
+        "map_cards_ugc",
+        30,
+        direct_search_mode="google_maps_url",
+    ),
 )
 
 
 class PublicMapSourceResearchPlanner:
     """Discover public map UGC through the normal ARGUS web research contour.
 
-    Public maps are only source surfaces. They are discovered through normal web search and
-    opened through the same FAST -> BROWSER -> AGENT stack as any other public website. A
-    navigation query may use a word such as ``reviews`` to locate the UGC surface, but that
-    word never upgrades an establishment review into a Kraken fact. Factual coverage remains
-    request-aware and requires source-backed evidence for the requested intent.
+    Search-engine discovery remains useful, but interactive map surfaces are not indexed
+    uniformly. 2GIS and Google Maps therefore also receive bounded direct public browser
+    search tasks. Those tasks only navigate to public pages; factual coverage is granted
+    solely from content that ARGUS actually fetches and stores as Evidence/Provenance.
     """
 
-    version = "public-map-sources/5"
+    version = "public-map-sources/6"
     supported_intents = frozenset(
         {
             "reviews",
@@ -42,6 +56,7 @@ class PublicMapSourceResearchPlanner:
             "discussions",
         }
     )
+    direct_navigation_version = "public-map-direct-navigation/1"
 
     def __init__(
         self,
@@ -58,9 +73,54 @@ class PublicMapSourceResearchPlanner:
 
     @property
     def target_source_count(self) -> int:
-        """Stable checkpoint-facing alias for the per-intent factual source target."""
-
         return self.target_sources_per_intent
+
+    def direct_navigation_tasks(
+        self,
+        request: CollectionRequest,
+        *,
+        limit: int = 2,
+    ) -> list[SourceTask]:
+        """Return bounded direct browser entry points for under-indexed map providers."""
+
+        if limit <= 0:
+            return []
+        navigation_goals = [
+            intent for intent in request.intents if intent in self.supported_intents
+        ]
+        if not navigation_goals:
+            return []
+        anchors = self._anchors(request, [])
+        if not anchors:
+            return []
+        anchor = anchors[0]
+        factual_goals = self._requested_intents(request)
+        goal = (factual_goals or navigation_goals)[0]
+        tasks: list[SourceTask] = []
+        for profile in self.sources:
+            url = self._direct_search_url(profile, anchor)
+            if url is None:
+                continue
+            tasks.append(
+                SourceTask(
+                    source_id="generic_web",
+                    goal=goal,
+                    url=url,
+                    depth=0,
+                    task_key=f"public_map_direct:{profile.source_id}:{anchor.casefold()}",
+                    metadata={
+                        "public_map_direct_navigation": True,
+                        "public_map_direct_navigation_version": self.direct_navigation_version,
+                        "public_map_provider": profile.source_id,
+                        "public_map_anchor": anchor,
+                        "research_goals": list(dict.fromkeys(navigation_goals)),
+                        "allowed_domains": list(request.constraints.allowed_domains),
+                    },
+                )
+            )
+            if len(tasks) >= limit:
+                break
+        return tasks
 
     def queries(
         self,
@@ -109,8 +169,6 @@ class PublicMapSourceResearchPlanner:
         request: CollectionRequest,
         observations: list[Observation],
     ) -> dict[str, int]:
-        """Count independent territorially relevant public-map factual sources."""
-
         requested = self._requested_intents(request)
         if not requested:
             return {}
@@ -143,6 +201,7 @@ class PublicMapSourceResearchPlanner:
                 "priority": item.priority,
                 "access": "public_web_browser",
                 "paid_api": False,
+                "direct_navigation": item.direct_search_mode is not None,
             }
             for item in self.sources
         ]
@@ -154,9 +213,6 @@ class PublicMapSourceResearchPlanner:
             if intent in self.supported_intents
         ]
         if self._is_urban_signals(request):
-            # ``reviews`` can be a navigation word used to find an open UGC surface, but an
-            # establishment review is not a Kraken factual goal. Only the social intents are
-            # allowed to close coverage for urban_signals.
             requested = [intent for intent in requested if intent != "reviews"]
         return list(dict.fromkeys(requested))
 
@@ -237,6 +293,14 @@ class PublicMapSourceResearchPlanner:
     @staticmethod
     def _query(profile: PublicMapSourceProfile, anchor: str, suffix: str) -> str:
         return f'site:{profile.domain_scope} "{anchor}" {suffix}'[:512].rstrip()
+
+    @staticmethod
+    def _direct_search_url(profile: PublicMapSourceProfile, anchor: str) -> str | None:
+        if profile.direct_search_mode == "2gis_path":
+            return f"https://2gis.ru/search/{quote(anchor, safe='')}"
+        if profile.direct_search_mode == "google_maps_url":
+            return f"https://www.google.com/maps/search/?api=1&query={quote_plus(anchor)}"
+        return None
 
     def _clean_anchor(self, value: str) -> str | None:
         clean = " ".join(value.replace('"', " ").replace("\\", " ").split()).strip()
