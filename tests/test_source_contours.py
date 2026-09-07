@@ -89,6 +89,35 @@ def test_urban_signal_contours_cover_independent_public_source_classes() -> None
     assert all("google.com" in plan.denied_domain_roots for plan in protected.values())
 
 
+def test_radius_contours_drop_unverified_poi_pseudo_street() -> None:
+    request = CollectionRequest(
+        consumer="kraken.development.uds",
+        consumer_profile_version=1,
+        capability="urban_signals",
+        analysis_id="poi-source-contours",
+        territory={
+            "city": "Ижевск",
+            "address": "Ижевск, Parus Plaza, бизнес-центр",
+            "point": {"latitude": 56.866315, "longitude": 53.207313},
+            "radius_meters": 1200,
+            "metadata": {"street": "Parus Plaza бизнес-центр"},
+        },
+        intents=["complaints", "local_news"],
+        constraints={"language": "ru", "max_pages": 30},
+    )
+
+    plans = SourceContourResearchPlanner().plans(
+        request,
+        planner_policy="urban_signals",
+    )
+    all_queries = [query for plan in plans for query in plan.queries]
+
+    assert plans
+    assert all("Parus Plaza" not in query for query in all_queries)
+    assert all("бизнес-центр" not in query for query in all_queries)
+    assert all("Ижевск" in query for query in all_queries)
+
+
 def test_contours_keep_exact_address_when_no_radius_was_requested() -> None:
     planner = SourceContourResearchPlanner()
     plans = planner.plans(kraken_request(radius=None), planner_policy="urban_signals")
@@ -193,7 +222,7 @@ async def test_tool_pack_orchestrator_executes_each_contour_as_an_independent_la
         for state in record.checkpoint["source_contours"].values()
     )
     assert all(
-        task.metadata["source_contour_version"] == "source-contours/2"
+        task.metadata["source_contour_version"] == "source-contours/3"
         for task in pending
     )
     protected_calls = harness.discovery.calls[:3]
