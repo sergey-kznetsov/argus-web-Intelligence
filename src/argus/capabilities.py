@@ -4,6 +4,7 @@ from collections.abc import Iterable
 
 from argus.config import Settings
 from argus.contracts.models import PROTOCOL_VERSION
+from argus.research.source_contours import SourceContourResearchPlanner
 
 OPERATIONAL_AGENT_BACKENDS: tuple[str, ...] = ()
 UNAVAILABLE_AGENT_BACKENDS = {
@@ -51,6 +52,7 @@ def runtime_capabilities(
     """Return capabilities configured in the deterministic ARGUS crawler process."""
 
     server_queue = settings.execution_role in {"api", "worker"}
+    contour_planner = SourceContourResearchPlanner()
     return {
         "protocol_version": PROTOCOL_VERSION,
         "runtimes": ["fast", "browser"],
@@ -64,10 +66,18 @@ def runtime_capabilities(
             "planner": "heuristic_curated_sources",
             "supervisor": "evidence_aware_heuristic",
             "recursive_followups": True,
+            "source_contours": True,
+            "source_contour_version": contour_planner.version,
             "semantic_exact_excerpt_classifier": False,
             "consumer_domain_interpretation": True,
             "custom_consumer_neutral_intents": True,
             "model_output_is_evidence": False,
+        },
+        "source_contours": {
+            "version": contour_planner.version,
+            "policies": {
+                "urban_signals": contour_planner.catalog("urban_signals"),
+            },
         },
         "request_contract": {
             "supplemental_source_pool": True,
