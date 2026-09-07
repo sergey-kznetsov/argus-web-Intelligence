@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from argus.contracts.models import CollectionRequest
-from argus.research.radius_scope import radius_scope_text
+from argus.research.radius_scope import radius_scope_text, radius_street_text
 
 
 _CURATED_NON_OFFICIAL_ROOTS = (
@@ -156,7 +156,7 @@ class SourceContourResearchPlanner:
     facts must still be fetched, normalized and backed by Evidence/Provenance.
     """
 
-    version = "source-contours/2"
+    version = "source-contours/3"
 
     def __init__(
         self,
@@ -183,12 +183,7 @@ class SourceContourResearchPlanner:
             return []
         anchor = radius_scope_text(request)
         city = (request.territory.city or "").strip() or anchor
-        street_raw = request.territory.metadata.get("street")
-        street = (
-            " ".join(street_raw.split()).strip()
-            if isinstance(street_raw, str) and street_raw.strip()
-            else anchor
-        )
+        street = radius_street_text(request) or city
         region_raw = request.territory.metadata.get("region")
         region = (
             " ".join(region_raw.split()).strip()
