@@ -12,8 +12,8 @@ from argus.toolpacks import resolved_tool_pack_from_request
 class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator):
     """Expand bounded area research without leaking consumer-specific domain semantics."""
 
-    execution_budget_version = "execution-budget/1"
-    area_entity_proof_version = "area-entity-proof/1"
+    execution_budget_version = "execution-budget/2"
+    area_entity_proof_version = "area-entity-proof/2"
 
     def __init__(
         self,
@@ -96,19 +96,29 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
             limit=query_limit,
         )
 
-        # Kraken's urban_signals capability follows the upstream SOIKA domain:
-        # messages/appeals about urban problems in the territory. Nearby businesses and
-        # other map POIs may help establish spatial context, but they are not research
-        # subjects and must not trigger review crawling. Generic consumers retain normal
-        # recursive entity research.
         entity_proofs: list[dict[str, object]] = []
         entity_queries: list[str] = []
-        if not urban_signals:
+        remaining_query_slots = max(0, query_limit - len(street_queries))
+        if remaining_query_slots:
             verified_observations, entity_proofs = self._verified_area_entities(
                 record.request,
                 observations,
             )
-            remaining_query_slots = max(0, query_limit - len(street_queries))
+            if urban_signals:
+                # Urban-signals research must expand across the geometry, not across every
+                # nearby business. Only source-backed street/highway observations are allowed
+                # to become additional research subjects; ordinary POIs remain context only.
+                verified_observations = [
+                    observation
+                    for observation in verified_observations
+                    if self._is_street_observation(observation)
+                ]
+                allowed_ids = {item.observation_id for item in verified_observations}
+                entity_proofs = [
+                    proof
+                    for proof in entity_proofs
+                    if str(proof.get("observation_id") or "") in allowed_ids
+                ]
             entity_queries = self.area_entity_planner.expand(
                 record.request,
                 verified_observations,
@@ -149,6 +159,9 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
             branch_task.metadata["area_branch_depth"] = branch_depth + 1
             branch_task.metadata["area_branch_from"] = task.url
             branch_task.metadata["area_entity_queries"] = list(queries)
+            branch_task.metadata["area_spatial_mode"] = (
+                "verified_streets_only" if urban_signals else "verified_entities"
+            )
             if entity_proofs:
                 branch_task.metadata["area_entity_proofs"] = entity_proofs
             additions.append(branch_task)
@@ -156,6 +169,10 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
         record.checkpoint = {
             **record.checkpoint,
             "area_entity_queries": sorted(seen_queries),
+            "area_spatial_mode": (
+                "verified_streets_only" if urban_signals else "verified_entities"
+            ),
+            "area_spatial_entity_queries": len(entity_queries),
             "execution_budget_version": self.execution_budget_version,
         }
 
@@ -197,7 +214,7 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
             if result.distance_meters is not None:
                 proof["distance_meters"] = result.distance_meters
             proofs.append(proof)
-        return verified, proofs[:8]
+        return verified, proofs[:16]
 
     def _attach_area_branch_proof(
         self,
@@ -216,6 +233,15 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
                 "source_backed": True,
                 "entities": proofs,
             }
+
+    @staticmethod
+    def _is_street_observation(observation: Observation) -> bool:
+        if observation.source_kind != "map_place":
+            return False
+        categories = observation.data.get("categories")
+        if not isinstance(categories, list):
+            return False
+        return any(str(value).casefold().startswith("highway:") for value in categories)
 
     @staticmethod
     def _entity_anchors(observation: Observation) -> list[str]:
