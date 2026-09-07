@@ -12,6 +12,7 @@ from argus.orchestrator.toolpack_aware import (
 from argus.research.discovery import DiscoveryOutcome
 from argus.research.source_contours import SourceContourResearchPlanner
 from argus.sources.base import SourceTask
+from argus.sources.intent_evidence_web import IntentEvidenceWebAdapter
 from argus.toolpacks import TOOL_PACK_REGISTRY, activate_tool_pack
 
 
@@ -130,6 +131,35 @@ def test_unrelated_planner_policy_does_not_receive_urban_signal_contours() -> No
     planner = SourceContourResearchPlanner()
 
     assert planner.plans(kraken_request(), planner_policy="generic_research") == []
+
+
+def test_source_contour_provenance_preserves_plain_web_page_source_shape() -> None:
+    task = SourceTask(
+        source_id="generic_web",
+        goal="complaints",
+        url="https://official.example/appeal",
+        metadata={
+            "source_contour": "official_government",
+            "source_contour_version": "source-contours/3",
+            "source_contour_priority": 10,
+        },
+    )
+    observation = SimpleNamespace(
+        entity_type="document",
+        source_kind="web_page",
+        provenance={},
+        quality={},
+    )
+    evidence = SimpleNamespace(metadata={})
+    result = SimpleNamespace(observations=[observation], evidence=[evidence])
+
+    IntentEvidenceWebAdapter._attach_source_contour_provenance(task, result)
+
+    assert observation.source_kind == "web_page"
+    assert observation.quality["source_contour_traced"] is True
+    assert observation.provenance["source_contour"]["navigation_only"] is True
+    assert observation.provenance["source_contour"]["contour_label_is_evidence"] is False
+    assert evidence.metadata["source_contour"]["contour_id"] == "official_government"
 
 
 class FakeRepository:
