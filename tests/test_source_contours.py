@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from argus.contracts.models import CollectionRequest
+from argus.orchestrator.service import CollectionOrchestrator
+from argus.orchestrator.toolpack_aware import (
+    ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator,
+)
+from argus.research.discovery import DiscoveryOutcome
+from argus.research.source_contours import SourceContourResearchPlanner
+from argus.sources.base import SourceTask
+from argus.toolpacks import TOOL_PACK_REGISTRY, activate_tool_pack
+
+
+EXPECTED_CONTOURS = {
+    "official_government",
+    "public_appeals",
+    "housing_utilities",
+    "local_forums",
+    "local_media",
+    "public_communities",
+    "general_web",
+}
+
+
+def kraken_request(*, radius: int | None = 1000) -> CollectionRequest:
+    territory = {
+        "city": "Ижевск",
+        "address": "Пушкинская улица, 277",
+        "point": {"latitude": 56.8527, "longitude": 53.2115},
+        "metadata": {"street": "Пушкинская улица", "house": "277"},
+    }
+    if radius is not None:
+        territory["radius_meters"] = radius
+    return CollectionRequest(
+        consumer="kraken.development.uds",
+        consumer_profile_version=1,
+        capability="urban_signals",
+        analysis_id="source-contours",
+        territory=territory,
+        intents=[
+            "comments",
+            "discussions",
+            "complaints",
+            "incidents",
+            "posts",
+            "public_appeals",
+            "resident_messages",
+            "local_news",
+        ],
+        constraints={"language": "ru", "max_pages": 30},
+    )
+
+
+def test_urban_signal_contours_cover_independent_public_source_classes() -> None:
+    planner = SourceContourResearchPlanner()
+    plans = planner.plans(kraken_request(), planner_policy="urban_signals")
+
+    assert {plan.contour_id for plan in plans} == EXPECTED_CONTOURS
+    all_queries = [query for plan in plans for query in plan.queries]
+
+    # A point+radius analysis must not collapse every lane back to one house number.
+    assert all("277" not in query for query in all_queries)
+    assert all("Ижевск" in query for query in all_queries)
+    assert any("администрация" in query for query in all_queries)
+    assert any("обращения граждан" in query for query in all_queries)
+    assert any("dom.gosuslugi.ru" in query for query in all_queries)
+    assert any("форум" in query for query in all_queries)
+    assert any("местные СМИ" in query for query in all_queries)
+    assert any("сообщество" in query for query in all_queries)
+
+
+def test_contours_keep_exact_address_when_no_radius_was_requested() -> None:
+    planner = SourceContourResearchPlanner()
+    plans = planner.plans(kraken_request(radius=None), planner_policy="urban_signals")
+
+    assert plans
+    assert any("277" in query for plan in plans for query in plan.queries)
+
+
+def test_unrelated_planner_policy_does_not_receive_urban_signal_contours() -> None:
+    planner = SourceContourResearchPlanner()
+
+    assert planner.plans(kraken_request(), planner_policy="generic_research") == []
+
+
+class FakeRepository:
+    def __init__(self) -> None:
+        self.updates = 0
+
+    async def update_collection(self, record) -> None:
+        del record
+        self.updates += 1
+
+
+class FakeDiscovery:
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], int]] = []
+
+    async def discover(self, queries, request) -> DiscoveryOutcome:
+        self.calls.append((list(queries), request.constraints.max_pages))
+        index = len(self.calls)
+        task = SourceTask(
+            source_id="generic_web",
+            goal=request.intents[0],
+            url=f"https://source-{index}.example/path",
+            depth=0,
+            metadata={"research_goals": list(request.intents)},
+        )
+        return DiscoveryOutcome(
+            tasks=[task],
+            providers_attempted=["fake_search"],
+            candidates_seen=3,
+            valid_destinations=1,
+            destinations_selected=1,
+            task_budget=request.constraints.max_pages,
+            stop_reason="first_provider_with_valid_destinations",
+        )
+
+
+class ContourHarness:
+    def __init__(self) -> None:
+        self.discovery = FakeDiscovery()
+        self.repository = FakeRepository()
+        self.source_contour_planner = SourceContourResearchPlanner()
+
+    def _merge_tasks(self, existing, additions, collection_id):
+        return CollectionOrchestrator._merge_tasks(existing, additions, collection_id)
+
+    def _task_dict(self, task):
+        return CollectionOrchestrator._task_dict(task)
+
+
+@pytest.mark.asyncio
+async def test_tool_pack_orchestrator_executes_each_contour_as_an_independent_lane() -> None:
+    harness = ContourHarness()
+    request = kraken_request()
+    record = SimpleNamespace(
+        collection_id="collection-contours",
+        request=request,
+        checkpoint={},
+        stage="planning",
+        updated_at=None,
+    )
+    pack = TOOL_PACK_REGISTRY.resolve(
+        consumer_id="kraken.development.uds",
+        capability="urban_signals",
+        expected_tool_pack_id="kraken.urban_signals",
+        requested_tool_pack_id=request.tool_pack_id,
+        requested_version=request.tool_pack_version,
+    )
+
+    with activate_tool_pack(pack):
+        pending = await (
+            ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator._discover_source_contours(
+                harness,
+                record,
+                [],
+            )
+        )
+
+    assert len(harness.discovery.calls) == len(EXPECTED_CONTOURS)
+    assert {task.metadata["source_contour"] for task in pending} == EXPECTED_CONTOURS
+    assert record.checkpoint["source_contours_complete"] is True
+    assert set(record.checkpoint["source_contours"]) == EXPECTED_CONTOURS
+    assert all(
+        state["status"] == "discovered"
+        for state in record.checkpoint["source_contours"].values()
+    )
+    assert all(
+        task.metadata["source_contour_version"] == "source-contours/1"
+        for task in pending
+    )
