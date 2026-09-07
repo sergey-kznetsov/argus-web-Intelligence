@@ -61,6 +61,8 @@ SERVER_DEFAULT_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 SERVER_FALLBACK_OVERPASS_URLS = (
     "https://overpass.private.coffee/api/interpreter",
 )
+SERVER_OVERPASS_TIMEOUT_SECONDS = 15.0
+SERVER_OVERPASS_MAX_RETRIES = 1
 
 
 def configured_discovery_provider_names(settings: Settings) -> list[str]:
@@ -121,11 +123,26 @@ def effective_map_settings(settings: Settings) -> Settings:
     public Overpass endpoint directly for a bounded point+radius inventory. Embedded
     library users keep the previous opt-in behavior and can still configure another
     Overpass endpoint explicitly.
+
+    Public Overpass mirrors are best-effort infrastructure and can stall under load. The
+    auto-enabled standalone profile therefore bounds one endpoint attempt to 15 seconds
+    and allows exactly one failover attempt. This keeps the optional area inventory inside
+    the orchestrator's source-task timeout instead of letting it consume the whole task
+    budget. Explicit operator configuration is preserved unchanged.
     """
 
     if settings.overpass_url or settings.execution_role == "embedded":
         return settings
-    return settings.model_copy(update={"overpass_url": SERVER_DEFAULT_OVERPASS_URL})
+    return settings.model_copy(
+        update={
+            "overpass_url": SERVER_DEFAULT_OVERPASS_URL,
+            "overpass_timeout_seconds": min(
+                float(settings.overpass_timeout_seconds),
+                SERVER_OVERPASS_TIMEOUT_SECONDS,
+            ),
+            "direct_provider_max_retries": SERVER_OVERPASS_MAX_RETRIES,
+        }
+    )
 
 
 def build_map_registry(
