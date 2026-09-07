@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from argus.consumer_delivery import ConsumerDeliveryProjector
 from argus.orchestrator.evidence_status import EvidenceStatusAdaptiveResearchOrchestrator
+from argus.orchestrator.service import now
 from argus.research.source_contours import SourceContourResearchPlanner
 from argus.toolpacks import (
     activate_tool_pack,
@@ -109,7 +110,7 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
         all_queries = list(record.checkpoint.get("source_contour_queries", []))
 
         record.stage = "discovery:source_contours"
-        record.updated_at = __import__("argus.orchestrator.service", fromlist=["now"]).now()
+        record.updated_at = now()
         await self.repository.update_collection(record)
 
         for plan in plans:
@@ -166,7 +167,7 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
                 "source_contour_queries": all_queries,
                 "pending_tasks": [self._task_dict(task) for task in pending],
             }
-            record.updated_at = __import__("argus.orchestrator.service", fromlist=["now"]).now()
+            record.updated_at = now()
             await self.repository.update_collection(record)
 
         record.checkpoint = {
@@ -177,7 +178,7 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
             "source_contours_complete": True,
             "pending_tasks": [self._task_dict(task) for task in pending],
         }
-        record.updated_at = __import__("argus.orchestrator.service", fromlist=["now"]).now()
+        record.updated_at = now()
         await self.repository.update_collection(record)
         return pending
 
