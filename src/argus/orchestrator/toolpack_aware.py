@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argus.consumer_delivery import ConsumerDeliveryProjector
+from argus.normalization.public_map_provenance import classify_public_map_url
 from argus.orchestrator.evidence_status import EvidenceStatusAdaptiveResearchOrchestrator
 from argus.orchestrator.service import now
 from argus.research.source_contours import SourceContourResearchPlanner
@@ -28,7 +29,7 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
     """
 
     tool_pack_execution_contract_version = "consumer-tool-pack/3"
-    source_contour_queue_priority_version = "source-contour-queue/1"
+    source_contour_queue_priority_version = "source-contour-queue/2"
 
     def __init__(
         self,
@@ -70,6 +71,11 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
                         if self.source_contour_planner.supports_policy(pack.planner_policy)
                         else None
                     ),
+                    "public_map_direct_navigation_version": getattr(
+                        self.public_map_source_planner,
+                        "direct_navigation_version",
+                        None,
+                    ),
                 },
             }
             await self.repository.update_collection(record)
@@ -87,11 +93,41 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
         uncovered_intents,
     ):
         pending = await self._discover_source_contours(record, pending)
+        pending = await self._discover_direct_public_maps(record, pending)
         return await super()._discover_uncovered_intents(
             record,
             pending,
             uncovered_intents,
         )
+
+    async def _discover_direct_public_maps(self, record, pending):
+        if (
+            self.public_map_source_planner is None
+            or record.checkpoint.get("public_map_direct_navigation_complete") is True
+        ):
+            return pending
+
+        tasks = self.public_map_source_planner.direct_navigation_tasks(record.request, limit=2)
+        pending = self._merge_tasks(pending, tasks, record.collection_id)
+        record.checkpoint = {
+            **record.checkpoint,
+            "public_map_source_version": self.public_map_source_planner.version,
+            "public_map_direct_navigation_version": getattr(
+                self.public_map_source_planner,
+                "direct_navigation_version",
+                None,
+            ),
+            "public_map_direct_navigation_complete": True,
+            "public_map_direct_navigation_tasks": len(tasks),
+            "public_map_direct_navigation_providers": [
+                str(task.metadata.get("public_map_provider") or "")
+                for task in tasks
+            ],
+            "pending_tasks": [self._task_dict(task) for task in pending],
+        }
+        record.updated_at = now()
+        await self.repository.update_collection(record)
+        return pending
 
     async def _discover_source_contours(self, record, pending):
         pack = active_tool_pack()
@@ -122,8 +158,19 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
             if isinstance(previous, dict) and previous.get("attempted") is True:
                 continue
 
+            denied_domains = list(
+                dict.fromkeys(
+                    [
+                        *record.request.constraints.denied_domains,
+                        *plan.denied_domain_roots,
+                    ]
+                )
+            )
             constraints = record.request.constraints.model_copy(
-                update={"max_pages": max(1, int(plan.max_destinations))}
+                update={
+                    "max_pages": max(1, int(plan.max_destinations)),
+                    "denied_domains": denied_domains,
+                }
             )
             contour_request = record.request.model_copy(update={"constraints": constraints})
             outcome = await self.discovery.discover(list(plan.queries), contour_request)
@@ -156,6 +203,7 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
                 "priority": plan.priority,
                 "description": plan.description,
                 "queries": list(plan.queries),
+                "denied_domain_roots": list(plan.denied_domain_roots),
                 "providers_attempted": list(outcome.providers_attempted),
                 "candidates_seen": outcome.candidates_seen,
                 "valid_destinations": outcome.valid_destinations,
@@ -194,32 +242,32 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
         task: SourceTask,
         requested: set[str],
     ) -> tuple[int, int, int, float, str]:
-        """Protect spatial inventory and independent source lanes from map/search fan-out.
-
-        Radius inventory must run first so the crawler learns source-backed nearby streets.
-        Independent source contours run immediately after it and before curated map/adaptive
-        fan-out. This prevents a productive Yandex/2GIS branch from consuming the complete
-        page budget before official, appeals, housing, forums and local-media lanes execute.
-        """
+        """Protect spatial, independent-source and map-provider entry lanes from fan-out."""
 
         base = super()._pending_priority(task, requested)
         if task.source_id == "openstreetmap_overpass" and task.goal in {
             "area_entity_inventory",
             "area_street_inventory",
         }:
-            return (-2, base[1], base[2], base[3], base[4])
+            return (-3, base[1], base[2], base[3], base[4])
         if task.metadata.get("source_contour"):
             try:
                 contour_priority = int(task.metadata.get("source_contour_priority", 100) or 100)
             except (TypeError, ValueError):
                 contour_priority = 100
-            return (-1, base[1], contour_priority, base[3], base[4])
+            return (-2, base[1], contour_priority, base[3], base[4])
+        if task.metadata.get("public_map_direct_navigation"):
+            return (-1, base[1], base[2], base[3], base[4])
+        if classify_public_map_url(task.url) is not None:
+            return (0, base[1], base[2], base[3], base[4])
         return base
 
     @classmethod
     def _focused_branch(cls, task: SourceTask) -> str | None:
         if task.metadata.get("source_contour"):
             return "source_contour"
+        if task.metadata.get("public_map_direct_navigation"):
+            return "public_map_direct"
         return super()._focused_branch(task)
 
     async def _commit_task_success(
