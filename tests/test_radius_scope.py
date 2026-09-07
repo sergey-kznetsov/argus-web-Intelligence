@@ -118,11 +118,12 @@ def test_standalone_server_enables_free_overpass_inventory_by_default() -> None:
 
 
 @pytest.mark.asyncio
-async def test_overpass_inventory_skips_text_only_request_without_geocoder() -> None:
+async def test_auto_enabled_overpass_skips_text_only_request_without_geocoder() -> None:
     adapter = OverpassSourceAdapter(
         provider=SimpleNamespace(endpoint=SERVER_DEFAULT_OVERPASS_URL),
         snapshots=SimpleNamespace(),
         geocoder=None,
+        skip_ungeocoded_discovery=True,
     )
     text_only = CollectionRequest(
         consumer="test",
@@ -135,11 +136,12 @@ async def test_overpass_inventory_skips_text_only_request_without_geocoder() -> 
 
 
 @pytest.mark.asyncio
-async def test_overpass_inventory_is_created_for_real_point_radius_request() -> None:
+async def test_auto_enabled_overpass_inventory_runs_for_real_point_radius_request() -> None:
     adapter = OverpassSourceAdapter(
         provider=SimpleNamespace(endpoint=SERVER_DEFAULT_OVERPASS_URL),
         snapshots=SimpleNamespace(),
         geocoder=None,
+        skip_ungeocoded_discovery=True,
     )
 
     tasks = await adapter.discover(request())
