@@ -16,6 +16,9 @@ class AreaEntityResearchPlanner:
         "public_mentions",
         "local_news",
         "incidents",
+        "posts",
+        "public_appeals",
+        "resident_messages",
         "historical_context",
     }
     _ENTITY_SOURCE_KINDS = {
@@ -139,6 +142,9 @@ class AreaEntityResearchPlanner:
             "public_mentions": "упоминания",
             "local_news": "новости",
             "incidents": "происшествия авария пожар конфликт",
+            "posts": "посты публикации жителей",
+            "public_appeals": "обращения граждан публичные обращения",
+            "resident_messages": "сообщения жителей жители сообщают",
             "historical_context": "история прежнее название что было раньше",
         }
         terms_en = {
@@ -149,6 +155,9 @@ class AreaEntityResearchPlanner:
             "public_mentions": "mentions",
             "local_news": "news",
             "incidents": "incidents accident fire conflict",
+            "posts": "posts resident publications",
+            "public_appeals": "citizen appeals public requests",
+            "resident_messages": "resident messages residents report",
             "historical_context": "history former name what was here before",
         }
         dictionary = terms_ru if language == "ru" else terms_en
