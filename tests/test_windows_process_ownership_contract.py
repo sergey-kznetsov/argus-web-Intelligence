@@ -15,6 +15,16 @@ def test_windows_runner_traces_release_ownership_through_process_chain() -> None
     assert "-PathPrefix $CurrentRelease" in script
 
 
+def test_windows_runner_recovers_only_exact_localsystem_argus_orphans() -> None:
+    script = RUNNER.read_text(encoding="utf-8")
+
+    assert "function Test-LocalSystemArgusRuntime" in script
+    assert "GetOwnerSid" in script
+    assert 'S-1-5-18' in script
+    assert "argus\\.runtime_entrypoint" in script
+    assert "previous-or-orphaned-release" in script
+
+
 def test_windows_runner_keeps_unmanaged_port_cleanup_fail_closed() -> None:
     script = RUNNER.read_text(encoding="utf-8")
 
