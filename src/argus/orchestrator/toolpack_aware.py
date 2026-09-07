@@ -529,6 +529,10 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
                 break
 
             task = queue.pop(0)
+            task_collection_id = str(task.metadata.get("collection_id") or "").strip()
+            if task_collection_id and task_collection_id != record.collection_id:
+                raise ValueError("serial task collection_id does not match collection")
+            task.metadata["collection_id"] = record.collection_id
             self._tag_serial_lane(
                 task,
                 lane_id=lane_id,
