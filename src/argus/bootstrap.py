@@ -17,7 +17,10 @@ from argus.orchestrator.toolpack_aware import (
     ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator,
 )
 from argus.recipes.service import RecipeManager
-from argus.research.browser_serp import DuckDuckGoFastDiscoveryProvider
+from argus.research.browser_serp import (
+    DuckDuckGoFastDiscoveryProvider,
+    MojeekFastDiscoveryProvider,
+)
 from argus.research.coverage import EvidenceAwareHeuristicFollowupResearchPlanner
 from argus.research.discovery import DiscoveryService
 from argus.research.entities import AreaEntityResearchPlanner
@@ -62,7 +65,7 @@ def configured_discovery_provider_names(settings: Settings) -> list[str]:
     if settings.searxng_url:
         names.append("searxng")
     if settings.browser_serp_enabled:
-        names.append("duckduckgo_fast")
+        names.extend(("duckduckgo_fast", "mojeek_fast"))
     return names
 
 
@@ -83,7 +86,12 @@ def build_discovery(
     if settings.searxng_url:
         providers.append(SearxngDiscoveryProvider(settings))
     if settings.browser_serp_enabled:
-        providers.append(DuckDuckGoFastDiscoveryProvider(settings, fast))
+        providers.extend(
+            (
+                DuckDuckGoFastDiscoveryProvider(settings, fast),
+                MojeekFastDiscoveryProvider(settings, fast),
+            )
+        )
     if not providers:
         return None
     return DedicatedSourceRoutingDiscoveryService(
