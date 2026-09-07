@@ -32,6 +32,12 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
     historical_archive_provenance_version = "historical-archive-page/1"
     source_contour_provenance_version = "source-contour-provenance/1"
     historical_relevance = HistoricalTerritoryRelevanceEvaluator()
+    _source_contour_child_keys = (
+        "source_contour",
+        "source_contour_version",
+        "source_contour_description",
+        "source_contour_priority",
+    )
 
     def __init__(
         self,
@@ -53,6 +59,24 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
         self._attach_historical_archive_provenance(task, request, result)
         await self._finalize_recipe_goal_verification(task, request, result)
         return result
+
+    def _discovered_tasks(
+        self,
+        task: SourceTask,
+        fetched,
+        request: CollectionRequest,
+        collection_id: str,
+    ) -> list[SourceTask]:
+        """Keep an independent source lane attached to pages reached inside that source."""
+
+        discovered = super()._discovered_tasks(task, fetched, request, collection_id)
+        if not task.metadata.get("source_contour"):
+            return discovered
+        for child in discovered:
+            for key in self._source_contour_child_keys:
+                if key in task.metadata:
+                    child.metadata[key] = task.metadata[key]
+        return discovered
 
     @staticmethod
     def _main_text(content: str, content_type: str | None) -> str:
@@ -152,6 +176,7 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
             "navigation_label_is_evidence": False,
             "preserved_on_observations": True,
             "preserved_on_evidence": True,
+            "preserved_through_depth_crawl": True,
         }
         payload["historical_archive_page_provenance"] = {
             "version": self.historical_archive_provenance_version,
