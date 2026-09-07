@@ -21,6 +21,7 @@ from argus.security.redaction import safe_error_message
 
 _CATEGORY_TAGS: dict[str, tuple[str, str | None]] = {
     "named_feature": ("name", None),
+    "street_feature": ("highway", None),
     "school": ("amenity", "school"),
     "kindergarten": ("amenity", "kindergarten"),
     "college": ("amenity", "college"),
@@ -131,6 +132,7 @@ class OverpassMapProvider:
             "status": "configured",
             "min_interval_seconds": self.settings.overpass_min_interval_seconds,
             "supports_named_feature_inventory": True,
+            "supports_street_feature_inventory": True,
         }
 
     def _build_query(self, request: MapSearchRequest, radius: int) -> str:
@@ -157,7 +159,14 @@ class OverpassMapProvider:
                     tag_filter = f'["{self._ql_string(key)}"]'
                 else:
                     tag_filter = f'["{self._ql_string(key)}"="{self._ql_string(value)}"]'
-            for element_type in ("node", "way", "relation"):
+            # Street inventory is represented by named ways/relations. Asking Overpass for
+            # highway nodes mostly returns traffic infrastructure rather than street names.
+            element_types = (
+                ("way", "relation")
+                if tag == _CATEGORY_TAGS["street_feature"]
+                else ("node", "way", "relation")
+            )
+            for element_type in element_types:
                 selectors.append(
                     f"{element_type}(around:{radius},{point.latitude},{point.longitude})"
                     f"{tag_filter}{name_filter};"
@@ -276,7 +285,15 @@ class OverpassMapProvider:
     @staticmethod
     def _categories_from_tags(tags: dict[str, Any]) -> list[str]:
         values: list[str] = []
-        for key in ("amenity", "shop", "leisure", "tourism", "office", "healthcare"):
+        for key in (
+            "highway",
+            "amenity",
+            "shop",
+            "leisure",
+            "tourism",
+            "office",
+            "healthcare",
+        ):
             value = str(tags.get(key) or "").strip()
             if value:
                 values.append(f"{key}:{value}")
