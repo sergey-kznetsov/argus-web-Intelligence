@@ -31,7 +31,11 @@ def kraken_request(*, radius: int | None = 1000) -> CollectionRequest:
         "city": "Ижевск",
         "address": "Пушкинская улица, 277",
         "point": {"latitude": 56.8527, "longitude": 53.2115},
-        "metadata": {"street": "Пушкинская улица", "house": "277"},
+        "metadata": {
+            "region": "Удмуртская Республика",
+            "street": "Пушкинская улица",
+            "house": "277",
+        },
     }
     if radius is not None:
         territory["radius_meters"] = radius
@@ -62,15 +66,27 @@ def test_urban_signal_contours_cover_independent_public_source_classes() -> None
     assert {plan.contour_id for plan in plans} == EXPECTED_CONTOURS
     all_queries = [query for plan in plans for query in plan.queries]
 
-    # A point+radius analysis must not collapse every lane back to one house number.
     assert all("277" not in query for query in all_queries)
     assert all("Ижевск" in query for query in all_queries)
+    assert any("Удмуртская Республика" in query for query in all_queries)
     assert any("администрация" in query for query in all_queries)
     assert any("обращения граждан" in query for query in all_queries)
     assert any("dom.gosuslugi.ru" in query for query in all_queries)
+    assert any("dom.mingkh.ru" in query for query in all_queries)
     assert any("форум" in query for query in all_queries)
     assert any("местные СМИ" in query for query in all_queries)
     assert any("сообщество" in query for query in all_queries)
+
+    protected = {
+        plan.contour_id: plan
+        for plan in plans
+        if plan.contour_id in {"official_government", "public_appeals", "housing_utilities"}
+    }
+    assert protected
+    assert all("rubrikator.org" in plan.denied_domain_roots for plan in protected.values())
+    assert all("yandex.ru" in plan.denied_domain_roots for plan in protected.values())
+    assert all("2gis.ru" in plan.denied_domain_roots for plan in protected.values())
+    assert all("google.com" in plan.denied_domain_roots for plan in protected.values())
 
 
 def test_contours_keep_exact_address_when_no_radius_was_requested() -> None:
@@ -98,10 +114,16 @@ class FakeRepository:
 
 class FakeDiscovery:
     def __init__(self) -> None:
-        self.calls: list[tuple[list[str], int]] = []
+        self.calls: list[tuple[list[str], int, tuple[str, ...]]] = []
 
     async def discover(self, queries, request) -> DiscoveryOutcome:
-        self.calls.append((list(queries), request.constraints.max_pages))
+        self.calls.append(
+            (
+                list(queries),
+                request.constraints.max_pages,
+                tuple(request.constraints.denied_domains),
+            )
+        )
         index = len(self.calls)
         task = SourceTask(
             source_id="generic_web",
@@ -171,12 +193,15 @@ async def test_tool_pack_orchestrator_executes_each_contour_as_an_independent_la
         for state in record.checkpoint["source_contours"].values()
     )
     assert all(
-        task.metadata["source_contour_version"] == "source-contours/1"
+        task.metadata["source_contour_version"] == "source-contours/2"
         for task in pending
     )
+    protected_calls = harness.discovery.calls[:3]
+    assert all("rubrikator.org" in denied for _, _, denied in protected_calls)
+    assert all("yandex.ru" in denied for _, _, denied in protected_calls)
 
 
-def test_radius_inventory_then_contours_outrank_map_fanout() -> None:
+def test_radius_inventory_then_contours_then_direct_maps_outrank_map_fanout() -> None:
     requested = {"complaints", "comments"}
     inventory = SourceTask(
         source_id="openstreetmap_overpass",
@@ -194,6 +219,13 @@ def test_radius_inventory_then_contours_outrank_map_fanout() -> None:
             "source_contour_priority": 10,
         },
     )
+    direct_map = SourceTask(
+        source_id="generic_web",
+        goal="complaints",
+        url="https://2gis.ru/search/example",
+        depth=0,
+        metadata={"public_map_direct_navigation": True},
+    )
     map_fanout = SourceTask(
         source_id="generic_web",
         goal="complaints",
@@ -205,8 +237,13 @@ def test_radius_inventory_then_contours_outrank_map_fanout() -> None:
     priority = ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator._pending_priority
 
     assert priority(inventory, requested) < priority(official, requested)
-    assert priority(official, requested) < priority(map_fanout, requested)
+    assert priority(official, requested) < priority(direct_map, requested)
+    assert priority(direct_map, requested) < priority(map_fanout, requested)
     assert (
         ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator._focused_branch(official)
         == "source_contour"
+    )
+    assert (
+        ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator._focused_branch(direct_map)
+        == "public_map_direct"
     )
