@@ -357,7 +357,7 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
                         limit=6,
                     )
                     provider_queries = [
-                        query for query in queries if f"site:yandex.ru/maps" in query
+                        query for query in queries if "site:yandex.ru/maps" in query
                     ][:1]
                     if provider_queries:
                         constraints = record.request.constraints.model_copy(
