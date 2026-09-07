@@ -84,6 +84,16 @@ class BrowserCrawlerRuntime:
             )
         )
 
+    @staticmethod
+    async def _wait_for_dom_settle(page: Any) -> bool:
+        """Best-effort short settle after an SPA replaces the current execution context."""
+
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=1500)
+        except Exception:
+            return False
+        return True
+
     async def _page_links(self, page: Any) -> list[str]:
         """Read links without failing an otherwise valid SPA snapshot on navigation races."""
 
@@ -98,10 +108,7 @@ class BrowserCrawlerRuntime:
                     raise
                 if attempt >= 2:
                     return []
-                try:
-                    await page.wait_for_load_state("domcontentloaded", timeout=1500)
-                except Exception:
-                    pass
+                await self._wait_for_dom_settle(page)
                 await asyncio.sleep(0.1)
         return []
 
@@ -116,10 +123,7 @@ class BrowserCrawlerRuntime:
                     raise
                 if attempt >= 2:
                     return html[:50_000]
-                try:
-                    await page.wait_for_load_state("domcontentloaded", timeout=1500)
-                except Exception:
-                    pass
+                await self._wait_for_dom_settle(page)
                 await asyncio.sleep(0.1)
         return html[:50_000]
 
