@@ -4,7 +4,9 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Mapping
 
-RETRYABLE_PROVIDER_STATUSES = frozenset({429, 503})
+# Public discovery/map providers commonly sit behind gateways. 502/504 are transient
+# gateway failures just like 503 for the bounded retry/failover policy used by ARGUS.
+RETRYABLE_PROVIDER_STATUSES = frozenset({429, 502, 503, 504})
 
 
 def retry_delay_seconds(
