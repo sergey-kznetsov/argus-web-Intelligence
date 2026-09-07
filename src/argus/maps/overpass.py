@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -54,11 +55,16 @@ class OverpassMapProvider:
         self,
         settings: Settings,
         transport: httpx.AsyncBaseTransport | None = None,
+        *,
+        fallback_endpoints: Sequence[str] = (),
     ) -> None:
         if not settings.overpass_url:
             raise ValueError("ARGUS_OVERPASS_URL is required to enable Overpass map search")
         self.settings = settings
         self.endpoint = settings.overpass_url
+        endpoints = [self.endpoint]
+        endpoints.extend(str(item).strip() for item in fallback_endpoints if str(item).strip())
+        self.endpoints = tuple(dict.fromkeys(endpoints))
         self.transport = transport
         self.rate_gate = AsyncRateGate(settings.overpass_min_interval_seconds)
 
@@ -133,6 +139,8 @@ class OverpassMapProvider:
             "min_interval_seconds": self.settings.overpass_min_interval_seconds,
             "supports_named_feature_inventory": True,
             "supports_street_feature_inventory": True,
+            "endpoint_count": len(self.endpoints),
+            "endpoint_failover": len(self.endpoints) > 1,
         }
 
     def _build_query(self, request: MapSearchRequest, radius: int) -> str:
@@ -181,6 +189,10 @@ class OverpassMapProvider:
             "Accept": "application/json",
             "User-Agent": "ARGUS-Web-Intelligence/0.1",
         }
+        total_attempts = max(1, self.settings.direct_provider_max_retries + 1)
+        last_error: Exception | None = None
+        last_blocked_status: int | None = None
+
         async with httpx.AsyncClient(
             timeout=timeout,
             follow_redirects=False,
@@ -188,46 +200,89 @@ class OverpassMapProvider:
             transport=self.transport,
             headers=headers,
         ) as client:
-            for attempt in range(self.settings.direct_provider_max_retries + 1):
+            for attempt in range(total_attempts):
+                endpoint = self.endpoints[attempt % len(self.endpoints)]
                 await self.rate_gate.wait()
-                retry_delay: float | None = None
-                async with client.stream(
-                    "POST",
-                    self.endpoint or "",
-                    data={"data": query},
-                ) as response:
-                    status_code = response.status_code
-                    if (
-                        status_code in RETRYABLE_PROVIDER_STATUSES
-                        and attempt < self.settings.direct_provider_max_retries
-                    ):
-                        retry_delay = retry_delay_seconds(
-                            attempt=attempt,
-                            headers=response.headers,
-                            base_delay_seconds=self.settings.direct_provider_retry_base_seconds,
-                            max_delay_seconds=self.settings.direct_provider_retry_max_seconds,
-                        )
-                        if retry_delay is None:
-                            if status_code == 429:
+                try:
+                    async with client.stream(
+                        "POST",
+                        endpoint,
+                        data={"data": query},
+                    ) as response:
+                        status_code = response.status_code
+
+                        if status_code == 403:
+                            last_blocked_status = status_code
+                            # A 403 can be endpoint-local. Try another configured public
+                            # endpoint, but never hammer the same endpoint or bypass access.
+                            if len(self.endpoints) > 1 and attempt + 1 < total_attempts:
+                                continue
+                            return {}, status_code
+
+                        if status_code == 429:
+                            last_blocked_status = status_code
+                            if len(self.endpoints) > 1 and attempt + 1 < total_attempts:
+                                # Retry-After applies to this endpoint. Fail over instead of
+                                # waiting and sending an early retry to the same service.
+                                continue
+                            if attempt + 1 >= total_attempts:
                                 return {}, status_code
+                            retry_delay = retry_delay_seconds(
+                                attempt=attempt,
+                                headers=response.headers,
+                                base_delay_seconds=self.settings.direct_provider_retry_base_seconds,
+                                max_delay_seconds=self.settings.direct_provider_retry_max_seconds,
+                            )
+                            if retry_delay is None:
+                                return {}, status_code
+                            if retry_delay:
+                                await asyncio.sleep(retry_delay)
+                            continue
+
+                        if status_code in RETRYABLE_PROVIDER_STATUSES:
+                            if attempt + 1 < total_attempts:
+                                if len(self.endpoints) == 1:
+                                    retry_delay = retry_delay_seconds(
+                                        attempt=attempt,
+                                        headers=response.headers,
+                                        base_delay_seconds=(
+                                            self.settings.direct_provider_retry_base_seconds
+                                        ),
+                                        max_delay_seconds=(
+                                            self.settings.direct_provider_retry_max_seconds
+                                        ),
+                                    )
+                                    if retry_delay is None:
+                                        response.raise_for_status()
+                                    if retry_delay:
+                                        await asyncio.sleep(retry_delay)
+                                # With mirrors configured, the next bounded attempt uses the
+                                # next endpoint immediately instead of spending the budget on
+                                # a failing gateway.
+                                continue
                             response.raise_for_status()
-                    else:
-                        if status_code not in {403, 429}:
-                            response.raise_for_status()
+
+                        response.raise_for_status()
                         body = bytearray()
                         async for chunk in response.aiter_bytes():
                             body.extend(chunk)
                             if len(body) > self.settings.max_response_bytes:
                                 raise ValueError("Overpass response exceeds configured limit")
-                        if status_code in {403, 429}:
-                            return {}, status_code
                         parsed = json.loads(body.decode("utf-8", errors="strict"))
                         if not isinstance(parsed, dict):
                             raise ValueError("Overpass returned a non-object JSON response")
                         return parsed, status_code
-                if retry_delay is not None:
-                    await asyncio.sleep(retry_delay)
-        raise RuntimeError("Overpass retry loop exhausted unexpectedly")
+                except (httpx.HTTPError, TimeoutError) as exc:
+                    last_error = exc
+                    if attempt + 1 >= total_attempts:
+                        raise
+                    continue
+
+        if last_error is not None:
+            raise last_error
+        if last_blocked_status is not None:
+            return {}, last_blocked_status
+        raise RuntimeError("Overpass retry/failover loop exhausted unexpectedly")
 
     def _place_from_element(self, element: dict[str, Any]) -> MapPlace | None:
         element_type = str(element.get("type") or "").strip()
