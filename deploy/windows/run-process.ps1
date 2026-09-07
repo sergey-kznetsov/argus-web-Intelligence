@@ -105,6 +105,31 @@ function Test-ProcessChainContainsPath {
     return $false
 }
 
+function Test-LocalSystemArgusRuntime {
+    param(
+        [Parameter(Mandatory = $true)]$Process,
+        [Parameter(Mandatory = $true)][ValidateSet("api", "worker")][string]$RuntimeRole
+    )
+
+    $commandLine = [string]$Process.CommandLine
+    if ([string]::IsNullOrWhiteSpace($commandLine)) {
+        return $false
+    }
+
+    $escapedRole = [regex]::Escape($RuntimeRole)
+    $runtimePattern = "(?i)(?:^|\s)-m\s+argus\.runtime_entrypoint\s+$escapedRole(?:\s|$)"
+    if ($commandLine -notmatch $runtimePattern) {
+        return $false
+    }
+
+    # Stop-ScheduledTask can terminate the PowerShell parent while leaving the Python
+    # child alive. In that orphan case the release path is no longer available through
+    # the parent chain. The production tasks run as LocalSystem, so an exact ARGUS
+    # runtime command owned by SID S-1-5-18 is still a fail-closed managed identity.
+    $owner = Invoke-CimMethod -InputObject $Process -MethodName GetOwnerSid -ErrorAction SilentlyContinue
+    return $null -ne $owner -and [string]$owner.Sid -eq "S-1-5-18"
+}
+
 function Ensure-ArgusRuntimePort {
     param(
         [Parameter(Mandatory = $true)][int]$Port,
@@ -145,6 +170,11 @@ function Ensure-ArgusRuntimePort {
         -ProcessId $ownerId `
         -PathPrefix $ReleasesRoot
     if (-not $ownedRuntime) {
+        $ownedRuntime = Test-LocalSystemArgusRuntime `
+            -Process $process `
+            -RuntimeRole $RuntimeRole
+    }
+    if (-not $ownedRuntime) {
         throw "ARGUS $RuntimeRole port $Port is occupied by an unverifiable ARGUS process PID $ownerId; refusing unsafe cleanup"
     }
 
@@ -152,7 +182,7 @@ function Ensure-ArgusRuntimePort {
         -ProcessId $ownerId `
         -PathPrefix $CurrentRelease `
         -ExactPython $CurrentPython
-    $ownerKind = if ($sameRelease) { "same-release" } else { "previous-release" }
+    $ownerKind = if ($sameRelease) { "same-release" } else { "previous-or-orphaned-release" }
     Write-Host "Stopping stale $ownerKind ARGUS $RuntimeRole runtime PID $ownerId on port $Port"
 
     $taskkill = Join-Path $env:SystemRoot "System32\taskkill.exe"
