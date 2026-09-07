@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from argus.contracts.models import CollectionRequest
+from argus.contracts.models import CollectionRequest, CollectionStatus
 from argus.orchestrator.toolpack_aware import (
     ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator,
 )
@@ -125,8 +125,13 @@ async def test_source_families_finish_processing_before_next_discovery() -> None
         collection_id="collection-serial",
         request=request,
         checkpoint={},
+        status=CollectionStatus.RUNNING,
+        partial=False,
+        progress_percent=0,
         stage="planning",
         updated_at=None,
+        coverage=[],
+        errors=[],
     )
     pack = TOOL_PACK_REGISTRY.resolve(
         consumer_id="kraken.development.uds",
