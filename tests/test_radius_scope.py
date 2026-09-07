@@ -5,7 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from argus.bootstrap import SERVER_DEFAULT_OVERPASS_URL, effective_map_settings
+from argus.bootstrap import (
+    SERVER_DEFAULT_OVERPASS_URL,
+    SERVER_FALLBACK_OVERPASS_URLS,
+    build_map_registry,
+    effective_map_settings,
+)
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest, Point, TerritoryContext
 from argus.research.followup import FollowupPlan
@@ -15,6 +20,7 @@ from argus.research.radius_scope import (
     RadiusAwareResearchPlanner,
     exact_territory_text,
     radius_scope_text,
+    radius_street_text,
 )
 from argus.sources.overpass_map import OverpassSourceAdapter
 
@@ -39,8 +45,46 @@ def test_radius_scope_broadens_house_to_area_but_preserves_exact_helper() -> Non
     value = request()
 
     assert exact_territory_text(value) == "Ижевск, Пушкинская улица, 277"
+    assert radius_street_text(value) == "Пушкинская улица"
     assert radius_scope_text(value) == "Ижевск, Пушкинская улица"
     assert radius_scope_text(value, entity_scope=True) == "Ижевск"
+
+
+def test_radius_scope_does_not_treat_unverified_poi_label_as_street() -> None:
+    value = CollectionRequest(
+        consumer="test",
+        analysis_id="poi-radius-scope",
+        territory=TerritoryContext(
+            city="Ижевск",
+            address="Ижевск, Parus Plaza, бизнес-центр",
+            point=Point(latitude=56.866315, longitude=53.207313),
+            radius_meters=1200,
+            metadata={"street": "Parus Plaza бизнес-центр"},
+        ),
+        intents=["complaints", "discussions"],
+        constraints={"language": "ru", "max_pages": 30},
+    )
+
+    assert radius_street_text(value) is None
+    assert radius_scope_text(value) == "Ижевск"
+
+
+def test_radius_scope_keeps_explicit_street_precision_without_house() -> None:
+    value = CollectionRequest(
+        consumer="test",
+        analysis_id="street-radius-scope",
+        territory=TerritoryContext(
+            city="Ижевск",
+            address="Пушкинская улица",
+            point=Point(latitude=56.8527, longitude=53.2115),
+            radius_meters=1000,
+            metadata={"street": "Пушкинская улица", "precision": "street"},
+        ),
+        intents=["complaints"],
+    )
+
+    assert radius_street_text(value) == "Пушкинская улица"
+    assert radius_scope_text(value) == "Ижевск, Пушкинская улица"
 
 
 def test_without_radius_scope_remains_exact_address() -> None:
@@ -112,9 +156,20 @@ def test_standalone_server_enables_free_overpass_inventory_by_default() -> None:
         overpass_url="https://overpass.example/api/interpreter",
     )
 
-    assert effective_map_settings(server).overpass_url == SERVER_DEFAULT_OVERPASS_URL
+    map_settings = effective_map_settings(server)
+    assert map_settings.overpass_url == SERVER_DEFAULT_OVERPASS_URL
     assert effective_map_settings(embedded).overpass_url is None
     assert effective_map_settings(explicit).overpass_url == "https://overpass.example/api/interpreter"
+
+    registry = build_map_registry(
+        map_settings,
+        fallback_endpoints=SERVER_FALLBACK_OVERPASS_URLS,
+    )
+    provider = registry.get("openstreetmap_overpass")
+    assert provider.endpoints == (
+        SERVER_DEFAULT_OVERPASS_URL,
+        *SERVER_FALLBACK_OVERPASS_URLS,
+    )
 
 
 @pytest.mark.asyncio
