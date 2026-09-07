@@ -58,6 +58,9 @@ from argus.storage.factory import build_repository
 
 
 SERVER_DEFAULT_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+SERVER_FALLBACK_OVERPASS_URLS = (
+    "https://overpass.private.coffee/api/interpreter",
+)
 
 
 def configured_discovery_provider_names(settings: Settings) -> list[str]:
@@ -125,10 +128,19 @@ def effective_map_settings(settings: Settings) -> Settings:
     return settings.model_copy(update={"overpass_url": SERVER_DEFAULT_OVERPASS_URL})
 
 
-def build_map_registry(settings: Settings) -> MapProviderRegistry:
+def build_map_registry(
+    settings: Settings,
+    *,
+    fallback_endpoints: tuple[str, ...] = (),
+) -> MapProviderRegistry:
     registry = MapProviderRegistry()
     if settings.overpass_url:
-        registry.register(OverpassMapProvider(settings))
+        registry.register(
+            OverpassMapProvider(
+                settings,
+                fallback_endpoints=fallback_endpoints,
+            )
+        )
     return registry
 
 
@@ -252,7 +264,12 @@ def build_services(settings: Settings) -> ServiceContainer:
         settings.overpass_url is None and settings.execution_role in {"api", "worker"}
     )
     map_settings = effective_map_settings(settings)
-    map_registry = build_map_registry(map_settings)
+    map_registry = build_map_registry(
+        map_settings,
+        fallback_endpoints=(
+            SERVER_FALLBACK_OVERPASS_URLS if auto_enabled_overpass else ()
+        ),
+    )
     structured_extractor = build_structured_data_extractor(settings)
     historical_source_planner = HistoricalSourceResearchPlanner(
         catalog_file=settings.historical_source_catalog_file
