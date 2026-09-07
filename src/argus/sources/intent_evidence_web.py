@@ -30,6 +30,7 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
     """
 
     historical_archive_provenance_version = "historical-archive-page/1"
+    source_contour_provenance_version = "source-contour-provenance/1"
     historical_relevance = HistoricalTerritoryRelevanceEvaluator()
 
     def __init__(
@@ -48,6 +49,7 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
         request: CollectionRequest,
     ) -> SourceResult:
         result = await super().extract(task, fetched, request)
+        self._attach_source_contour_provenance(task, result)
         self._attach_historical_archive_provenance(task, request, result)
         await self._finalize_recipe_goal_verification(task, request, result)
         return result
@@ -57,6 +59,30 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
         """Keep generic document Evidence focused on readable page content."""
 
         return extract_readable_text(content, content_type)
+
+    @classmethod
+    def _attach_source_contour_provenance(
+        cls,
+        task: SourceTask,
+        result: SourceResult,
+    ) -> None:
+        contour = str(task.metadata.get("source_contour") or "").strip()
+        if not contour:
+            return
+        payload = {
+            "version": cls.source_contour_provenance_version,
+            "contour_id": contour,
+            "planner_version": str(task.metadata.get("source_contour_version") or ""),
+            "description": str(task.metadata.get("source_contour_description") or ""),
+            "priority": task.metadata.get("source_contour_priority"),
+            "navigation_only": True,
+            "contour_label_is_evidence": False,
+        }
+        for observation in result.observations:
+            observation.provenance["source_contour"] = dict(payload)
+            observation.quality["source_contour_traced"] = True
+        for evidence in result.evidence:
+            evidence.metadata["source_contour"] = dict(payload)
 
     @classmethod
     def _attach_historical_archive_provenance(
@@ -121,6 +147,12 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
 
     async def health(self) -> dict[str, object]:
         payload = dict(await super().health())
+        payload["source_contour_provenance"] = {
+            "version": self.source_contour_provenance_version,
+            "navigation_label_is_evidence": False,
+            "preserved_on_observations": True,
+            "preserved_on_evidence": True,
+        }
         payload["historical_archive_page_provenance"] = {
             "version": self.historical_archive_provenance_version,
             "requires_fetched_capture": True,
