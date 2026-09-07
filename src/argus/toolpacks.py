@@ -41,7 +41,6 @@ class ToolPack:
     shared_tools: tuple[str, ...] = (
         "fast",
         "browser",
-        "agent",
         "evidence",
         "provenance",
         "snapshots",
@@ -213,10 +212,10 @@ KRAKEN_URBAN_SIGNALS_TOOL_PACK = ToolPack(
     result_delivery_policy="broad_evidence_stream",
     result_dedup_policy="canonical_text_v1",
     description=(
-        "Broad public-web research for Kraken. ARGUS discovers, acquires, normalizes, "
-        "deduplicates exact source-backed content and preserves Evidence/Provenance; "
-        "Kraken performs downstream domain relevance and social-problem filtering. "
-        "Residential registry and historical-only adapters are intentionally excluded."
+        "Broad public-web research for Kraken. ARGUS discovers independent official, "
+        "appeal, housing, forum, local-media, public-community, map and general-web lanes; "
+        "acquires and normalizes exact source-backed content with Evidence/Provenance; "
+        "Kraken performs downstream domain relevance and social-problem filtering."
     ),
 )
 
