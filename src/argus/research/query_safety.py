@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from argus.contracts.models import CollectionRequest
 from argus.research.followup import FollowupPlan, FollowupResearchPlanner
 from argus.research.planner import ResearchPlan, ResearchPlanner
+from argus.research.radius_scope import radius_scope_text
 
 _QUERY_KEYS = ("query", "search_query", "search_string", "queries")
 _SERVICE_ONLY_PREFIXES = ("metadata:", "notes:", "query:", "queries:", "search_string:")
@@ -47,14 +48,16 @@ def sanitize_research_queries(
     max_query_chars: int = 512,
     seen_queries: Iterable[str] = (),
 ) -> list[str]:
-    """Normalize untrusted LLM navigation output into bounded search strings.
+    """Normalize untrusted navigation output into bounded search strings.
 
-    Small local models occasionally return objects inside ``queries`` despite being asked
-    for an array of strings. Converting those objects with ``str()`` leaks JSON field names
-    such as ``queries`` or ``metadata`` into the search engine and can redirect research to
-    unrelated technical documentation. ARGUS therefore extracts only an allow-list of query
-    fields, ignores notes/metadata, restores the original territorial anchor and rejects bare
-    intent/service labels. The result is navigation only and never Evidence.
+    Planner integrations can return nested objects despite the search layer requiring plain
+    strings. ARGUS therefore extracts only an allow-list of query fields, ignores service
+    metadata, restores a territorial navigation anchor and rejects bare intent/service labels.
+
+    A point+radius request is an area request, not an exact-house request. In that mode query
+    safety uses the city as the minimum navigation anchor and deliberately does not reinsert
+    the house number. The actual circle remains authoritative later through source-backed geo
+    validation, so nearby side streets can be discovered without widening factual acceptance.
     """
 
     limit = max(0, int(max_queries))
@@ -73,8 +76,6 @@ def sanitize_research_queries(
         query = _normalize_query(raw)
         if not query or _is_service_only_query(query, requested_intents):
             continue
-        # Reject an already-used model hint before adding the mandatory territory anchor.
-        # Otherwise the anchored form becomes a different string and can bypass deduplication.
         if query.casefold() in seen:
             continue
         query = _ensure_territory_anchor(query, request)
@@ -122,12 +123,12 @@ class QuerySafeResearchPlanner:
                 max_query_chars=self.max_query_chars,
             )
         plan.queries = queries
-        plan.notes = [*plan.notes, "query_safety=query-safety/2"]
+        plan.notes = [*plan.notes, "query_safety=query-safety/3"]
         return plan
 
 
 class QuerySafeFollowupResearchPlanner:
-    """Apply the same navigation contract to iterative LLM follow-up queries."""
+    """Apply the same navigation contract to iterative follow-up queries."""
 
     def __init__(
         self,
@@ -176,7 +177,7 @@ class QuerySafeFollowupResearchPlanner:
                 seen_queries=seen_queries,
             )
         plan.queries = queries
-        plan.notes = [*plan.notes, "query_safety=query-safety/2"]
+        plan.notes = [*plan.notes, "query_safety=query-safety/3"]
         return plan
 
 
@@ -230,6 +231,15 @@ def _contains_territory_anchor(query: str, request: CollectionRequest) -> bool:
         return False
     haystack_tokens = set(_meaningful_tokens(query))
 
+    if request.territory.point is not None and request.territory.radius_meters is not None:
+        area_anchor = radius_scope_text(request, entity_scope=True)
+        area_tokens = _meaningful_tokens(area_anchor)
+        if area_tokens:
+            return all(token in haystack_tokens for token in area_tokens)
+        latitude = f"{request.territory.point.latitude:.4f}"
+        longitude = f"{request.territory.point.longitude:.4f}"
+        return latitude in query and longitude in query
+
     city = (request.territory.city or "").strip()
     address = (request.territory.address or "").strip()
     city_tokens = _meaningful_tokens(city)
@@ -260,6 +270,9 @@ def _contains_territory_anchor(query: str, request: CollectionRequest) -> bool:
 
 
 def _territory_text(request: CollectionRequest) -> str:
+    if request.territory.point is not None and request.territory.radius_meters is not None:
+        return radius_scope_text(request, entity_scope=True)
+
     city = (request.territory.city or "").strip()
     address = (request.territory.address or "").strip()
     if city and address:
