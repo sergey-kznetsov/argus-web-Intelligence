@@ -110,6 +110,10 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
         states_raw = record.checkpoint.get("source_contours")
         states = dict(states_raw) if isinstance(states_raw, dict) else {}
         all_queries = list(record.checkpoint.get("source_contour_queries", []))
+        queue_version = (
+            ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator.
+            source_contour_queue_priority_version
+        )
 
         record.stage = "discovery:source_contours"
         record.updated_at = now()
@@ -167,9 +171,7 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
                 "source_contour_version": self.source_contour_planner.version,
                 "source_contours": states,
                 "source_contour_queries": all_queries,
-                "source_contour_queue_priority_version": (
-                    self.source_contour_queue_priority_version
-                ),
+                "source_contour_queue_priority_version": queue_version,
                 "pending_tasks": [self._task_dict(task) for task in pending],
             }
             record.updated_at = now()
@@ -181,9 +183,7 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
             "source_contours": states,
             "source_contour_queries": all_queries,
             "source_contours_complete": True,
-            "source_contour_queue_priority_version": (
-                self.source_contour_queue_priority_version
-            ),
+            "source_contour_queue_priority_version": queue_version,
             "pending_tasks": [self._task_dict(task) for task in pending],
         }
         record.updated_at = now()
