@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,7 @@ from argus.research.radius_scope import (
     exact_territory_text,
     radius_scope_text,
 )
+from argus.sources.overpass_map import OverpassSourceAdapter
 
 
 def request(*, radius: int | None = 1000) -> CollectionRequest:
@@ -113,3 +115,37 @@ def test_standalone_server_enables_free_overpass_inventory_by_default() -> None:
     assert effective_map_settings(server).overpass_url == SERVER_DEFAULT_OVERPASS_URL
     assert effective_map_settings(embedded).overpass_url is None
     assert effective_map_settings(explicit).overpass_url == "https://overpass.example/api/interpreter"
+
+
+@pytest.mark.asyncio
+async def test_overpass_inventory_skips_text_only_request_without_geocoder() -> None:
+    adapter = OverpassSourceAdapter(
+        provider=SimpleNamespace(endpoint=SERVER_DEFAULT_OVERPASS_URL),
+        snapshots=SimpleNamespace(),
+        geocoder=None,
+    )
+    text_only = CollectionRequest(
+        consumer="test",
+        analysis_id="text-only",
+        territory={"city": "Ижевск"},
+        intents=["public_mentions"],
+    )
+
+    assert await adapter.discover(text_only) == []
+
+
+@pytest.mark.asyncio
+async def test_overpass_inventory_is_created_for_real_point_radius_request() -> None:
+    adapter = OverpassSourceAdapter(
+        provider=SimpleNamespace(endpoint=SERVER_DEFAULT_OVERPASS_URL),
+        snapshots=SimpleNamespace(),
+        geocoder=None,
+    )
+
+    tasks = await adapter.discover(request())
+
+    assert len(tasks) == 1
+    assert tasks[0].goal == "area_entity_inventory"
+    payload = tasks[0].metadata["map_request"]
+    assert payload["radius_meters"] == 1000
+    assert payload["territory"]["point"] == {"latitude": 56.8527, "longitude": 53.2115}
