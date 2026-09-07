@@ -7,6 +7,16 @@ from argus.research.entities import AreaEntityResearchPlanner
 from argus.research.followup import FollowupPlan, FollowupResearchPlanner
 from argus.research.planner import ResearchPlan, ResearchPlanner
 
+_TRUSTED_STREET_PRECISIONS = frozenset(
+    {
+        "address",
+        "building",
+        "house",
+        "intersection",
+        "street",
+    }
+)
+
 
 def exact_territory_text(request: CollectionRequest) -> str:
     city = (request.territory.city or "").strip()
@@ -25,6 +35,41 @@ def exact_territory_text(request: CollectionRequest) -> str:
     return "location"
 
 
+def radius_street_text(request: CollectionRequest) -> str | None:
+    """Return a street anchor only when its transport metadata is trustworthy.
+
+    A POI/name geocoder result can populate a field called ``street`` with the POI label
+    rather than an actual street. For a point+radius collection that false precision is
+    worse than city-level discovery. A street is therefore retained when the transport
+    also supplies a house or an explicit street/address precision. Non-radius requests keep
+    their supplied street because exact-address semantics are intentional there.
+    """
+
+    raw = request.territory.metadata.get("street")
+    street = " ".join(raw.split()).strip() if isinstance(raw, str) else ""
+    if not street:
+        return None
+
+    territory = request.territory
+    if territory.point is None or territory.radius_meters is None:
+        return street
+
+    house_raw = territory.metadata.get("house")
+    house = " ".join(house_raw.split()).strip() if isinstance(house_raw, str) else ""
+    if house:
+        return street
+
+    precision_raw = territory.metadata.get("precision")
+    precision = (
+        " ".join(precision_raw.split()).strip().casefold()
+        if isinstance(precision_raw, str)
+        else ""
+    )
+    if precision in _TRUSTED_STREET_PRECISIONS:
+        return street
+    return None
+
+
 def radius_scope_text(
     request: CollectionRequest,
     *,
@@ -35,8 +80,9 @@ def radius_scope_text(
     Search engines do not implement a trustworthy ``within N metres`` operator. For an
     actual point+radius request ARGUS therefore broadens textual discovery while the
     geometric boundary stays authoritative in source-backed geo validation. Initial
-    discovery uses city+street where available; follow-up research for a nearby named
-    entity uses the city so side streets inside the circle are not accidentally excluded.
+    discovery uses a verified city+street anchor where available; follow-up research for a
+    nearby named entity uses the city so side streets inside the circle are not accidentally
+    excluded.
     """
 
     territory = request.territory
@@ -44,8 +90,7 @@ def radius_scope_text(
         return exact_territory_text(request)
 
     city = (territory.city or "").strip()
-    street_raw = territory.metadata.get("street")
-    street = " ".join(street_raw.split()).strip() if isinstance(street_raw, str) else ""
+    street = radius_street_text(request) or ""
 
     if entity_scope and city:
         return city
