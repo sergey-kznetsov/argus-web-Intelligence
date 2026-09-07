@@ -1,0 +1,219 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from argus.contracts.models import CollectionRequest
+from argus.research.radius_scope import radius_scope_text
+
+
+@dataclass(frozen=True, slots=True)
+class SourceContourProfile:
+    contour_id: str
+    priority: int
+    max_destinations: int
+    ru_templates: tuple[str, ...]
+    en_templates: tuple[str, ...]
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
+class SourceContourPlan:
+    contour_id: str
+    priority: int
+    queries: tuple[str, ...]
+    max_destinations: int
+    description: str
+
+
+URBAN_SIGNAL_SOURCE_CONTOURS: tuple[SourceContourProfile, ...] = (
+    SourceContourProfile(
+        contour_id="official_government",
+        priority=10,
+        max_destinations=2,
+        ru_templates=(
+            '"{anchor}" администрация официальный сайт благоустройство',
+            '"{anchor}" муниципалитет официальный информация',
+        ),
+        en_templates=(
+            '"{anchor}" official municipality government public works',
+            '"{anchor}" official local government information',
+        ),
+        description="Federal, regional and municipal official public-web sources.",
+    ),
+    SourceContourProfile(
+        contour_id="public_appeals",
+        priority=20,
+        max_destinations=2,
+        ru_templates=(
+            '"{anchor}" обращения граждан жалоба проблема',
+            '"{anchor}" общественная приемная обращение жителей',
+        ),
+        en_templates=(
+            '"{anchor}" citizen appeals complaints public requests',
+            '"{anchor}" public reception resident complaint',
+        ),
+        description="Public citizen-appeal and municipal feedback surfaces.",
+    ),
+    SourceContourProfile(
+        contour_id="housing_utilities",
+        priority=30,
+        max_destinations=2,
+        ru_templates=(
+            '"{anchor}" ЖКХ жалоба управляющая компания жилищная инспекция',
+            'site:dom.gosuslugi.ru "{anchor}"',
+        ),
+        en_templates=(
+            '"{anchor}" housing utilities complaint management company inspection',
+            'site:dom.gosuslugi.ru "{anchor}"',
+        ),
+        description="Public housing, utilities and residential-management sources.",
+    ),
+    SourceContourProfile(
+        contour_id="local_forums",
+        priority=40,
+        max_destinations=2,
+        ru_templates=(
+            '"{anchor}" форум жители обсуждение',
+            '"{city}" "{street}" городской форум',
+        ),
+        en_templates=(
+            '"{anchor}" local forum residents discussion',
+            '"{city}" "{street}" city forum',
+        ),
+        description="Local forums and resident discussion boards.",
+    ),
+    SourceContourProfile(
+        contour_id="local_media",
+        priority=50,
+        max_destinations=2,
+        ru_templates=(
+            '"{anchor}" новости происшествие авария ремонт конфликт',
+            '"{anchor}" местные СМИ новости',
+        ),
+        en_templates=(
+            '"{anchor}" local news incident accident repair conflict',
+            '"{anchor}" local media news',
+        ),
+        description="Local news and incident reporting.",
+    ),
+    SourceContourProfile(
+        contour_id="public_communities",
+        priority=60,
+        max_destinations=1,
+        ru_templates=(
+            '"{anchor}" жители сообщество район обсуждение',
+        ),
+        en_templates=(
+            '"{anchor}" residents community neighborhood discussion',
+        ),
+        description="Publicly accessible local resident communities.",
+    ),
+    SourceContourProfile(
+        contour_id="general_web",
+        priority=70,
+        max_destinations=1,
+        ru_templates=(
+            '"{anchor}" жалобы проблемы жители происшествия обсуждения',
+        ),
+        en_templates=(
+            '"{anchor}" complaints resident problems incidents discussion',
+        ),
+        description="Open-web catch-all lane for sources outside curated classes.",
+    ),
+)
+
+
+class SourceContourResearchPlanner:
+    """Build independent public-source discovery lanes for a planner policy.
+
+    Source contours are navigation policy, not domain interpretation. They ensure that one
+    highly ranked source class (for example map reviews) cannot monopolize discovery. Actual
+    facts must still be fetched, normalized and backed by Evidence/Provenance.
+    """
+
+    version = "source-contours/1"
+
+    def __init__(
+        self,
+        *,
+        policy_profiles: dict[str, tuple[SourceContourProfile, ...]] | None = None,
+        max_query_chars: int = 512,
+    ) -> None:
+        self.policy_profiles = policy_profiles or {
+            "urban_signals": URBAN_SIGNAL_SOURCE_CONTOURS,
+        }
+        self.max_query_chars = max(64, int(max_query_chars))
+
+    def supports_policy(self, planner_policy: str) -> bool:
+        return planner_policy in self.policy_profiles
+
+    def plans(
+        self,
+        request: CollectionRequest,
+        *,
+        planner_policy: str,
+    ) -> list[SourceContourPlan]:
+        profiles = self.policy_profiles.get(planner_policy, ())
+        if not profiles:
+            return []
+        anchor = radius_scope_text(request)
+        city = (request.territory.city or "").strip() or anchor
+        street_raw = request.territory.metadata.get("street")
+        street = (
+            " ".join(street_raw.split()).strip()
+            if isinstance(street_raw, str) and street_raw.strip()
+            else anchor
+        )
+        language = self._language(request, anchor)
+        plans: list[SourceContourPlan] = []
+        for profile in sorted(profiles, key=lambda item: (item.priority, item.contour_id)):
+            templates = profile.ru_templates if language == "ru" else profile.en_templates
+            queries = tuple(
+                self._bounded_query(
+                    template.format(anchor=anchor, city=city, street=street)
+                )
+                for template in templates
+            )
+            queries = tuple(dict.fromkeys(query for query in queries if query))
+            if not queries:
+                continue
+            plans.append(
+                SourceContourPlan(
+                    contour_id=profile.contour_id,
+                    priority=profile.priority,
+                    queries=queries,
+                    max_destinations=profile.max_destinations,
+                    description=profile.description,
+                )
+            )
+        return plans
+
+    def catalog(self, planner_policy: str) -> list[dict[str, object]]:
+        return [
+            {
+                "contour_id": profile.contour_id,
+                "priority": profile.priority,
+                "max_destinations": profile.max_destinations,
+                "description": profile.description,
+            }
+            for profile in sorted(
+                self.policy_profiles.get(planner_policy, ()),
+                key=lambda item: (item.priority, item.contour_id),
+            )
+        ]
+
+    def _bounded_query(self, value: str) -> str:
+        return " ".join(value.split()).strip()[: self.max_query_chars].rstrip()
+
+    @staticmethod
+    def _language(request: CollectionRequest, anchor: str) -> str:
+        configured = (request.constraints.language or "").casefold()
+        if configured.startswith("ru"):
+            return "ru"
+        if configured.startswith("en"):
+            return "en"
+        return (
+            "ru"
+            if any("а" <= char.casefold() <= "я" or char.casefold() == "ё" for char in anchor)
+            else "en"
+        )
