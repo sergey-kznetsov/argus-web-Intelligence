@@ -6,6 +6,20 @@ from argus.contracts.models import CollectionRequest
 from argus.research.radius_scope import radius_scope_text
 
 
+_CURATED_NON_OFFICIAL_ROOTS = (
+    "2gis.ru",
+    "flamp.ru",
+    "google.com",
+    "orgpage.ru",
+    "rubrikator.org",
+    "spravker.ru",
+    "yandex.com",
+    "yandex.ru",
+    "yell.ru",
+    "zoon.ru",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class SourceContourProfile:
     contour_id: str
@@ -14,6 +28,7 @@ class SourceContourProfile:
     ru_templates: tuple[str, ...]
     en_templates: tuple[str, ...]
     description: str
+    denied_domain_roots: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,61 +38,71 @@ class SourceContourPlan:
     queries: tuple[str, ...]
     max_destinations: int
     description: str
+    denied_domain_roots: tuple[str, ...] = ()
 
 
 URBAN_SIGNAL_SOURCE_CONTOURS: tuple[SourceContourProfile, ...] = (
     SourceContourProfile(
         contour_id="official_government",
         priority=10,
-        max_destinations=2,
+        max_destinations=3,
         ru_templates=(
-            '"{anchor}" администрация официальный сайт благоустройство',
-            '"{anchor}" муниципалитет официальный информация',
+            '"{anchor}" "{region}" администрация официальный сайт благоустройство',
+            '"{anchor}" "{region}" правительство министерство официальный сайт',
+            '"{city}" "{street}" "{region}" официальный муниципальный портал',
         ),
         en_templates=(
-            '"{anchor}" official municipality government public works',
-            '"{anchor}" official local government information',
+            '"{anchor}" "{region}" official municipality government public works',
+            '"{anchor}" "{region}" official regional government ministry',
+            '"{city}" "{street}" "{region}" official municipal portal',
         ),
         description="Federal, regional and municipal official public-web sources.",
+        denied_domain_roots=_CURATED_NON_OFFICIAL_ROOTS,
     ),
     SourceContourProfile(
         contour_id="public_appeals",
         priority=20,
-        max_destinations=2,
+        max_destinations=3,
         ru_templates=(
-            '"{anchor}" обращения граждан жалоба проблема',
-            '"{anchor}" общественная приемная обращение жителей',
+            '"{anchor}" "{region}" обращения граждан жалоба официальный',
+            '"{anchor}" "{region}" интернет-приемная обращение жителей',
+            '"{city}" "{street}" "{region}" общественная приемная обращение',
         ),
         en_templates=(
-            '"{anchor}" citizen appeals complaints public requests',
-            '"{anchor}" public reception resident complaint',
+            '"{anchor}" "{region}" official citizen appeals complaints public requests',
+            '"{anchor}" "{region}" public reception resident complaint',
+            '"{city}" "{street}" "{region}" public appeal reception',
         ),
         description="Public citizen-appeal and municipal feedback surfaces.",
+        denied_domain_roots=_CURATED_NON_OFFICIAL_ROOTS,
     ),
     SourceContourProfile(
         contour_id="housing_utilities",
         priority=30,
-        max_destinations=2,
+        max_destinations=3,
         ru_templates=(
-            '"{anchor}" ЖКХ жалоба управляющая компания жилищная инспекция',
-            'site:dom.gosuslugi.ru "{anchor}"',
+            '"{anchor}" "{region}" ЖКХ управляющая компания жилищная инспекция',
+            'site:dom.gosuslugi.ru "{city}" "{street}"',
+            'site:dom.mingkh.ru "{city}" "{street}"',
         ),
         en_templates=(
-            '"{anchor}" housing utilities complaint management company inspection',
-            'site:dom.gosuslugi.ru "{anchor}"',
+            '"{anchor}" "{region}" housing utilities management company inspection',
+            'site:dom.gosuslugi.ru "{city}" "{street}"',
+            'site:dom.mingkh.ru "{city}" "{street}"',
         ),
-        description="Public housing, utilities and residential-management sources.",
+        description="Public housing, utilities, inspection and residential-management sources.",
+        denied_domain_roots=_CURATED_NON_OFFICIAL_ROOTS,
     ),
     SourceContourProfile(
         contour_id="local_forums",
         priority=40,
         max_destinations=2,
         ru_templates=(
-            '"{anchor}" форум жители обсуждение',
+            '"{anchor}" "{region}" форум жители обсуждение',
             '"{city}" "{street}" городской форум',
         ),
         en_templates=(
-            '"{anchor}" local forum residents discussion',
+            '"{anchor}" "{region}" local forum residents discussion',
             '"{city}" "{street}" city forum',
         ),
         description="Local forums and resident discussion boards.",
@@ -87,12 +112,12 @@ URBAN_SIGNAL_SOURCE_CONTOURS: tuple[SourceContourProfile, ...] = (
         priority=50,
         max_destinations=2,
         ru_templates=(
-            '"{anchor}" новости происшествие авария ремонт конфликт',
-            '"{anchor}" местные СМИ новости',
+            '"{anchor}" "{region}" новости происшествие авария ремонт конфликт',
+            '"{anchor}" "{region}" местные СМИ новости',
         ),
         en_templates=(
-            '"{anchor}" local news incident accident repair conflict',
-            '"{anchor}" local media news',
+            '"{anchor}" "{region}" local news incident accident repair conflict',
+            '"{anchor}" "{region}" local media news',
         ),
         description="Local news and incident reporting.",
     ),
@@ -101,10 +126,10 @@ URBAN_SIGNAL_SOURCE_CONTOURS: tuple[SourceContourProfile, ...] = (
         priority=60,
         max_destinations=1,
         ru_templates=(
-            '"{anchor}" жители сообщество район обсуждение',
+            '"{anchor}" "{region}" жители сообщество район обсуждение',
         ),
         en_templates=(
-            '"{anchor}" residents community neighborhood discussion',
+            '"{anchor}" "{region}" residents community neighborhood discussion',
         ),
         description="Publicly accessible local resident communities.",
     ),
@@ -113,10 +138,10 @@ URBAN_SIGNAL_SOURCE_CONTOURS: tuple[SourceContourProfile, ...] = (
         priority=70,
         max_destinations=1,
         ru_templates=(
-            '"{anchor}" жалобы проблемы жители происшествия обсуждения',
+            '"{anchor}" "{region}" жалобы проблемы жители происшествия обсуждения',
         ),
         en_templates=(
-            '"{anchor}" complaints resident problems incidents discussion',
+            '"{anchor}" "{region}" complaints resident problems incidents discussion',
         ),
         description="Open-web catch-all lane for sources outside curated classes.",
     ),
@@ -131,7 +156,7 @@ class SourceContourResearchPlanner:
     facts must still be fetched, normalized and backed by Evidence/Provenance.
     """
 
-    version = "source-contours/1"
+    version = "source-contours/2"
 
     def __init__(
         self,
@@ -164,13 +189,24 @@ class SourceContourResearchPlanner:
             if isinstance(street_raw, str) and street_raw.strip()
             else anchor
         )
+        region_raw = request.territory.metadata.get("region")
+        region = (
+            " ".join(region_raw.split()).strip()
+            if isinstance(region_raw, str) and region_raw.strip()
+            else city
+        )
         language = self._language(request, anchor)
         plans: list[SourceContourPlan] = []
         for profile in sorted(profiles, key=lambda item: (item.priority, item.contour_id)):
             templates = profile.ru_templates if language == "ru" else profile.en_templates
             queries = tuple(
                 self._bounded_query(
-                    template.format(anchor=anchor, city=city, street=street)
+                    template.format(
+                        anchor=anchor,
+                        city=city,
+                        street=street,
+                        region=region,
+                    )
                 )
                 for template in templates
             )
@@ -184,6 +220,7 @@ class SourceContourResearchPlanner:
                     queries=queries,
                     max_destinations=profile.max_destinations,
                     description=profile.description,
+                    denied_domain_roots=profile.denied_domain_roots,
                 )
             )
         return plans
@@ -195,6 +232,7 @@ class SourceContourResearchPlanner:
                 "priority": profile.priority,
                 "max_destinations": profile.max_destinations,
                 "description": profile.description,
+                "denied_domain_roots": list(profile.denied_domain_roots),
             }
             for profile in sorted(
                 self.policy_profiles.get(planner_policy, ()),
