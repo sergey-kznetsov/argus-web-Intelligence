@@ -174,3 +174,39 @@ async def test_tool_pack_orchestrator_executes_each_contour_as_an_independent_la
         task.metadata["source_contour_version"] == "source-contours/1"
         for task in pending
     )
+
+
+def test_radius_inventory_then_contours_outrank_map_fanout() -> None:
+    requested = {"complaints", "comments"}
+    inventory = SourceTask(
+        source_id="openstreetmap_overpass",
+        goal="area_street_inventory",
+        url="https://overpass-api.de/api/interpreter",
+        depth=0,
+    )
+    official = SourceTask(
+        source_id="generic_web",
+        goal="complaints",
+        url="https://official.example/appeal",
+        depth=0,
+        metadata={
+            "source_contour": "official_government",
+            "source_contour_priority": 10,
+        },
+    )
+    map_fanout = SourceTask(
+        source_id="generic_web",
+        goal="complaints",
+        url="https://yandex.ru/maps/example",
+        depth=0,
+        metadata={"curated_public_map_round": 1},
+    )
+
+    priority = ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator._pending_priority
+
+    assert priority(inventory, requested) < priority(official, requested)
+    assert priority(official, requested) < priority(map_fanout, requested)
+    assert (
+        ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator._focused_branch(official)
+        == "source_contour"
+    )
