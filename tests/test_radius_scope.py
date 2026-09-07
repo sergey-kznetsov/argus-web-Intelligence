@@ -136,7 +136,7 @@ async def test_auto_enabled_overpass_skips_text_only_request_without_geocoder() 
 
 
 @pytest.mark.asyncio
-async def test_auto_enabled_overpass_inventory_runs_for_real_point_radius_request() -> None:
+async def test_auto_enabled_overpass_inventories_places_and_streets_inside_radius() -> None:
     adapter = OverpassSourceAdapter(
         provider=SimpleNamespace(endpoint=SERVER_DEFAULT_OVERPASS_URL),
         snapshots=SimpleNamespace(),
@@ -146,8 +146,23 @@ async def test_auto_enabled_overpass_inventory_runs_for_real_point_radius_reques
 
     tasks = await adapter.discover(request())
 
-    assert len(tasks) == 1
-    assert tasks[0].goal == "area_entity_inventory"
-    payload = tasks[0].metadata["map_request"]
-    assert payload["radius_meters"] == 1000
-    assert payload["territory"]["point"] == {"latitude": 56.8527, "longitude": 53.2115}
+    assert [task.goal for task in tasks] == [
+        "area_entity_inventory",
+        "area_street_inventory",
+    ]
+    by_goal = {task.goal: task for task in tasks}
+    entity_payload = by_goal["area_entity_inventory"].metadata["map_request"]
+    street_payload = by_goal["area_street_inventory"].metadata["map_request"]
+
+    assert entity_payload["radius_meters"] == 1000
+    assert street_payload["radius_meters"] == 1000
+    assert entity_payload["categories"] == ["named_feature"]
+    assert street_payload["categories"] == ["street_feature"]
+    assert entity_payload["territory"]["point"] == {
+        "latitude": 56.8527,
+        "longitude": 53.2115,
+    }
+    assert street_payload["territory"]["point"] == {
+        "latitude": 56.8527,
+        "longitude": 53.2115,
+    }
