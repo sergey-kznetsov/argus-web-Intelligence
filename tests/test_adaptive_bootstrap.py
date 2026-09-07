@@ -6,6 +6,7 @@ from argus.config import Settings
 from argus.orchestrator.adaptive_atomic import AdaptiveResearchAtomicCollectionOrchestrator
 from argus.research.entities import AreaEntityResearchPlanner
 from argus.research.query_safety import QuerySafeFollowupResearchPlanner
+from argus.research.radius_scope import RadiusAwareAreaEntityResearchPlanner
 
 
 def test_bootstrap_enables_area_and_adaptive_followup_research(tmp_path: Path):
@@ -24,7 +25,14 @@ def test_bootstrap_enables_area_and_adaptive_followup_research(tmp_path: Path):
     services = build_services(settings)
 
     assert isinstance(services.orchestrator, AdaptiveResearchAtomicCollectionOrchestrator)
-    assert isinstance(services.orchestrator.area_entity_planner, AreaEntityResearchPlanner)
+    assert isinstance(
+        services.orchestrator.area_entity_planner,
+        RadiusAwareAreaEntityResearchPlanner,
+    )
+    assert isinstance(
+        services.orchestrator.area_entity_planner.delegate,
+        AreaEntityResearchPlanner,
+    )
     assert isinstance(
         services.orchestrator.followup_planner,
         QuerySafeFollowupResearchPlanner,
