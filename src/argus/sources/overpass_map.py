@@ -47,6 +47,13 @@ class OverpassSourceAdapter:
         self.geocoder = geocoder
 
     async def discover(self, request: CollectionRequest) -> list[SourceTask]:
+        # The area inventory is a geometric tool. If the caller supplied only text and no
+        # geocoder exists, silently leave this source out instead of turning an otherwise
+        # valid web-only collection into a degraded map failure. Geo Analyzer/Kraken supply
+        # coordinates for radius analyses, so their real 1000 m contour still executes.
+        if request.territory.point is None and self.geocoder is None:
+            return []
+
         categories = sorted(set(request.intents) & SUPPORTED_CATEGORIES)
         tasks: list[SourceTask] = []
         for category in categories:
@@ -188,28 +195,35 @@ class OverpassSourceAdapter:
                 errors.append(
                     StructuredError(
                         code="GEOCODING_NO_RESULTS",
-                        message="Geocoding returned no coordinate candidates",
+                        message="Geocoder did not resolve the requested territory",
                         retryable=False,
-                        source_id=f"geocoding:{result.provider}",
+                        source_id=f"map:{self.provider.provider_id}",
                     )
                 )
             return map_request, MapSearchResult(
                 provider=self.provider.provider_id,
                 blocked=result.blocked,
+                partial=bool(result.candidates),
                 errors=errors,
             )
 
         candidate = result.candidates[0]
+        territory = map_request.territory.model_copy(
+            update={
+                "point": candidate.point,
+                "metadata": {
+                    **map_request.territory.metadata,
+                    "geocoding_provider": result.provider,
+                    "geocoding_display_name": candidate.display_name,
+                },
+            }
+        )
         task.metadata["geocoding"] = {
-            "provider": candidate.provider,
-            "provider_place_id": candidate.provider_place_id,
+            "provider": result.provider,
             "display_name": candidate.display_name,
-            "point": candidate.point.model_dump(mode="json"),
-            "source_url": candidate.source_url,
-            "importance": candidate.importance,
-            "provenance": candidate.provenance,
+            "latitude": candidate.point.latitude,
+            "longitude": candidate.point.longitude,
         }
-        territory = map_request.territory.model_copy(update={"point": candidate.point})
         return map_request.model_copy(update={"territory": territory}), None
 
     async def _normalize_place(
@@ -218,47 +232,43 @@ class OverpassSourceAdapter:
         collection_id: str,
         request: CollectionRequest,
         *,
-        geocoding: dict[str, Any] | None = None,
+        geocoding: dict[str, object] | None,
     ) -> tuple[Observation, Evidence]:
-        facts = {
-            "provider_place_id": place.provider_place_id,
-            "name": place.name,
-            "address": place.address,
-            "point": place.point.model_dump(mode="json") if place.point else None,
-            "categories": sorted(place.categories),
-            "attributes": place.attributes,
-        }
-        canonical = json.dumps(
-            facts,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            default=self._json_default,
-        )
-        content_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        snapshot = await self.snapshots.capture(
-            self.source_id,
-            place.source_url,
-            canonical,
-            "application/json",
-            collection_id=collection_id,
-        )
-        entity_id = f"{place.provider}:{place.provider_place_id or place.source_url}"
+        payload = place.model_dump(mode="json")
+        payload["name"] = place.name
+        payload["address"] = place.address
+        payload["categories"] = list(place.categories)
+        payload["provider"] = self.provider.provider_id
+        payload["provider_id"] = place.provider_id
+        if geocoding is not None:
+            payload["geocoding"] = dict(geocoding)
+
+        source_url = place.url or self.provider.endpoint
+        identity_seed = place.provider_id or source_url or json.dumps(payload, sort_keys=True)
+        entity_id = f"{self.provider.provider_id}:{identity_seed}"
+        geo = place.point
         observation_id = stable_observation_id(
-            collection_id=collection_id,
-            source_id=self.source_id,
-            entity_type="place",
-            entity_id=entity_id,
-            source_url=place.source_url,
-            content_hash=content_hash,
+            collection_id,
+            self.source_id,
+            "map_place",
+            entity_id,
+            source_url,
         )
-        provenance: dict[str, Any] = {
-            "snapshot_id": snapshot.snapshot_id,
-            "map_provider": place.provider,
-            **place.provenance,
+        evidence_id = stable_evidence_id(observation_id, "map_payload", source_url)
+        content_hash = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        provenance = {
+            "provider": self.provider.provider_id,
+            "provider_id": place.provider_id,
+            "request_radius_meters": (
+                request.territory.radius_meters
+                if request.territory.radius_meters is not None
+                else 1000
+            ),
         }
         if geocoding is not None:
-            provenance["geocoding"] = geocoding
+            provenance["geocoding"] = dict(geocoding)
         observation = Observation(
             observation_id=observation_id,
             collection_id=collection_id,
@@ -266,56 +276,34 @@ class OverpassSourceAdapter:
             consumer=request.consumer,
             source=self.source_id,
             source_kind="map_place",
-            url=place.source_url,
+            url=source_url,
             entity_type="place",
             entity_id=entity_id,
             title=place.name,
-            text=place.address,
-            data={
-                "provider_place_id": place.provider_place_id,
-                "name": place.name,
-                "address": place.address,
-                "categories": place.categories,
-                "attributes": place.attributes,
-            },
-            geo=place.point,
-            collected_at=place.collected_at,
+            text="\n".join(item for item in [place.name, place.address] if item),
+            data=payload,
+            geo=geo,
             content_hash=content_hash,
             provenance=provenance,
-            quality={"evidence_backed": True, "map_provider": True},
+            quality={"source_backed_geo": geo is not None},
         )
-        evidence_text = self._evidence_text(place)
         evidence = Evidence(
-            evidence_id=stable_evidence_id(
-                observation_id=observation.observation_id,
-                evidence_type="map_place",
-                source_url=place.source_url,
-                text=evidence_text,
-            ),
-            observation_id=observation.observation_id,
-            type="map_place",
-            text=evidence_text,
+            evidence_id=evidence_id,
+            observation_id=observation_id,
+            type="map_payload",
             source=EvidenceSource(
-                provider=self.source_id,
-                url=place.source_url,
-                collected_at=place.collected_at,
                 source_id=self.source_id,
+                url=source_url,
+                title=place.name,
+                accessed_at=observation.observed_at,
             ),
-            metadata={"provenance": provenance},
+            excerpt=json.dumps(payload, ensure_ascii=False)[:4000],
+            metadata={
+                "provider": self.provider.provider_id,
+                "provider_id": place.provider_id,
+                "source_backed_geo": geo is not None,
+            },
         )
+        if geocoding is not None:
+            evidence.metadata["geocoding"] = dict(geocoding)
         return observation, evidence
-
-    @staticmethod
-    def _evidence_text(place: MapPlace) -> str:
-        rows = [f"name: {place.name}"]
-        if place.address:
-            rows.append(f"address: {place.address}")
-        if place.point:
-            rows.append(f"coordinates: {place.point.latitude},{place.point.longitude}")
-        if place.categories:
-            rows.append("categories: " + ", ".join(place.categories))
-        return "\n".join(rows)[:10_000]
-
-    @staticmethod
-    def _json_default(value: Any) -> str:
-        return str(value)
