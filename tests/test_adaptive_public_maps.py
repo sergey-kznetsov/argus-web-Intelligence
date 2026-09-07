@@ -8,6 +8,7 @@ from argus.contracts.models import CollectionRequest, Observation
 from argus.observability import OperationalMetrics
 from argus.orchestrator.adaptive_atomic import AdaptiveResearchAtomicCollectionOrchestrator
 from argus.research.discovery import DiscoveryOutcome
+from argus.research.public_map_sources import PublicMapSourceResearchPlanner
 from argus.sources.base import SourceTask
 
 
@@ -123,6 +124,22 @@ def build_orchestrator(repository: RepositoryStub, discovery: DiscoveryStub):
     )
 
 
+def test_public_map_planner_builds_direct_browser_entry_points_for_2gis_and_google():
+    planner = PublicMapSourceResearchPlanner()
+    tasks = planner.direct_navigation_tasks(request("reviews"), limit=2)
+
+    assert [task.metadata["public_map_provider"] for task in tasks] == [
+        "2gis_web",
+        "google_maps_web",
+    ]
+    assert tasks[0].url.startswith("https://2gis.ru/search/")
+    assert "%D0%98%D0%B6%D0%B5%D0%B2%D1%81%D0%BA" in tasks[0].url
+    assert tasks[1].url.startswith("https://www.google.com/maps/search/?api=1&query=")
+    assert "277" in tasks[0].url
+    assert "277" in tasks[1].url
+    assert all(task.metadata["public_map_direct_navigation"] is True for task in tasks)
+
+
 @pytest.mark.asyncio
 async def test_discovered_entity_gets_bounded_public_map_followup_queries():
     observation = organization()
@@ -170,7 +187,7 @@ async def test_discovered_entity_gets_bounded_public_map_followup_queries():
     assert pending[0].metadata["collection_id"] == "collection-map-1"
     assert record.checkpoint["curated_public_map_rounds"] == 1
     assert record.checkpoint["curated_public_map_last_candidates"] == 1
-    assert record.checkpoint["public_map_source_version"] == "public-map-sources/5"
+    assert record.checkpoint["public_map_source_version"] == "public-map-sources/6"
     assert record.checkpoint["curated_public_map_coverage"] == {"reviews": 0}
     assert record.checkpoint["curated_public_map_remaining_intents"] == ["reviews"]
     assert record.checkpoint["curated_public_map_target_source_count"] == 2
