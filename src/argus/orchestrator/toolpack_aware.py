@@ -4,6 +4,7 @@ from argus.consumer_delivery import ConsumerDeliveryProjector
 from argus.orchestrator.evidence_status import EvidenceStatusAdaptiveResearchOrchestrator
 from argus.orchestrator.service import now
 from argus.research.source_contours import SourceContourResearchPlanner
+from argus.sources.base import SourceTask
 from argus.toolpacks import (
     activate_tool_pack,
     active_tool_pack,
@@ -27,6 +28,7 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
     """
 
     tool_pack_execution_contract_version = "consumer-tool-pack/3"
+    source_contour_queue_priority_version = "source-contour-queue/1"
 
     def __init__(
         self,
@@ -165,6 +167,9 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
                 "source_contour_version": self.source_contour_planner.version,
                 "source_contours": states,
                 "source_contour_queries": all_queries,
+                "source_contour_queue_priority_version": (
+                    self.source_contour_queue_priority_version
+                ),
                 "pending_tasks": [self._task_dict(task) for task in pending],
             }
             record.updated_at = now()
@@ -176,11 +181,48 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
             "source_contours": states,
             "source_contour_queries": all_queries,
             "source_contours_complete": True,
+            "source_contour_queue_priority_version": (
+                self.source_contour_queue_priority_version
+            ),
             "pending_tasks": [self._task_dict(task) for task in pending],
         }
         record.updated_at = now()
         await self.repository.update_collection(record)
         return pending
+
+    @classmethod
+    def _pending_priority(
+        cls,
+        task: SourceTask,
+        requested: set[str],
+    ) -> tuple[int, int, int, float, str]:
+        """Protect spatial inventory and independent source lanes from map/search fan-out.
+
+        Radius inventory must run first so the crawler learns source-backed nearby streets.
+        Independent source contours run immediately after it and before curated map/adaptive
+        fan-out. This prevents a productive Yandex/2GIS branch from consuming the complete
+        page budget before official, appeals, housing, forums and local-media lanes execute.
+        """
+
+        base = super()._pending_priority(task, requested)
+        if task.source_id == "openstreetmap_overpass" and task.goal in {
+            "area_entity_inventory",
+            "area_street_inventory",
+        }:
+            return (-2, base[1], base[2], base[3], base[4])
+        if task.metadata.get("source_contour"):
+            try:
+                contour_priority = int(task.metadata.get("source_contour_priority", 100) or 100)
+            except (TypeError, ValueError):
+                contour_priority = 100
+            return (-1, base[1], contour_priority, base[3], base[4])
+        return base
+
+    @classmethod
+    def _focused_branch(cls, task: SourceTask) -> str | None:
+        if task.metadata.get("source_contour"):
+            return "source_contour"
+        return super()._focused_branch(task)
 
     async def _commit_task_success(
         self,
