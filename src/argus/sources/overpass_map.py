@@ -27,6 +27,9 @@ _AREA_RESEARCH_INTENTS = {
     "local_news",
     "incidents",
     "historical_context",
+    "posts",
+    "public_appeals",
+    "resident_messages",
 }
 
 
@@ -82,28 +85,42 @@ class OverpassSourceAdapter:
             )
 
         if set(request.intents) & _AREA_RESEARCH_INTENTS:
-            area_request = MapSearchRequest(
-                territory=request.territory,
-                categories=["named_feature"],
-                radius_meters=request.territory.radius_meters,
-                limit=100,
-                language=request.constraints.language,
-                metadata={"purpose": "area_entity_inventory"},
-            )
-            tasks.append(
-                SourceTask(
-                    source_id=self.source_id,
-                    goal="area_entity_inventory",
-                    url=self.provider.endpoint,
-                    depth=0,
-                    metadata={
-                        "map_request": area_request.model_dump(mode="json"),
-                        "research_goals": list(request.intents),
-                        "area_entity_inventory": True,
-                    },
-                    task_key=f"{self.source_id}:{self.provider.endpoint}:area_entity_inventory",
+            for goal, category, limit, purpose in (
+                (
+                    "area_entity_inventory",
+                    "named_feature",
+                    100,
+                    "area_entity_inventory",
+                ),
+                (
+                    "area_street_inventory",
+                    "street_feature",
+                    80,
+                    "area_street_inventory",
+                ),
+            ):
+                area_request = MapSearchRequest(
+                    territory=request.territory,
+                    categories=[category],
+                    radius_meters=request.territory.radius_meters,
+                    limit=limit,
+                    language=request.constraints.language,
+                    metadata={"purpose": purpose},
                 )
-            )
+                tasks.append(
+                    SourceTask(
+                        source_id=self.source_id,
+                        goal=goal,
+                        url=self.provider.endpoint,
+                        depth=0,
+                        metadata={
+                            "map_request": area_request.model_dump(mode="json"),
+                            "research_goals": list(request.intents),
+                            purpose: True,
+                        },
+                        task_key=f"{self.source_id}:{self.provider.endpoint}:{goal}",
+                    )
+                )
         return tasks
 
     async def fetch(self, task: SourceTask) -> MapSearchResult:
@@ -186,7 +203,7 @@ class OverpassSourceAdapter:
                         code="GEOCODING_QUERY_REQUIRED",
                         message="Map search requires coordinates, address, or city for geocoding",
                         retryable=False,
-                        source_id=f"map:{self.provider.provider_id}",
+                        source_id=f"geocoding:{self.provider.provider_id}",
                     )
                 ],
             )
