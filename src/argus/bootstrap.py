@@ -26,6 +26,11 @@ from argus.research.historical_sources import HistoricalSourceResearchPlanner
 from argus.research.intent_coverage import IntentCoverageEvaluator
 from argus.research.planner import HeuristicResearchPlanner
 from argus.research.query_safety import QuerySafeFollowupResearchPlanner, QuerySafeResearchPlanner
+from argus.research.radius_scope import (
+    RadiusAwareAreaEntityResearchPlanner,
+    RadiusAwareFollowupResearchPlanner,
+    RadiusAwareResearchPlanner,
+)
 from argus.research.residential_sources import (
     CuratedResidentialFollowupResearchPlanner,
     CuratedResidentialResearchPlanner,
@@ -47,6 +52,9 @@ from argus.sources.rss import RSSAdapter
 from argus.sources.sitemap import SitemapDiscoveryAdapter
 from argus.sources.wayback import WaybackSourceAdapter
 from argus.storage.factory import build_repository
+
+
+SERVER_DEFAULT_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
 
 def configured_discovery_provider_names(settings: Settings) -> list[str]:
@@ -93,6 +101,20 @@ def build_geocoder(settings: Settings) -> GeocodeProvider | None:
     if settings.nominatim_url:
         return NominatimGeocoder(settings)
     return None
+
+
+def effective_map_settings(settings: Settings) -> Settings:
+    """Enable the free nearby-entity inventory on standalone server roles.
+
+    Geo Analyzer supplies coordinates, so a server-side ARGUS collection can use the
+    public Overpass endpoint directly for a bounded point+radius inventory. Embedded
+    library users keep the previous opt-in behavior and can still configure another
+    Overpass endpoint explicitly.
+    """
+
+    if settings.overpass_url or settings.execution_role == "embedded":
+        return settings
+    return settings.model_copy(update={"overpass_url": SERVER_DEFAULT_OVERPASS_URL})
 
 
 def build_map_registry(settings: Settings) -> MapProviderRegistry:
@@ -143,13 +165,17 @@ def _build_initial_planner(
     settings: Settings,
     historical_source_planner: HistoricalSourceResearchPlanner,
 ) -> ResearchInputPlanner:
-    primary = HeuristicResearchPlanner(
-        max_queries=settings.discovery_max_queries,
-        historical_sources=historical_source_planner,
+    primary = RadiusAwareResearchPlanner(
+        HeuristicResearchPlanner(
+            max_queries=settings.discovery_max_queries,
+            historical_sources=historical_source_planner,
+        )
     )
-    fallback = HeuristicResearchPlanner(
-        max_queries=settings.discovery_max_queries,
-        historical_sources=historical_source_planner,
+    fallback = RadiusAwareResearchPlanner(
+        HeuristicResearchPlanner(
+            max_queries=settings.discovery_max_queries,
+            historical_sources=historical_source_planner,
+        )
     )
     residential_primary = CuratedResidentialResearchPlanner(
         primary,
@@ -171,8 +197,12 @@ def _build_initial_planner(
 def _build_followup_planner(
     coverage: IntentCoverageEvaluator,
 ) -> QuerySafeFollowupResearchPlanner:
-    primary = EvidenceAwareHeuristicFollowupResearchPlanner(coverage=coverage)
-    fallback = EvidenceAwareHeuristicFollowupResearchPlanner(coverage=coverage)
+    primary = RadiusAwareFollowupResearchPlanner(
+        EvidenceAwareHeuristicFollowupResearchPlanner(coverage=coverage)
+    )
+    fallback = RadiusAwareFollowupResearchPlanner(
+        EvidenceAwareHeuristicFollowupResearchPlanner(coverage=coverage)
+    )
     residential_primary = CuratedResidentialFollowupResearchPlanner(
         primary,
         coverage=coverage,
@@ -210,7 +240,8 @@ def build_services(settings: Settings) -> ServiceContainer:
     metrics = OperationalMetrics()
     discovery = build_discovery(settings, guard, fast)
     geocoder = build_geocoder(settings)
-    map_registry = build_map_registry(settings)
+    map_settings = effective_map_settings(settings)
+    map_registry = build_map_registry(map_settings)
     structured_extractor = build_structured_data_extractor(settings)
     historical_source_planner = HistoricalSourceResearchPlanner(
         catalog_file=settings.historical_source_catalog_file
@@ -267,7 +298,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     )
     registry.register(JSONFeedAdapter(fast, snapshots, structured_extractor))
     registry.register(SitemapDiscoveryAdapter(settings, fast))
-    if settings.overpass_url:
+    if map_settings.overpass_url:
         overpass_provider = map_registry.get("openstreetmap_overpass")
         registry.register(OverpassSourceAdapter(overpass_provider, snapshots, geocoder))
     if settings.wayback_cdx_url:
@@ -287,7 +318,7 @@ def build_services(settings: Settings) -> ServiceContainer:
         discovery=discovery,
         historical_branch_planner=HistoricalBranchPlanner(),
         historical_source_planner=historical_source_planner,
-        area_entity_planner=AreaEntityResearchPlanner(),
+        area_entity_planner=RadiusAwareAreaEntityResearchPlanner(AreaEntityResearchPlanner()),
         followup_planner=followup_planner,
         research_supervisor=supervisor,
         entity_hypothesis_extractor=None,
