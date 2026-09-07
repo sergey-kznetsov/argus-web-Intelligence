@@ -30,7 +30,8 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
     """
 
     historical_archive_provenance_version = "historical-archive-page/1"
-    source_contour_provenance_version = "source-contour-provenance/1"
+    source_contour_provenance_version = "source-contour-provenance/2"
+    source_contour_document_kind = "source_contour_web_page"
     historical_relevance = HistoricalTerritoryRelevanceEvaluator()
     _source_contour_child_keys = (
         "source_contour",
@@ -105,6 +106,14 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
         for observation in result.observations:
             observation.provenance["source_contour"] = dict(payload)
             observation.quality["source_contour_traced"] = True
+            if (
+                observation.entity_type.strip().casefold() == "document"
+                and observation.source_kind.strip().casefold() == "web_page"
+            ):
+                # This is still the exact fetched document. The typed kind only records
+                # that it came from an independently planned public-source lane; it does
+                # not assert that the page contains a complaint or any other domain fact.
+                observation.source_kind = cls.source_contour_document_kind
         for evidence in result.evidence:
             evidence.metadata["source_contour"] = dict(payload)
 
@@ -177,6 +186,8 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
             "preserved_on_observations": True,
             "preserved_on_evidence": True,
             "preserved_through_depth_crawl": True,
+            "document_source_kind": self.source_contour_document_kind,
+            "document_kind_is_semantic_claim": False,
         }
         payload["historical_archive_page_provenance"] = {
             "version": self.historical_archive_provenance_version,
