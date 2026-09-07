@@ -5,6 +5,7 @@ from argus.crawler.models import FetchResult
 from argus.normalization.public_map_provenance import (
     classify_public_map_url,
     preferred_public_map_review_url,
+    public_map_surface_kind,
 )
 from argus.research.coverage import IntentCoverageEvaluator
 from argus.security.urls import UnsafeUrlError
@@ -24,9 +25,6 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
     """
 
     semantic_escalation_version = "public-map-goal-escalation/6"
-    # Kept as the deterministic/social priority set for compatibility and diagnostics.
-    # Custom or future factual goals are no longer required to be enumerated here before
-    # bounded public-map AGENT navigation can attempt to reveal them.
     semantic_escalation_goals = frozenset(
         {"reviews", "comments", "discussions", "complaints"}
     )
@@ -35,7 +33,57 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
     max_semantic_goals = 8
     max_semantic_goal_chars = 128
     max_semantic_agent_rounds = 2
+    direct_navigation_child_limit = 8
     intent_coverage = IntentCoverageEvaluator()
+
+    async def fetch(self, task: SourceTask) -> FetchResult:
+        """Render explicit map-search entry points instead of trusting index HTML shells."""
+
+        if task.metadata.get("public_map_direct_navigation") is True:
+            try:
+                return await self.browser.fetch(task.url)
+            except UnsafeUrlError:
+                raise
+            except Exception:
+                # Keep the normal FAST -> BROWSER fallback contract available when a public
+                # map browser session itself cannot be started.
+                return await super().fetch(task)
+        return await super().fetch(task)
+
+    def _discovered_tasks(
+        self,
+        task: SourceTask,
+        fetched: FetchResult,
+        request: CollectionRequest,
+        collection_id: str,
+    ) -> list[SourceTask]:
+        discovered = super()._discovered_tasks(task, fetched, request, collection_id)
+        if task.metadata.get("public_map_direct_navigation") is not True:
+            return discovered
+
+        origin = classify_public_map_url(str(fetched.final_url or task.url))
+        if origin is None:
+            return []
+        provider = str(origin.get("provider") or "")
+        ranked: list[tuple[int, str, SourceTask]] = []
+        for child in discovered:
+            classification = classify_public_map_url(child.url)
+            if classification is None or str(classification.get("provider") or "") != provider:
+                continue
+            surface = public_map_surface_kind(child.url)
+            rank = 0 if surface == "entity" else 1 if surface == "search" else 2
+            child.metadata["public_map_direct_navigation"] = True
+            child.metadata["public_map_direct_navigation_version"] = task.metadata.get(
+                "public_map_direct_navigation_version"
+            )
+            child.metadata["public_map_provider"] = task.metadata.get(
+                "public_map_provider", provider
+            )
+            child.metadata["public_map_anchor"] = task.metadata.get("public_map_anchor")
+            ranked.append((rank, child.url, child))
+
+        ranked.sort(key=lambda item: (item[0], item[1]))
+        return [item[2] for item in ranked[: self.direct_navigation_child_limit]]
 
     async def extract(
         self,
@@ -114,9 +162,6 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
                 accepted = True
                 break
 
-            # A verified first step can reveal new controls that were absent from the
-            # prior DOM. Feed that verified DOM into one more bounded planning round.
-            # RecipeWeb will extend only the exact active recipe that produced it.
             if round_index + 1 < self.max_semantic_agent_rounds:
                 if not (200 <= int(guided.status_code) < 400 and guided.text.strip()):
                     break
@@ -175,9 +220,6 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
         if accepted:
             return candidate_result, candidate_fetched
 
-        # If the deterministic view itself loaded successfully, any later AGENT plan
-        # must be compiled/replayed against that exact DOM URL. Otherwise selectors
-        # chosen from /reviews could be incorrectly persisted against the original card.
         if 200 <= int(candidate_fetched.status_code) < 400 and candidate_fetched.text.strip():
             return result, candidate_fetched
         return result, fetched
@@ -201,7 +243,6 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
         request: CollectionRequest,
         result: SourceResult,
     ) -> SourceResult:
-        """Hook for source-backed semantic classifiers in the complete web adapter."""
         del request
         return result
 
@@ -227,14 +268,6 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
         return self._semantic_goal_fact_count(result, goals, request=request) == 0
 
     def _semantic_goals(self, task: SourceTask) -> list[str]:
-        """Return bounded factual map goals without consumer-specific whitelists.
-
-        Research goals originate from the request/planner and are navigation metadata, not
-        Evidence. Public-map AGENT may attempt to reveal any such factual goal except intents
-        explicitly reserved for generic-web research. The downstream exact-excerpt classifier
-        still decides whether the verified page actually proves a goal.
-        """
-
         result: list[str] = []
         seen: set[str] = set()
         for raw in self._research_goals(task):
@@ -270,7 +303,6 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
 
     @staticmethod
     def _review_fact_count(result: SourceResult) -> int:
-        """Backward-compatible structured review count for callers/tests."""
         return sum(1 for item in result.observations if item.entity_type == "review")
 
     def _attach_public_map_provenance(
@@ -323,6 +355,12 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             "classification_basis": "url_host_path",
             "content_inference": False,
             "paid_api": False,
+            "direct_browser_navigation": {
+                "enabled": True,
+                "providers": ["2gis_web", "google_maps_web"],
+                "bounded_child_links": self.direct_navigation_child_limit,
+                "search_engine_index_required": False,
+            },
             "deterministic_review_views": {
                 "providers": ["yandex_maps_web", "2gis_web"],
                 "browser_verified": True,
