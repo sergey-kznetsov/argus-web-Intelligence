@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import asin, cos, radians, sin, sqrt
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
 from argus.contracts.models import CollectionRequest, Observation
-from argus.research.entities import AreaEntityResearchPlanner
-from argus.research.followup import FollowupPlan, FollowupResearchPlanner
-from argus.research.planner import ResearchPlan, ResearchPlanner
+
+if TYPE_CHECKING:
+    from argus.research.entities import AreaEntityResearchPlanner
+    from argus.research.followup import FollowupPlan, FollowupResearchPlanner
+    from argus.research.planner import ResearchPlan, ResearchPlanner
 
 _TRUSTED_STREET_PRECISIONS = frozenset(
     {
