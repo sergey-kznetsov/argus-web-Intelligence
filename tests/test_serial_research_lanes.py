@@ -18,6 +18,10 @@ class FakeRepository:
     async def update_collection(self, record) -> None:
         del record
 
+    async def list_observations(self, collection_id):
+        del collection_id
+        return []
+
 
 class FakeDiscovery:
     def __init__(self, events: list[tuple[str, str]]) -> None:

@@ -267,7 +267,7 @@ def test_source_metadata_declares_public_web_not_paid_api():
     planner = PublicMapSourceResearchPlanner()
     metadata = planner.source_metadata()
 
-    assert planner.version == "public-map-sources/6"
+    assert planner.version == "public-map-sources/7"
     assert {item["source_id"] for item in metadata} == {
         "yandex_maps_web",
         "2gis_web",
