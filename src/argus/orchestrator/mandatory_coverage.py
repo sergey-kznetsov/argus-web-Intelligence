@@ -10,22 +10,26 @@ from argus.toolpacks import resolved_tool_pack_from_request
 class MandatoryCoverageToolPackOrchestrator(
     ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator
 ):
-    """Treat collection-wide limits as emergency guards for urban-signal research.
+    """Keep mandatory urban coverage complete while bounding optional deep research.
 
-    Kraken's source-family contract requires every configured public-source contour and
-    every configured public-map provider to receive a serial attempt. The historical
-    collection defaults (30 pages / 240 seconds) were small enough to terminate that
-    mandatory sequence after an early high-yield source. For ``urban_signals`` requests we
-    therefore raise only the collection-wide guard to the schema ceiling while retaining
-    the existing bounded source lanes, source-task timeout, depth limit, rate controls,
-    deduplication, circuit breakers and provider-specific navigation limits.
+    Source-family and public-map lanes are mandatory for ``urban_signals`` and therefore
+    cannot share the old collection-wide page/time budget. During that serial phase ARGUS
+    uses only an emergency ceiling while each source lane remains independently bounded.
 
-    Other consumer tool packs keep their request constraints unchanged.
+    Once all source contours and public-map providers have been attempted, the collection
+    transitions to a small, fresh optional-research budget. The generic per-intent discovery
+    pass is intentionally skipped for this policy because ``general_web`` is already the
+    seventh mandatory contour; running both duplicated discovery and allowed blocked or slow
+    sites to dominate latency without adding a new source family.
+
+    Other tool packs keep the normal collection-budget semantics unchanged.
     """
 
-    mandatory_coverage_version = "mandatory-coverage/1"
+    mandatory_coverage_version = "mandatory-coverage/2"
     emergency_max_pages = 500
     emergency_max_duration_seconds = 7_200.0
+    post_mandatory_optional_pages = 24
+    post_mandatory_optional_duration_seconds = 120.0
 
     async def _run(self, collection_id: str) -> None:
         record = await self.repository.get_collection(collection_id)
@@ -33,14 +37,59 @@ class MandatoryCoverageToolPackOrchestrator(
             await self._apply_urban_signal_execution_guard(record)
         await super()._run(collection_id)
 
+    async def _discover_uncovered_intents(
+        self,
+        record,
+        pending,
+        uncovered_intents,
+    ):
+        """Run mandatory urban lanes once, then hand only bounded work to collection crawl."""
+
+        pack = resolved_tool_pack_from_request(record.request)
+        if pack is None or pack.planner_policy != "urban_signals":
+            return await super()._discover_uncovered_intents(
+                record,
+                pending,
+                uncovered_intents,
+            )
+
+        pending = await self._run_pre_contour_street_inventory(record, pending)
+        pending = await self._run_serial_source_contours(record, pending)
+        pending = await self._run_serial_public_maps(record, pending)
+        await self._activate_post_mandatory_budget(record)
+
+        # ``general_web`` already provides the catch-all discovery family. Re-running the
+        # base per-intent discovery here duplicates the same open-web candidates and was the
+        # source of long generic_web/RSS queues after mandatory coverage had completed.
+        return (
+            pending,
+            list(record.checkpoint.get("discovery_queries", [])),
+            list(record.checkpoint.get("discovery_providers", [])),
+            bool(record.checkpoint.get("discovery_blocked", False)),
+        )
+
     async def _apply_urban_signal_execution_guard(self, record) -> bool:
         pack = resolved_tool_pack_from_request(record.request)
         if pack is None or pack.planner_policy != "urban_signals":
             return False
 
+        existing_guard = record.checkpoint.get("mandatory_coverage")
+        existing_guard = existing_guard if isinstance(existing_guard, dict) else {}
+        if existing_guard.get("mandatory_complete") is True:
+            # Recovered collections that already crossed the mandatory boundary must keep
+            # their bounded post-mandatory budget instead of being expanded back to 2 hours.
+            return False
+
         constraints = record.request.constraints
-        requested_max_pages = int(constraints.max_pages)
-        requested_max_duration_seconds = float(constraints.max_duration_seconds)
+        requested_max_pages = int(
+            existing_guard.get("requested_max_pages", constraints.max_pages)
+        )
+        requested_max_duration_seconds = float(
+            existing_guard.get(
+                "requested_max_duration_seconds",
+                constraints.max_duration_seconds,
+            )
+        )
         effective = constraints.model_copy(
             update={
                 "max_pages": self.emergency_max_pages,
@@ -62,14 +111,21 @@ class MandatoryCoverageToolPackOrchestrator(
         record.checkpoint = {
             **record.checkpoint,
             "mandatory_coverage": {
+                **existing_guard,
                 "version": self.mandatory_coverage_version,
                 "policy": "all_source_contours_then_all_public_maps",
-                "collection_limits_semantics": "emergency_guard_only",
+                "phase": "mandatory",
+                "mandatory_complete": False,
+                "collection_limits_semantics": "mandatory_emergency_optional_bounded",
                 "requested_max_pages": requested_max_pages,
                 "requested_max_duration_seconds": requested_max_duration_seconds,
                 "effective_emergency_max_pages": self.emergency_max_pages,
                 "effective_emergency_max_duration_seconds": (
                     self.emergency_max_duration_seconds
+                ),
+                "post_mandatory_optional_pages": self.post_mandatory_optional_pages,
+                "post_mandatory_optional_duration_seconds": (
+                    self.post_mandatory_optional_duration_seconds
                 ),
                 "source_contours": contour_ids,
                 "public_map_providers": map_provider_ids,
@@ -81,10 +137,65 @@ class MandatoryCoverageToolPackOrchestrator(
         await self.repository.update_collection(record)
         return True
 
+    async def _activate_post_mandatory_budget(self, record) -> bool:
+        pack = resolved_tool_pack_from_request(record.request)
+        if pack is None or pack.planner_policy != "urban_signals":
+            return False
+        if record.checkpoint.get("source_contours_complete") is not True:
+            return False
+        if record.checkpoint.get("serial_public_map_complete") is not True:
+            return False
+
+        raw_guard = record.checkpoint.get("mandatory_coverage")
+        guard = dict(raw_guard) if isinstance(raw_guard, dict) else {}
+        if guard.get("mandatory_complete") is True:
+            return False
+
+        visited = record.checkpoint.get("visited", [])
+        visited_count = len(visited) if isinstance(visited, list) else 0
+        total_page_ceiling = min(
+            self.emergency_max_pages,
+            visited_count + self.post_mandatory_optional_pages,
+        )
+        effective = record.request.constraints.model_copy(
+            update={
+                "max_pages": max(1, total_page_ceiling),
+                "max_duration_seconds": self.post_mandatory_optional_duration_seconds,
+            }
+        )
+        record.request = record.request.model_copy(update={"constraints": effective})
+        optional_started_at = now()
+        record.checkpoint = {
+            **record.checkpoint,
+            "execution_budget_started_at": optional_started_at.isoformat(),
+            "mandatory_coverage": {
+                **guard,
+                "version": self.mandatory_coverage_version,
+                "phase": "optional",
+                "mandatory_complete": True,
+                "mandatory_processed_pages": visited_count,
+                "effective_post_mandatory_max_pages": int(effective.max_pages),
+                "post_mandatory_optional_pages": self.post_mandatory_optional_pages,
+                "post_mandatory_optional_duration_seconds": (
+                    self.post_mandatory_optional_duration_seconds
+                ),
+                "optional_started_at": optional_started_at.isoformat(),
+            },
+        }
+        record.updated_at = optional_started_at
+        await self.repository.update_collection(record)
+        return True
+
     @classmethod
     def _execution_budget_exhausted(cls, record) -> bool:
         pack = resolved_tool_pack_from_request(record.request)
-        if pack is not None and pack.planner_policy == "urban_signals":
+        raw_guard = record.checkpoint.get("mandatory_coverage")
+        guard = raw_guard if isinstance(raw_guard, dict) else {}
+        if (
+            pack is not None
+            and pack.planner_policy == "urban_signals"
+            and guard.get("mandatory_complete") is not True
+        ):
             # Mandatory serial lanes must never be skipped because an earlier lane used a
             # collection-wide page budget. Per-lane page limits and per-task timeouts still
             # bound the actual work.
