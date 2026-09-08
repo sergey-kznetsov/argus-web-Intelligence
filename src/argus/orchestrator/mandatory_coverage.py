@@ -50,8 +50,9 @@ class MandatoryCoverageToolPackOrchestrator(
         record.request = record.request.model_copy(update={"constraints": effective})
 
         contour_ids = [
-            item.contour_id
+            str(item.get("contour_id") or "").strip()
             for item in self.source_contour_planner.catalog(pack.planner_policy)
+            if str(item.get("contour_id") or "").strip()
         ]
         map_provider_ids = (
             [item.source_id for item in self.public_map_source_planner.sources]
