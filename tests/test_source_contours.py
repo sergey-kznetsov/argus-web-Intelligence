@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from argus.contracts.models import CollectionRequest
+from argus.contracts.models import CollectionRequest, Observation
 from argus.orchestrator.service import CollectionOrchestrator
 from argus.orchestrator.toolpack_aware import (
     ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator,
@@ -119,6 +119,56 @@ def test_radius_contours_drop_unverified_poi_pseudo_street() -> None:
     assert all("Ижевск" in query for query in all_queries)
 
 
+def test_radius_contours_expand_across_named_overpass_streets() -> None:
+    request = CollectionRequest(
+        consumer="kraken.development.uds",
+        consumer_profile_version=1,
+        capability="urban_signals",
+        analysis_id="radius-street-contours",
+        territory={
+            "city": "Ижевск",
+            "address": "Ижевск, Parus Plaza, бизнес-центр",
+            "point": {"latitude": 56.866315, "longitude": 53.207313},
+            "radius_meters": 1200,
+            "metadata": {"street": "Parus Plaza бизнес-центр"},
+        },
+        intents=["complaints", "local_news"],
+        constraints={"language": "ru", "max_pages": 30},
+    )
+    streets = [
+        Observation(
+            observation_id=f"street-{index}",
+            collection_id="c1",
+            analysis_id=request.analysis_id,
+            consumer=request.consumer,
+            source="openstreetmap_overpass",
+            source_kind="map_place",
+            url=f"https://www.openstreetmap.org/way/{index}",
+            entity_type="place",
+            title=name,
+            data={"name": name, "categories": ["highway:residential"]},
+            geo={"latitude": latitude, "longitude": 53.207313},
+            content_hash=f"hash-{index}",
+        )
+        for index, (name, latitude) in enumerate(
+            [("Пушкинская улица", 56.8664), ("улица Лихвинцева", 56.8670)],
+            start=1,
+        )
+    ]
+
+    plans = SourceContourResearchPlanner().plans(
+        request,
+        planner_policy="urban_signals",
+        observations=streets,
+    )
+
+    assert plans
+    for plan in plans:
+        assert any("Пушкинская улица" in query for query in plan.queries)
+        assert any("улица Лихвинцева" in query for query in plan.queries)
+        assert all("Parus Plaza" not in query for query in plan.queries)
+
+
 def test_contours_keep_exact_address_when_no_radius_was_requested() -> None:
     planner = SourceContourResearchPlanner()
     plans = planner.plans(kraken_request(radius=None), planner_policy="urban_signals")
@@ -140,7 +190,7 @@ def test_source_contour_provenance_preserves_plain_web_page_source_shape() -> No
         url="https://official.example/appeal",
         metadata={
             "source_contour": "official_government",
-            "source_contour_version": "source-contours/3",
+            "source_contour_version": "source-contours/4",
             "source_contour_priority": 10,
         },
     )
@@ -252,7 +302,7 @@ async def test_tool_pack_orchestrator_executes_each_contour_as_an_independent_la
         for state in record.checkpoint["source_contours"].values()
     )
     assert all(
-        task.metadata["source_contour_version"] == "source-contours/3"
+        task.metadata["source_contour_version"] == "source-contours/4"
         for task in pending
     )
     protected_calls = harness.discovery.calls[:3]

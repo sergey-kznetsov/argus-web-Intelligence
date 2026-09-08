@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable
 
-from argus.contracts.models import CollectionRequest
-from argus.research.radius_scope import radius_scope_text, radius_street_text
+from argus.contracts.models import CollectionRequest, Observation
+from argus.research.radius_scope import (
+    nearby_radius_street_names,
+    radius_scope_text,
+    radius_street_text,
+)
 
 
 _CURATED_NON_OFFICIAL_ROOTS = (
@@ -156,18 +161,20 @@ class SourceContourResearchPlanner:
     facts must still be fetched, normalized and backed by Evidence/Provenance.
     """
 
-    version = "source-contours/3"
+    version = "source-contours/4"
 
     def __init__(
         self,
         *,
         policy_profiles: dict[str, tuple[SourceContourProfile, ...]] | None = None,
         max_query_chars: int = 512,
+        max_nearby_streets: int = 8,
     ) -> None:
         self.policy_profiles = policy_profiles or {
             "urban_signals": URBAN_SIGNAL_SOURCE_CONTOURS,
         }
         self.max_query_chars = max(64, int(max_query_chars))
+        self.max_nearby_streets = max(1, int(max_nearby_streets))
 
     def supports_policy(self, planner_policy: str) -> bool:
         return planner_policy in self.policy_profiles
@@ -177,6 +184,7 @@ class SourceContourResearchPlanner:
         request: CollectionRequest,
         *,
         planner_policy: str,
+        observations: Iterable[Observation] = (),
     ) -> list[SourceContourPlan]:
         profiles = self.policy_profiles.get(planner_policy, ())
         if not profiles:
@@ -190,11 +198,32 @@ class SourceContourResearchPlanner:
             if isinstance(region_raw, str) and region_raw.strip()
             else city
         )
+        nearby_streets = nearby_radius_street_names(
+            request,
+            observations,
+            limit=self.max_nearby_streets,
+        )
         language = self._language(request, anchor)
         plans: list[SourceContourPlan] = []
         for profile in sorted(profiles, key=lambda item: (item.priority, item.contour_id)):
             templates = profile.ru_templates if language == "ru" else profile.en_templates
-            queries = tuple(
+            query_values: list[str] = []
+            for index, nearby_street in enumerate(nearby_streets):
+                street_anchor = (
+                    f"{city}, {nearby_street}" if city else nearby_street
+                )
+                template = templates[index % len(templates)]
+                query_values.append(
+                    self._bounded_query(
+                        template.format(
+                            anchor=street_anchor,
+                            city=city,
+                            street=nearby_street,
+                            region=region,
+                        )
+                    )
+                )
+            query_values.extend(
                 self._bounded_query(
                     template.format(
                         anchor=anchor,
@@ -205,7 +234,7 @@ class SourceContourResearchPlanner:
                 )
                 for template in templates
             )
-            queries = tuple(dict.fromkeys(query for query in queries if query))
+            queries = tuple(dict.fromkeys(query for query in query_values if query))
             if not queries:
                 continue
             plans.append(

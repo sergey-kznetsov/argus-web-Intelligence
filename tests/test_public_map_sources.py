@@ -102,6 +102,55 @@ def test_kraken_urban_signals_use_public_map_ugc_as_navigation_not_review_fact()
     assert "reviews" not in planner.remaining_intents(kraken, [])
 
 
+def test_radius_public_maps_use_verified_nearby_street_instead_of_poi_shell_anchor():
+    planner = PublicMapSourceResearchPlanner()
+    kraken = CollectionRequest(
+        consumer="kraken.development.uds",
+        consumer_profile_version=1,
+        capability="urban_signals",
+        requested_facts=["complaint"],
+        analysis_id="map-source-radius",
+        territory={
+            "city": "Ижевск",
+            "address": "Ижевск, Parus Plaza, бизнес-центр",
+            "point": {"latitude": 56.866315, "longitude": 53.207313},
+            "radius_meters": 1200,
+            "metadata": {"street": "Parus Plaza бизнес-центр"},
+        },
+        intents=["complaints", "comments"],
+    )
+    street = Observation(
+        observation_id="street-1",
+        collection_id="c1",
+        analysis_id=kraken.analysis_id,
+        consumer=kraken.consumer,
+        source="openstreetmap_overpass",
+        source_kind="map_place",
+        url="https://www.openstreetmap.org/way/1",
+        entity_type="place",
+        title="Пушкинская улица",
+        data={"name": "Пушкинская улица", "categories": ["highway:residential"]},
+        geo={"latitude": 56.8664, "longitude": 53.2073},
+        content_hash="street-hash",
+    )
+
+    queries = planner.queries(kraken, observations=[street], limit=3)
+    direct = planner.direct_navigation_tasks(
+        kraken,
+        observations=[street],
+        limit=2,
+    )
+
+    assert len(queries) == 3
+    assert all("Пушкинская улица" in query for query in queries)
+    assert all("Parus Plaza" not in query for query in queries)
+    assert direct
+    assert all(
+        task.metadata["public_map_anchor"] == "Ижевск, Пушкинская улица"
+        for task in direct
+    )
+
+
 def test_public_map_queries_expand_to_discovered_entity_names_and_dedupe_seen():
     planner = PublicMapSourceResearchPlanner()
     discovered = observation(url="https://example.test/place", source_kind="structured_entity")

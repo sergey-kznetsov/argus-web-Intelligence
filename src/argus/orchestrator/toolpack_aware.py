@@ -9,6 +9,7 @@ from argus.history.snapshots import stage_snapshots
 from argus.normalization.public_map_provenance import classify_public_map_url
 from argus.orchestrator.evidence_status import EvidenceStatusAdaptiveResearchOrchestrator
 from argus.orchestrator.service import now
+from argus.research.radius_scope import nearby_radius_street_names
 from argus.research.source_contours import SourceContourResearchPlanner
 from argus.security.redaction import safe_error_message
 from argus.sources.base import SourceTask
@@ -41,10 +42,11 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
     and substantially lower anti-bot pressure on shared search providers.
     """
 
-    tool_pack_execution_contract_version = "consumer-tool-pack/4"
+    tool_pack_execution_contract_version = "consumer-tool-pack/5"
     source_contour_queue_priority_version = "source-contour-queue/3"
     serial_research_lane_version = "serial-research-lanes/1"
     serial_public_map_lane_version = "serial-public-map-lanes/1"
+    radius_street_inventory_version = "radius-street-inventory/1"
 
     def __init__(
         self,
@@ -87,6 +89,7 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
                         else None
                     ),
                     "source_family_execution": self.serial_research_lane_version,
+                    "radius_street_inventory_execution": self.radius_street_inventory_version,
                     "public_map_execution": self.serial_public_map_lane_version,
                     "public_map_direct_navigation_version": getattr(
                         self.public_map_source_planner,
@@ -118,6 +121,7 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
         one at a time before normal adaptive discovery resumes.
         """
 
+        pending = await self._run_pre_contour_street_inventory(record, pending)
         pending = await self._run_serial_source_contours(record, pending)
         pending = await self._run_serial_public_maps(record, pending)
         return await super()._discover_uncovered_intents(
@@ -125,6 +129,84 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
             pending,
             uncovered_intents,
         )
+
+    async def _run_pre_contour_street_inventory(self, record, pending):
+        """Commit the spatial street inventory before text discovery is planned."""
+
+        checkpoint_key = "radius_street_inventory"
+        if record.checkpoint.get(f"{checkpoint_key}_complete") is True:
+            return pending
+
+        territory = record.request.territory
+        pack = active_tool_pack()
+        spatial_request = (
+            pack is not None
+            and pack.planner_policy == "urban_signals"
+            and territory.point is not None
+            and territory.radius_meters is not None
+        )
+        if not spatial_request:
+            record.checkpoint = {
+                **record.checkpoint,
+                f"{checkpoint_key}_complete": True,
+                checkpoint_key: {
+                    "version": self.radius_street_inventory_version,
+                    "status": "not_applicable",
+                    "street_names": [],
+                },
+            }
+            record.updated_at = now()
+            await self.repository.update_collection(record)
+            return pending
+
+        lane_tasks = [
+            task
+            for task in pending
+            if task.source_id == "openstreetmap_overpass"
+            and task.goal == "area_street_inventory"
+        ][:1]
+        deferred = [task for task in pending if task not in lane_tasks]
+        stats: dict[str, object] = {}
+        if lane_tasks:
+            latest, stats = await self._process_serial_lane(
+                record,
+                lane_tasks,
+                deferred,
+                lane_id="area_inventory:streets",
+                lane_kind="area_inventory",
+                lane_label="streets",
+                page_limit=1,
+                future_lane_count=(
+                    len(self.source_contour_planner.catalog(pack.planner_policy))
+                    + self._serial_public_map_lane_count(record)
+                ),
+            )
+            self._adopt_record(record, latest)
+
+        committed = await self.repository.list_observations(record.collection_id)
+        street_names = nearby_radius_street_names(
+            record.request,
+            committed,
+            limit=self.source_contour_planner.max_nearby_streets,
+        )
+        status = "completed" if lane_tasks else "unavailable"
+        if lane_tasks and not street_names:
+            status = "completed_without_named_streets"
+        record.checkpoint = {
+            **record.checkpoint,
+            f"{checkpoint_key}_complete": True,
+            checkpoint_key: {
+                "version": self.radius_street_inventory_version,
+                "status": status,
+                "street_names": street_names,
+                **stats,
+            },
+            "pending_tasks": [self._task_dict(item) for item in deferred],
+        }
+        record.stage = "serial_complete:area_inventory:streets"
+        record.updated_at = now()
+        await self.repository.update_collection(record)
+        return deferred
 
     async def _run_serial_source_contours(self, record, pending):
         pack = active_tool_pack()
@@ -136,9 +218,11 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
         ):
             return pending
 
+        committed = await self.repository.list_observations(record.collection_id)
         plans = self.source_contour_planner.plans(
             record.request,
             planner_policy=pack.planner_policy,
+            observations=committed,
         )
         states_raw = record.checkpoint.get("source_contours")
         states = dict(states_raw) if isinstance(states_raw, dict) else {}
@@ -340,7 +424,14 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
 
             if state.get("attempted") is not True:
                 if provider in {"2gis_web", "google_maps_web"}:
-                    direct = planner.direct_navigation_tasks(record.request, limit=10)
+                    committed = await self.repository.list_observations(
+                        record.collection_id
+                    )
+                    direct = planner.direct_navigation_tasks(
+                        record.request,
+                        observations=committed,
+                        limit=10,
+                    )
                     lane_tasks = [
                         task
                         for task in direct

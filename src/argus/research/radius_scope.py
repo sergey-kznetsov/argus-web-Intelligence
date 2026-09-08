@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import asin, cos, radians, sin, sqrt
+from typing import Iterable
 
 from argus.contracts.models import CollectionRequest, Observation
 from argus.research.entities import AreaEntityResearchPlanner
@@ -68,6 +70,74 @@ def radius_street_text(request: CollectionRequest) -> str | None:
     if precision in _TRUSTED_STREET_PRECISIONS:
         return street
     return None
+
+
+def _point_distance_meters(first, second) -> float:
+    """Return great-circle distance in metres for deterministic street ordering."""
+
+    first_lat = radians(first.latitude)
+    second_lat = radians(second.latitude)
+    latitude_delta = second_lat - first_lat
+    longitude_delta = radians(second.longitude - first.longitude)
+    haversine = (
+        sin(latitude_delta / 2) ** 2
+        + cos(first_lat) * cos(second_lat) * sin(longitude_delta / 2) ** 2
+    )
+    return 2 * 6_371_008.8 * asin(sqrt(min(1.0, haversine)))
+
+
+def nearby_radius_street_names(
+    request: CollectionRequest,
+    observations: Iterable[Observation],
+    *,
+    limit: int = 8,
+) -> list[str]:
+    """Return named OSM streets admitted by the request's spatial inventory.
+
+    The Overpass around query is the inclusion boundary. A returned way can intersect
+    the circle while its representative centre lies outside it, so coordinates are used
+    only to order streets by proximity and never to reject an admitted way.
+    """
+
+    territory = request.territory
+    if (
+        limit <= 0
+        or territory.point is None
+        or territory.radius_meters is None
+    ):
+        return []
+
+    candidates: list[tuple[float, str, str]] = []
+    seen: set[str] = set()
+    for observation in observations:
+        if (
+            observation.source != "openstreetmap_overpass"
+            or observation.source_kind != "map_place"
+        ):
+            continue
+        categories = observation.data.get("categories")
+        if not isinstance(categories, (list, tuple, set)) or not any(
+            isinstance(value, str) and value.casefold().startswith("highway:")
+            for value in categories
+        ):
+            continue
+        raw_name = observation.data.get("name") or observation.title
+        if not isinstance(raw_name, str):
+            continue
+        name = " ".join(raw_name.replace('"', " ").split()).strip()
+        key = name.casefold()
+        if len(name) < 3 or key in seen:
+            continue
+        seen.add(key)
+        distance = (
+            _point_distance_meters(territory.point, observation.geo)
+            if observation.geo is not None
+            else float("inf")
+        )
+        candidates.append((distance, key, name))
+
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return [name for _, _, name in candidates[:limit]]
 
 
 def radius_scope_text(

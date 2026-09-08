@@ -6,6 +6,11 @@ from urllib.parse import quote, quote_plus
 from argus.contracts.models import CollectionRequest, Observation
 from argus.normalization.public_map_provenance import classify_public_map_url
 from argus.research.intent_coverage import IntentCoverageEvaluator
+from argus.research.radius_scope import (
+    nearby_radius_street_names,
+    radius_scope_text,
+    radius_street_text,
+)
 from argus.sources.base import SourceTask
 from argus.toolpacks import resolved_tool_pack_from_request
 
@@ -47,7 +52,7 @@ class PublicMapSourceResearchPlanner:
     solely from content that ARGUS actually fetches and stores as Evidence/Provenance.
     """
 
-    version = "public-map-sources/6"
+    version = "public-map-sources/7"
     supported_intents = frozenset(
         {
             "reviews",
@@ -56,7 +61,7 @@ class PublicMapSourceResearchPlanner:
             "discussions",
         }
     )
-    direct_navigation_version = "public-map-direct-navigation/1"
+    direct_navigation_version = "public-map-direct-navigation/2"
 
     def __init__(
         self,
@@ -79,6 +84,7 @@ class PublicMapSourceResearchPlanner:
         self,
         request: CollectionRequest,
         *,
+        observations: list[Observation] | None = None,
         limit: int = 2,
     ) -> list[SourceTask]:
         """Return bounded direct browser entry points for under-indexed map providers."""
@@ -90,7 +96,7 @@ class PublicMapSourceResearchPlanner:
         ]
         if not navigation_goals:
             return []
-        anchors = self._anchors(request, [])
+        anchors = self._anchors(request, observations or [])
         if not anchors:
             return []
         anchor = anchors[0]
@@ -224,16 +230,31 @@ class PublicMapSourceResearchPlanner:
         values: list[str] = []
         seen: set[str] = set()
 
-        if self._is_urban_signals(request):
-            street = request.territory.metadata.get("street")
+        urban_signals = self._is_urban_signals(request)
+        if urban_signals:
             city = (request.territory.city or "").strip()
-            if isinstance(street, str) and street.strip():
-                street = " ".join(street.split()).strip()
-                street_anchor = f"{city}, {street}" if city else street
+            street_names: list[str] = []
+            trusted_street = radius_street_text(request)
+            if trusted_street:
+                street_names.append(trusted_street)
+            street_names.extend(
+                nearby_radius_street_names(request, observations, limit=8)
+            )
+            for street_name in street_names:
+                street_anchor = (
+                    f"{city}, {street_name}" if city else street_name
+                )
+                key = street_anchor.casefold()
+                if key in seen:
+                    continue
                 values.append(street_anchor)
-                seen.add(street_anchor.casefold())
+                seen.add(key)
 
-        territory = self._territory_text(request)
+        territory = (
+            radius_scope_text(request)
+            if urban_signals
+            else self._territory_text(request)
+        )
         if territory and territory.casefold() not in seen:
             values.append(territory)
             seen.add(territory.casefold())
