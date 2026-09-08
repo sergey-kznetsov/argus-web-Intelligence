@@ -66,9 +66,13 @@ async def test_urban_signal_collection_limits_become_emergency_guards() -> None:
     assert record.request.constraints.max_pages == 500
     assert record.request.constraints.max_duration_seconds == 7_200.0
     guard = record.checkpoint["mandatory_coverage"]
-    assert guard["collection_limits_semantics"] == "emergency_guard_only"
+    assert guard["collection_limits_semantics"] == "mandatory_emergency_optional_bounded"
+    assert guard["phase"] == "mandatory"
+    assert guard["mandatory_complete"] is False
     assert guard["requested_max_pages"] == 1
     assert guard["requested_max_duration_seconds"] == 30.0
+    assert guard["post_mandatory_optional_pages"] == 24
+    assert guard["post_mandatory_optional_duration_seconds"] == 120.0
     assert guard["source_contours"] == [
         "official_government",
         "public_appeals",
@@ -85,9 +89,40 @@ async def test_urban_signal_collection_limits_become_emergency_guards() -> None:
     ]
 
 
+@pytest.mark.asyncio
+async def test_post_mandatory_research_gets_fresh_bounded_budget() -> None:
+    harness = GuardHarness()
+    record = urban_signal_record()
+    await harness._apply_urban_signal_execution_guard(record)
+    mandatory_pages = [f"page-{index}" for index in range(18)]
+    record.checkpoint = {
+        **record.checkpoint,
+        "visited": mandatory_pages,
+        "source_contours_complete": True,
+        "serial_public_map_complete": True,
+    }
+
+    transitioned = await harness._activate_post_mandatory_budget(record)
+
+    assert transitioned is True
+    assert record.request.constraints.max_pages == 42
+    assert record.request.constraints.max_duration_seconds == 120.0
+    guard = record.checkpoint["mandatory_coverage"]
+    assert guard["phase"] == "optional"
+    assert guard["mandatory_complete"] is True
+    assert guard["mandatory_processed_pages"] == 18
+    assert guard["effective_post_mandatory_max_pages"] == 42
+    assert guard["post_mandatory_optional_pages"] == 24
+    assert guard["post_mandatory_optional_duration_seconds"] == 120.0
+    assert isinstance(record.checkpoint["execution_budget_started_at"], str)
+
+
 def test_urban_signal_mandatory_lanes_ignore_collection_page_exhaustion() -> None:
     record = urban_signal_record()
-    record.checkpoint = {"visited": [f"page-{index}" for index in range(20)]}
+    record.checkpoint = {
+        "visited": [f"page-{index}" for index in range(20)],
+        "mandatory_coverage": {"mandatory_complete": False},
+    }
 
     assert MandatoryCoverageToolPackOrchestrator._execution_budget_exhausted(record) is False
 
