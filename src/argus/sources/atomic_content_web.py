@@ -14,7 +14,6 @@ from argus.extraction.atomic_html import extract_atomic_html_blocks
 from argus.normalization.identity import stable_evidence_id, stable_observation_id
 from argus.sources.base import SourceResult, SourceTask
 from argus.sources.intent_evidence_web import IntentEvidenceWebAdapter
-from argus.sources.navigation_web import ContentNavigationMixin
 
 _ATOMIC_ENTITY_TYPES = frozenset({"publication", "post", "comment", "review"})
 _INHERITED_PROVENANCE_KEYS = (
@@ -35,13 +34,14 @@ _INHERITED_EVIDENCE_KEYS = (
 )
 
 
-class AtomicContentWebAdapter(ContentNavigationMixin, IntentEvidenceWebAdapter):
+class AtomicContentWebAdapter(IntentEvidenceWebAdapter):
     """Add deterministic atomic publication fallback to the generic web chain.
 
-    Stronger schema.org/microformats observations win. Public-map surfaces are deliberately
-    excluded from this HTML fallback: maps remain information sources unless their existing
-    structured extractors expose an actual review/comment/post entity. Obvious navigation
-    shells stay crawl surfaces only; likely item links are ranked before bounded fan-out.
+    The inherited factual web stack already includes ``ContentNavigationMixin`` through
+    ``CompressedOfficeAwareGenericWebAdapter``. Reusing that single MRO path keeps item-first
+    navigation active without duplicating the mixin in this class. Stronger schema.org/
+    microformats observations win. Public-map surfaces are deliberately excluded from this
+    HTML fallback. Obvious navigation shells stay crawl surfaces only.
     """
 
     atomic_html_max_scan_chars = 750_000
