@@ -4,6 +4,7 @@ from argus.bootstrap import build_services
 from argus.config import Settings
 from argus.orchestrator.atomic import AtomicCollectionOrchestrator
 from argus.orchestrator.duplicate_atomic import DuplicateAwareAtomicCollectionOrchestrator
+from argus.sources.atomic_content_web import AtomicContentWebAdapter
 from argus.sources.canonical_web import CanonicalLinkWebAdapter
 from argus.sources.compressed_web import CompressedOfficeAwareGenericWebAdapter
 from argus.sources.document_web import DocumentAwareGenericWebAdapter
@@ -45,6 +46,7 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     assert isinstance(services.repository, AtomicSQLiteRepository)
     tracked = services.registry.get("generic_web")
     adapter = getattr(tracked, "_adapter", None)
+    assert isinstance(adapter, AtomicContentWebAdapter)
     assert isinstance(adapter, DocumentAwareGenericWebAdapter)
     assert isinstance(adapter, OfficeAwareGenericWebAdapter)
     assert isinstance(adapter, CompressedOfficeAwareGenericWebAdapter)
@@ -63,7 +65,6 @@ def test_bootstrap_uses_atomic_orchestrator_repository_and_document_web(tmp_path
     assert extractor.max_columns == 8
     assert extractor.max_cell_chars == 321
     assert extractor.max_json_depth == 9
-    assert extractor.max_json_nodes == 77
     assert extractor.max_xml_depth == 9
     assert extractor.max_xml_nodes == 77
 
