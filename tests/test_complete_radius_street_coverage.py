@@ -10,7 +10,7 @@ from argus.contracts.models import (
     CollectionStatus,
     Observation,
 )
-from argus.research.discovery import DiscoveryService
+from argus.research.discovery import DiscoveryHit, DiscoveryService
 from argus.research.lane_coverage import (
     PUBLIC_MAP_IDS,
     SOURCE_CONTOUR_IDS,
@@ -93,7 +93,7 @@ def test_source_contours_cover_every_named_radius_street() -> None:
     assert len(plans) == 7
     for plan in plans:
         assert plan.street_names == STREET_NAMES
-        assert plan.max_destinations >= len(STREET_NAMES)
+        assert plan.max_destinations >= len(plan.queries)
         combined = "\n".join(plan.queries)
         for street in STREET_NAMES:
             assert street in combined
@@ -109,6 +109,34 @@ class RecordingProvider:
         del request
         self.calls.append(list(queries))
         return []
+
+    async def health(self):
+        return {"status": "ok"}
+
+
+class DenseResultProvider:
+    name = "dense"
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    async def discover(self, queries, request):
+        del request
+        self.calls.append(list(queries))
+        hits: list[DiscoveryHit] = []
+        for query in queries:
+            query_id = query.rsplit("-", 1)[-1]
+            for rank in (1, 2):
+                hits.append(
+                    DiscoveryHit(
+                        url=f"https://results.test/{query_id}/{rank}",
+                        provider=self.name,
+                        title=f"Ижевск {query}",
+                        rank=rank,
+                        query=query,
+                    )
+                )
+        return hits
 
     async def health(self):
         return {"status": "ok"}
@@ -132,6 +160,31 @@ async def test_discovery_batches_all_queries_without_global_truncation() -> None
     assert outcome.query_batches == 3
     assert outcome.query_batches_attempted == 3
     assert outcome.stop_reason == "no_valid_destinations"
+
+
+@pytest.mark.asyncio
+async def test_dense_first_batch_cannot_starve_late_street_queries() -> None:
+    provider = DenseResultProvider()
+    service = DiscoveryService(
+        providers=[provider],
+        url_guard=UrlGuard.from_strings(["results.test"]),
+        max_queries=4,
+    )
+    queries = [f"street-query-{index}" for index in range(11)]
+
+    outcome = await service.discover(queries, kraken_request())
+
+    assert provider.calls == [queries[:4], queries[4:8], queries[8:]]
+    selected_queries = {
+        task.metadata.get("discovery_query")
+        for task in outcome.tasks
+    }
+    assert selected_queries == set(queries)
+    assert len(outcome.tasks) == len(queries)
+    assert any(
+        task.metadata.get("discovery_query") == queries[-1]
+        for task in outcome.tasks
+    )
 
 
 def test_mandatory_public_maps_create_one_entry_task_per_street_per_provider() -> None:
