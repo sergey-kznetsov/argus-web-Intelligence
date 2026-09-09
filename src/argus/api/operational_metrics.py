@@ -4,9 +4,10 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 
 from argus.config import Settings
+from argus.research.lane_coverage import build_research_lane_coverage
 from argus.security.http_hardening import apply_http_hardening
 from argus.services import ServiceContainer
 
@@ -67,3 +68,27 @@ def register_operational_metrics_endpoint(
                 "built_in_json": True,
             },
         }
+
+    @app.get(
+        "/v1/operations/research-coverage/{collection_id}",
+        dependencies=[Depends(require_bearer)],
+    )
+    async def research_coverage(collection_id: str) -> dict[str, object]:
+        """Return factual 7+3 serial-lane diagnostics for one collection."""
+
+        started = time.perf_counter()
+        record = await repository.get_collection(collection_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="collection not found")
+        observations = await repository.list_observations(collection_id)
+        evidence = await repository.list_evidence(collection_id)
+        services.metrics.observe(
+            "db_operation_duration_seconds",
+            time.perf_counter() - started,
+            operation="research_lane_coverage",
+        )
+        services.metrics.inc(
+            "operations_research_coverage_reads_total",
+            status="ok",
+        )
+        return build_research_lane_coverage(record, observations, evidence)
