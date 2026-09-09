@@ -37,6 +37,10 @@ class FakeRepository:
         del collection_id
         return []
 
+    async def list_evidence(self, collection_id):
+        del collection_id
+        return []
+
 
 class FakeDiscovery:
     async def discover(self, queries, request) -> DiscoveryOutcome:
@@ -198,6 +202,15 @@ async def test_requested_max_pages_cannot_skip_mandatory_7_plus_3() -> None:
     assert record.checkpoint["mandatory_coverage"]["mandatory_complete"] is True
     assert record.checkpoint["mandatory_coverage"]["phase"] == "optional"
     assert record.request.constraints.max_pages == 34
+
+    telemetry = record.checkpoint["research_lane_coverage"]
+    assert telemetry["expected_lanes"] == 10
+    assert telemetry["reported_lanes"] == 10
+    assert telemetry["strict_order"] is True
+    assert [row["lane_id"] for row in telemetry["rows"]] == [
+        *SOURCE_CONTOUR_ORDER,
+        *PUBLIC_MAP_ORDER,
+    ]
 
 
 @pytest.mark.asyncio
