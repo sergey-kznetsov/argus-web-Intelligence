@@ -22,6 +22,7 @@ class AtomicHtmlExtraction:
     items: tuple[AtomicHtmlBlock, ...]
     extractor_version: str = _ATOMIC_SELECTOR_VERSION
     truncated: bool = False
+    navigation_cards_suppressed: int = 0
 
 
 def extract_atomic_html_blocks(
@@ -74,7 +75,11 @@ def extract_atomic_html_blocks(
         seen_payloads.add(key)
         items.append(item)
 
-    return AtomicHtmlExtraction(items=tuple(items), truncated=truncated)
+    return AtomicHtmlExtraction(
+        items=tuple(items),
+        truncated=truncated,
+        navigation_cards_suppressed=len(listing_card_ids),
+    )
 
 
 def _candidate_tags(soup: BeautifulSoup) -> list[tuple[Tag, str]]:
