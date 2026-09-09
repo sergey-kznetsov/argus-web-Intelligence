@@ -9,10 +9,10 @@ from argus.sources.base import SourceTask
 from argus.sources.office_web import OfficeAwareGenericWebAdapter
 
 
-class ContentNavigationOfficeAwareGenericWebAdapter(OfficeAwareGenericWebAdapter):
-    """Rank allowed child links before Generic Web applies its bounded page fan-out.
+class ContentNavigationMixin:
+    """Rank allowed child links before the underlying web adapter applies bounded fan-out.
 
-    Search/listing URLs remain valid navigation surfaces. This layer only changes fetch
+    Search/listing URLs remain valid navigation surfaces. This mixin only changes fetch
     order so likely item destinations are reached before menu, category, search and login
     shells consume a small serial-lane budget. URL ranking is never factual Evidence.
     """
@@ -71,3 +71,13 @@ class ContentNavigationOfficeAwareGenericWebAdapter(OfficeAwareGenericWebAdapter
             seen.add(link)
             links.append(link)
         return self.content_navigation.rank(links)
+
+
+class ContentNavigationOfficeAwareGenericWebAdapter(
+    ContentNavigationMixin,
+    OfficeAwareGenericWebAdapter,
+):
+    """Office-aware web adapter with bounded item-first child navigation."""
+
+
+__all__ = ["ContentNavigationMixin", "ContentNavigationOfficeAwareGenericWebAdapter"]
