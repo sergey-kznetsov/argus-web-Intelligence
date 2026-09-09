@@ -55,22 +55,37 @@ class AtomicContentWebAdapter(ContentNavigationMixin, IntentEvidenceWebAdapter):
         request: CollectionRequest,
     ) -> SourceResult:
         result = await super().extract(task, fetched, request)
-        if result.blocked or self._stronger_atomic_exists(result):
+        if result.blocked:
             return result
         if self._is_public_map_surface(task, result):
             return result
-        if self.content_navigation.is_navigation_shell(str(fetched.final_url or task.url)):
+
+        page_url = str(fetched.final_url or task.url)
+        if self.content_navigation.is_navigation_shell(page_url):
+            self._mark_navigation_only(result, reason="url_navigation_shell")
             task.metadata["atomic_content_suppressed"] = "navigation_shell"
+            return result
+
+        if self._stronger_atomic_exists(result):
+            self._mark_document_container_superseded(
+                result,
+                reason="structured_atomic_content",
+            )
             return result
 
         extraction = extract_atomic_html_blocks(
             fetched.text,
             content_type=fetched.content_type,
-            base_url=str(fetched.final_url or task.url),
+            base_url=page_url,
             max_scan_chars=self.atomic_html_max_scan_chars,
             max_items=self.atomic_html_max_items,
             max_text_chars=self.atomic_html_max_text_chars,
         )
+        if extraction.navigation_cards_suppressed:
+            self._mark_navigation_only(result, reason="linked_article_listing_cards")
+            task.metadata["atomic_navigation_cards_suppressed"] = (
+                extraction.navigation_cards_suppressed
+            )
         if not extraction.items:
             return result
 
@@ -174,6 +189,7 @@ class AtomicContentWebAdapter(ContentNavigationMixin, IntentEvidenceWebAdapter):
             result.observations.append(observation)
             result.evidence.append(evidence)
 
+        self._mark_document_container_superseded(result, reason="html_atomic_content")
         if extraction.truncated:
             result.partial = True
             result.errors.append(
@@ -207,6 +223,76 @@ class AtomicContentWebAdapter(ContentNavigationMixin, IntentEvidenceWebAdapter):
         )
 
     @classmethod
+    def _mark_navigation_only(cls, result: SourceResult, *, reason: str) -> None:
+        marked_ids: set[str] = set()
+        for observation in result.observations:
+            generic_document = (
+                observation.entity_type == "document"
+                and observation.source_kind == "web_page"
+            )
+            if not generic_document and observation.entity_type not in _ATOMIC_ENTITY_TYPES:
+                continue
+            observation.quality["navigation_only"] = True
+            observation.quality["message_candidate"] = False
+            observation.provenance["content_navigation"] = {
+                "version": cls.content_navigation.version,
+                "navigation_only": True,
+                "reason": reason,
+                "classification_is_evidence": False,
+            }
+            marked_ids.add(observation.observation_id)
+        cls._mark_evidence_navigation(result, marked_ids, reason=reason)
+
+    @classmethod
+    def _mark_document_container_superseded(
+        cls,
+        result: SourceResult,
+        *,
+        reason: str,
+    ) -> None:
+        marked_ids: set[str] = set()
+        for observation in result.observations:
+            if not (
+                observation.entity_type == "document"
+                and observation.source_kind == "web_page"
+            ):
+                continue
+            observation.quality["atomic_container_superseded"] = True
+            observation.quality["message_candidate"] = False
+            observation.provenance["atomic_delivery"] = {
+                "version": "atomic-delivery/1",
+                "whole_page_container_only": True,
+                "reason": reason,
+            }
+            marked_ids.add(observation.observation_id)
+        for evidence in result.evidence:
+            if evidence.observation_id not in marked_ids:
+                continue
+            evidence.metadata["atomic_delivery"] = {
+                "version": "atomic-delivery/1",
+                "whole_page_container_only": True,
+                "reason": reason,
+            }
+
+    @classmethod
+    def _mark_evidence_navigation(
+        cls,
+        result: SourceResult,
+        observation_ids: set[str],
+        *,
+        reason: str,
+    ) -> None:
+        for evidence in result.evidence:
+            if evidence.observation_id not in observation_ids:
+                continue
+            evidence.metadata["content_navigation"] = {
+                "version": cls.content_navigation.version,
+                "navigation_only": True,
+                "reason": reason,
+                "classification_is_evidence": False,
+            }
+
+    @classmethod
     def _inherited_context(
         cls,
         result: SourceResult,
@@ -238,6 +324,7 @@ class AtomicContentWebAdapter(ContentNavigationMixin, IntentEvidenceWebAdapter):
             "css_class_heuristics": False,
             "linked_heading_listing_cards": "navigation_only",
             "obvious_navigation_shells": "navigation_only",
+            "whole_page_container_after_atomic": "non_messageable",
             "source_contour_as_semantic_label": False,
             "public_map_fallback": False,
             "max_items": self.atomic_html_max_items,
