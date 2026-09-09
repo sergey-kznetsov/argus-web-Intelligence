@@ -8,6 +8,7 @@ from defusedxml import ElementTree
 
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest
+from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.research.discovery import DiscoveryBlockedError, DiscoveryHit
 
 
@@ -24,7 +25,7 @@ class DuckDuckGoFastDiscoveryProvider:
     name = "duckduckgo_fast"
     base_url = "https://html.duckduckgo.com/html/"
 
-    def __init__(self, settings: Settings, fast) -> None:
+    def __init__(self, settings: Settings, fast: FastCrawlerRuntime) -> None:
         self.settings = settings
         self.fast = fast
 
@@ -131,7 +132,7 @@ class MojeekFastDiscoveryProvider:
     name = "mojeek_fast"
     base_url = "https://www.mojeek.com/search"
 
-    def __init__(self, settings: Settings, fast) -> None:
+    def __init__(self, settings: Settings, fast: FastCrawlerRuntime) -> None:
         self.settings = settings
         self.fast = fast
 
@@ -169,9 +170,6 @@ class MojeekFastDiscoveryProvider:
 
     @staticmethod
     def _normalize_query(query: str) -> str:
-        # Mojeek has historically treated some quoted queries as bot-like/invalid. Exact
-        # quoting is not required for ARGUS source discovery; keep lexical terms and
-        # operators such as site: while avoiding that fragile syntax.
         return " ".join(query.replace('"', " ").split()).strip()
 
     @classmethod
@@ -185,10 +183,6 @@ class MojeekFastDiscoveryProvider:
         soup = BeautifulSoup(html, "html.parser")
         hits: list[DiscoveryHit] = []
         seen: set[str] = set()
-
-        # Mojeek's public SERP has used ul.results-standard with either a.ob as the
-        # destination anchor or an h2 anchor. Supporting both shapes makes the parser
-        # tolerant of the documented layout variants without scraping navigation links.
         items = list(soup.select("ul.results-standard > li"))
         for item in items:
             destination = item.select_one("a.ob[href]")
@@ -217,12 +211,8 @@ class MojeekFastDiscoveryProvider:
             )
             if len(hits) >= limit:
                 return hits
-
         if hits:
             return hits
-
-        # Conservative fallback for a minor markup change: only h2 result links are
-        # considered and Mojeek-owned navigation URLs are rejected below.
         for anchor in soup.select("h2 a[href]"):
             target = cls._target_url(str(anchor.get("href") or ""))
             if not target or target in seen:
@@ -271,9 +261,9 @@ class MojeekFastDiscoveryProvider:
 class BingRssDiscoveryProvider:
     """Keyless fallback using Bing's RSS representation of normal web search.
 
-    RSS is consumed strictly as navigation metadata. Item titles are ranking hints only;
-    descriptions are deliberately ignored and never become Evidence. The provider does not
-    solve challenges, follow login flows or scrape Bing's HTML search interface.
+    RSS is navigation only. Titles may help discovery ranking, while descriptions are
+    intentionally ignored and never become Evidence. No challenge solving or HTML SERP
+    scraping is performed.
     """
 
     name = "bing_rss"
@@ -310,16 +300,7 @@ class BingRssDiscoveryProvider:
                 value = self._normalize_query(query)[:499]
                 if not value:
                     continue
-                response = await client.get(
-                    self.base_url,
-                    params={"q": value, "format": "rss"},
-                )
-                if response.status_code in {401, 403, 429}:
-                    raise DiscoveryBlockedError(
-                        f"Bing RSS discovery returned HTTP {response.status_code}"
-                    )
-                response.raise_for_status()
-                body = await self._bounded_body(response)
+                body = await self._request_body(client, value)
                 for hit in self._extract_hits(
                     body,
                     self.settings.browser_serp_max_results_per_query,
@@ -331,19 +312,31 @@ class BingRssDiscoveryProvider:
                     hits.append(hit)
         return hits
 
+    async def _request_body(self, client: httpx.AsyncClient, query: str) -> bytes:
+        async with client.stream(
+            "GET",
+            self.base_url,
+            params={"q": query, "format": "rss"},
+        ) as response:
+            if response.status_code in {401, 403, 429}:
+                raise DiscoveryBlockedError(
+                    f"Bing RSS discovery returned HTTP {response.status_code}"
+                )
+            response.raise_for_status()
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                if not chunk:
+                    continue
+                if len(body) + len(chunk) > self.settings.max_response_bytes:
+                    raise ValueError("Bing RSS response exceeds configured limit")
+                body.extend(chunk)
+            return bytes(body)
+
     async def health(self) -> dict[str, object]:
         return {"provider": self.name, "status": "configured"}
 
-    async def _bounded_body(self, response: httpx.Response) -> bytes:
-        body = response.content
-        if len(body) > self.settings.max_response_bytes:
-            raise ValueError("Bing RSS response exceeds configured limit")
-        return body
-
     @staticmethod
     def _normalize_query(query: str) -> str:
-        # Bing RSS can return an empty feed for fragile exact-quoted forms. Search discovery
-        # only needs lexical anchors; site: and other operators are preserved.
         return " ".join(query.replace('"', " ").split()).strip()
 
     @classmethod
