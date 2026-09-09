@@ -9,10 +9,10 @@ from argus.contracts.models import CollectionRequest, StructuredError
 from argus.extraction.gzip_data import BoundedGzipExtractor, GzipExtraction
 from argus.extraction.structured_data import StructuredDataExtraction
 from argus.sources.base import SourceResult, SourceTask
-from argus.sources.office_web import OfficeAwareGenericWebAdapter
+from argus.sources.navigation_web import ContentNavigationOfficeAwareGenericWebAdapter
 
 
-class CompressedOfficeAwareGenericWebAdapter(OfficeAwareGenericWebAdapter):
+class CompressedOfficeAwareGenericWebAdapter(ContentNavigationOfficeAwareGenericWebAdapter):
     """Add bounded single-member gzip support for public structured documents."""
 
     _GZIP_MEDIA_TYPES = {
