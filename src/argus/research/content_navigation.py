@@ -93,7 +93,17 @@ class ContentItemNavigationRanker:
         }
     )
     _POSITIVE_QUERY_KEYS = frozenset(
-        {"article", "article_id", "id", "message", "news", "post", "post_id", "thread", "topic"}
+        {
+            "article",
+            "article_id",
+            "id",
+            "message",
+            "news",
+            "post",
+            "post_id",
+            "thread",
+            "topic",
+        }
     )
     _NEGATIVE_QUERY_KEYS = frozenset(
         {"category", "page", "paged", "search", "tag"}
@@ -152,7 +162,7 @@ class ContentItemNavigationRanker:
             if navigation_positions[-1] == len(normalized_segments) - 1:
                 score -= 20
 
-        if any(self._NUMERIC_ID.fullmatch(segment) for segment in normalized_segments):
+        if any(self._is_numeric_item_id(segment) for segment in normalized_segments):
             score += 35
         if any(self._UUID.fullmatch(segment) for segment in normalized_segments):
             score += 45
@@ -165,7 +175,10 @@ class ContentItemNavigationRanker:
         if path.endswith((".html", ".htm", ".shtml")):
             score += 15
 
-        query = {key.casefold(): value for key, value in parse_qsl(parsed.query, keep_blank_values=True)}
+        query = {
+            key.casefold(): value
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        }
         if self._POSITIVE_QUERY_KEYS.intersection(query) and any(query.values()):
             score += 35
         if self._NEGATIVE_QUERY_KEYS.intersection(query):
@@ -176,14 +189,18 @@ class ContentItemNavigationRanker:
         return score
 
     @classmethod
+    def _is_numeric_item_id(cls, segment: str) -> bool:
+        if not cls._NUMERIC_ID.fullmatch(segment):
+            return False
+        return cls._DATE_SEGMENT.fullmatch(segment) is None
+
+    @classmethod
     def _has_date_path(cls, segments: list[str]) -> bool:
         for index, segment in enumerate(segments):
             if not cls._DATE_SEGMENT.fullmatch(segment):
                 continue
-            tail = segments[index + 1 : index + 3]
-            if not tail:
-                return True
-            if cls._DAY_OR_MONTH.fullmatch(tail[0]):
+            tail = segments[index + 1 : index + 2]
+            if tail and cls._DAY_OR_MONTH.fullmatch(tail[0]):
                 return True
         return False
 
