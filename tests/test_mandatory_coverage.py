@@ -17,6 +17,14 @@ class FakeRepository:
     async def update_collection(self, record) -> None:
         self.updated = record
 
+    async def list_observations(self, collection_id):
+        del collection_id
+        return []
+
+    async def list_evidence(self, collection_id):
+        del collection_id
+        return []
+
 
 class GuardHarness(MandatoryCoverageToolPackOrchestrator):
     def __init__(self) -> None:
@@ -115,6 +123,7 @@ async def test_post_mandatory_research_gets_fresh_bounded_budget() -> None:
     assert guard["post_mandatory_optional_pages"] == 24
     assert guard["post_mandatory_optional_duration_seconds"] == 120.0
     assert isinstance(record.checkpoint["execution_budget_started_at"], str)
+    assert record.checkpoint["research_lane_coverage"]["expected_lanes"] == 10
 
 
 def test_urban_signal_mandatory_lanes_ignore_collection_page_exhaustion() -> None:
