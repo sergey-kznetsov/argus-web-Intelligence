@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urldefrag, urljoin
 
 from bs4 import BeautifulSoup, Tag
 
-_ATOMIC_SELECTOR_VERSION = "html-atomic/1"
+_ATOMIC_SELECTOR_VERSION = "html-atomic/2"
 _REMOVE_TAGS = ("script", "style", "noscript", "svg", "template", "form", "nav", "aside", "footer")
 
 
@@ -27,6 +28,7 @@ def extract_atomic_html_blocks(
     content: str,
     *,
     content_type: str | None,
+    base_url: str | None = None,
     max_scan_chars: int = 750_000,
     max_items: int = 20,
     max_text_chars: int = 100_000,
@@ -35,8 +37,9 @@ def extract_atomic_html_blocks(
 
     The extractor intentionally avoids CSS-class and source-contour heuristics. It accepts
     semantic HTML ``article`` elements, ARIA ``role=article`` containers and explicit
-    ``itemprop=articleBody`` containers. These source-declared structures are suitable as a
-    deterministic fallback when schema.org/microformats did not expose an atomic entity.
+    ``itemprop=articleBody`` containers. Repeated HTML5 ``article`` cards whose headings link
+    to different destination URLs are treated as listing navigation, not publications; ARGUS
+    should follow those links and extract the destination page instead.
     """
 
     if max_scan_chars <= 0 or max_items <= 0 or max_text_chars <= 0:
@@ -47,11 +50,17 @@ def extract_atomic_html_blocks(
     source = content[:max_scan_chars]
     soup = BeautifulSoup(source, "html.parser")
     candidates = _candidate_tags(soup)
+    listing_card_ids = _listing_article_card_ids(candidates, base_url=base_url)
+    eligible = [
+        (tag, selector_kind)
+        for tag, selector_kind in candidates
+        if id(tag) not in listing_card_ids
+    ]
     items: list[AtomicHtmlBlock] = []
     seen_payloads: set[tuple[str, str]] = set()
-    truncated = len(candidates) > max_items
+    truncated = len(eligible) > max_items
 
-    for tag, selector_kind in candidates[:max_items]:
+    for tag, selector_kind in eligible[:max_items]:
         item = _extract_candidate(
             tag,
             selector_kind=selector_kind,
@@ -92,6 +101,46 @@ def _candidate_tags(soup: BeautifulSoup) -> list[tuple[Tag, str]]:
         candidates.append((tag, "itemprop_articlebody"))
 
     return candidates
+
+
+def _listing_article_card_ids(
+    candidates: list[tuple[Tag, str]],
+    *,
+    base_url: str | None,
+) -> set[int]:
+    """Identify repeated linked-heading HTML5 article cards without semantic guessing."""
+
+    linked: list[tuple[Tag, str]] = []
+    for tag, selector_kind in candidates:
+        if selector_kind != "article":
+            continue
+        target = _linked_heading_target(tag, base_url=base_url)
+        if target is not None:
+            linked.append((tag, target))
+    if len({target for _, target in linked}) < 2:
+        return set()
+    return {id(tag) for tag, _ in linked}
+
+
+def _linked_heading_target(tag: Tag, *, base_url: str | None) -> str | None:
+    heading = tag.find(["h1", "h2", "h3"])
+    if not isinstance(heading, Tag):
+        return None
+    link = heading.find("a", href=True)
+    if not isinstance(link, Tag):
+        parent = heading.parent
+        link = parent if isinstance(parent, Tag) and parent.name == "a" and parent.get("href") else None
+    if not isinstance(link, Tag):
+        return None
+    href = link.get("href")
+    if not isinstance(href, str) or not href.strip():
+        return None
+    target = urldefrag(urljoin(base_url or "", href.strip()))[0]
+    if not target:
+        return None
+    if base_url and target.rstrip("/") == urldefrag(base_url)[0].rstrip("/"):
+        return None
+    return target
 
 
 def _extract_candidate(
