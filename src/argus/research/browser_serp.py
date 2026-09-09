@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
+import httpx
 from bs4 import BeautifulSoup
+from defusedxml import ElementTree
 
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest
-from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.research.discovery import DiscoveryBlockedError, DiscoveryHit
 
 
@@ -23,7 +24,7 @@ class DuckDuckGoFastDiscoveryProvider:
     name = "duckduckgo_fast"
     base_url = "https://html.duckduckgo.com/html/"
 
-    def __init__(self, settings: Settings, fast: FastCrawlerRuntime) -> None:
+    def __init__(self, settings: Settings, fast) -> None:
         self.settings = settings
         self.fast = fast
 
@@ -130,7 +131,7 @@ class MojeekFastDiscoveryProvider:
     name = "mojeek_fast"
     base_url = "https://www.mojeek.com/search"
 
-    def __init__(self, settings: Settings, fast: FastCrawlerRuntime) -> None:
+    def __init__(self, settings: Settings, fast) -> None:
         self.settings = settings
         self.fast = fast
 
@@ -265,3 +266,130 @@ class MojeekFastDiscoveryProvider:
             "403 - forbidden",
         )
         return any(marker in sample for marker in markers)
+
+
+class BingRssDiscoveryProvider:
+    """Keyless fallback using Bing's RSS representation of normal web search.
+
+    RSS is consumed strictly as navigation metadata. Item titles are ranking hints only;
+    descriptions are deliberately ignored and never become Evidence. The provider does not
+    solve challenges, follow login flows or scrape Bing's HTML search interface.
+    """
+
+    name = "bing_rss"
+    base_url = "https://www.bing.com/search"
+
+    def __init__(
+        self,
+        settings: Settings,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self.settings = settings
+        self.transport = transport
+
+    async def discover(
+        self,
+        queries: list[str],
+        request: CollectionRequest,
+    ) -> list[DiscoveryHit]:
+        del request
+        hits: list[DiscoveryHit] = []
+        seen: set[str] = set()
+        timeout = httpx.Timeout(min(float(self.settings.http_timeout_seconds), 15.0))
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=False,
+            trust_env=False,
+            transport=self.transport,
+            headers={
+                "Accept": "application/rss+xml, application/xml, text/xml;q=0.9",
+                "User-Agent": "ARGUS-Web-Intelligence/0.3 RSS-discovery",
+            },
+        ) as client:
+            for query in queries:
+                value = self._normalize_query(query)[:499]
+                if not value:
+                    continue
+                response = await client.get(
+                    self.base_url,
+                    params={"q": value, "format": "rss"},
+                )
+                if response.status_code in {401, 403, 429}:
+                    raise DiscoveryBlockedError(
+                        f"Bing RSS discovery returned HTTP {response.status_code}"
+                    )
+                response.raise_for_status()
+                body = await self._bounded_body(response)
+                for hit in self._extract_hits(
+                    body,
+                    self.settings.browser_serp_max_results_per_query,
+                    query=value,
+                ):
+                    if hit.url in seen:
+                        continue
+                    seen.add(hit.url)
+                    hits.append(hit)
+        return hits
+
+    async def health(self) -> dict[str, object]:
+        return {"provider": self.name, "status": "configured"}
+
+    async def _bounded_body(self, response: httpx.Response) -> bytes:
+        body = response.content
+        if len(body) > self.settings.max_response_bytes:
+            raise ValueError("Bing RSS response exceeds configured limit")
+        return body
+
+    @staticmethod
+    def _normalize_query(query: str) -> str:
+        # Bing RSS can return an empty feed for fragile exact-quoted forms. Search discovery
+        # only needs lexical anchors; site: and other operators are preserved.
+        return " ".join(query.replace('"', " ").split()).strip()
+
+    @classmethod
+    def _extract_hits(
+        cls,
+        body: bytes,
+        limit: int,
+        *,
+        query: str | None = None,
+    ) -> list[DiscoveryHit]:
+        root = ElementTree.fromstring(body)
+        hits: list[DiscoveryHit] = []
+        seen: set[str] = set()
+        for item in root.findall(".//item"):
+            link_node = item.find("link")
+            title_node = item.find("title")
+            target = cls._target_url(link_node.text if link_node is not None else None)
+            if not target or target in seen:
+                continue
+            seen.add(target)
+            title = (
+                " ".join((title_node.text or "").split()).strip()
+                if title_node is not None
+                else ""
+            )
+            hits.append(
+                DiscoveryHit(
+                    url=target,
+                    provider=cls.name,
+                    title=title or None,
+                    engines=["bing"],
+                    rank=len(hits) + 1,
+                    query=query,
+                )
+            )
+            if len(hits) >= limit:
+                break
+        return hits
+
+    @classmethod
+    def _target_url(cls, value: str | None) -> str | None:
+        target = (value or "").strip()
+        parsed = urlsplit(target)
+        host = (parsed.hostname or "").lower().strip(".")
+        if parsed.scheme not in {"http", "https"} or not host:
+            return None
+        if host == "bing.com" or host.endswith(".bing.com"):
+            return None
+        return target
