@@ -82,7 +82,7 @@ class DiscoveryService:
     """
 
     ranking_version = "discovery-ranking/1"
-    telemetry_version = "discovery-telemetry/3"
+    telemetry_version = "discovery-telemetry/2"
     stop_policy = "first_provider_with_valid_destinations"
 
     def __init__(
@@ -115,6 +115,7 @@ class DiscoveryService:
             selected_queries[index : index + self.max_queries]
             for index in range(0, len(selected_queries), self.max_queries)
         ]
+        multi_batch = len(query_batches) > 1
         outcome.query_batches = len(query_batches)
 
         allowed_order = self._normalized_domains(request.constraints.allowed_domains)
@@ -178,15 +179,27 @@ class DiscoveryService:
                 )
                 outcome.valid_destinations += len(prepared)
                 prepared.sort(key=self._ranking_key)
+                if multi_batch:
+                    prepared = self._diversify_prepared_by_query(prepared, batch)
                 if not prepared:
                     continue
 
                 batch_had_valid_destinations = True
                 destinations_added = 0
+                remaining_capacity = max(0, task_budget - len(outcome.tasks))
+                batch_destination_limit = (
+                    min(len(batch), remaining_capacity)
+                    if multi_batch
+                    else remaining_capacity
+                )
                 for index, candidate in enumerate(prepared):
-                    if len(outcome.tasks) >= task_budget:
+                    if (
+                        destinations_added >= batch_destination_limit
+                        or len(outcome.tasks) >= task_budget
+                    ):
                         outcome.destinations_skipped_budget += len(prepared) - index
-                        outcome.stop_reason = "task_budget_reached"
+                        if len(outcome.tasks) >= task_budget:
+                            outcome.stop_reason = "task_budget_reached"
                         break
                     hit = candidate.hit
                     canonical_url = candidate.canonical_url
@@ -298,6 +311,39 @@ class DiscoveryService:
         ):
             outcome.stop_reason = "all_query_batches_attempted"
         return outcome
+
+    @staticmethod
+    def _query_key(value: str | None) -> str:
+        return " ".join((value or "").split()).casefold()
+
+    @classmethod
+    def _diversify_prepared_by_query(
+        cls,
+        prepared: list[_PreparedHit],
+        batch: list[str],
+    ) -> list[_PreparedHit]:
+        """Prefer one ranked destination per input query before taking second results."""
+
+        if len(batch) <= 1 or len(prepared) <= 1:
+            return prepared
+        selected: list[_PreparedHit] = []
+        selected_urls: set[str] = set()
+        for query in batch:
+            query_key = cls._query_key(query)
+            for candidate in prepared:
+                if candidate.canonical_url in selected_urls:
+                    continue
+                if cls._query_key(candidate.hit.query) != query_key:
+                    continue
+                selected.append(candidate)
+                selected_urls.add(candidate.canonical_url)
+                break
+        selected.extend(
+            candidate
+            for candidate in prepared
+            if candidate.canonical_url not in selected_urls
+        )
+        return selected
 
     async def _prepare_hits(
         self,
