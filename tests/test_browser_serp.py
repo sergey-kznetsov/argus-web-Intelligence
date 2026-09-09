@@ -1,11 +1,13 @@
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
+import httpx
 import pytest
 
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest
 from argus.research.browser_serp import (
+    BingRssDiscoveryProvider,
     DuckDuckGoFastDiscoveryProvider,
     MojeekFastDiscoveryProvider,
 )
@@ -116,3 +118,77 @@ async def test_mojeek_serp_reports_search_wall_as_blocked():
 
     with pytest.raises(DiscoveryBlockedError):
         await provider.discover(["Ижевск форум"], request())
+
+
+@pytest.mark.asyncio
+async def test_bing_rss_extracts_external_destinations_and_unquotes_query():
+    rss = b"""<?xml version="1.0" encoding="utf-8"?>
+    <rss version="2.0"><channel>
+      <item><title>Forum topic</title><link>https://forum.example/topic</link>
+        <description>Navigation snippet must not become evidence.</description></item>
+      <item><title>City news</title><link>https://city.example/news</link></item>
+      <item><title>Bing internal</title><link>https://www.bing.com/help</link></item>
+      <item><title>Duplicate</title><link>https://forum.example/topic</link></item>
+    </channel></rss>"""
+    seen_requests: list[httpx.Request] = []
+
+    def handler(request_value: httpx.Request) -> httpx.Response:
+        seen_requests.append(request_value)
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/rss+xml"},
+            content=rss,
+        )
+
+    provider = BingRssDiscoveryProvider(
+        Settings(browser_serp_max_results_per_query=5),
+        transport=httpx.MockTransport(handler),
+    )
+    hits = await provider.discover(
+        ['site:forum.example "Ижевск" "Пушкинская улица"'],
+        request(),
+    )
+
+    assert [hit.url for hit in hits] == [
+        "https://forum.example/topic",
+        "https://city.example/news",
+    ]
+    assert [hit.title for hit in hits] == ["Forum topic", "City news"]
+    assert all(hit.provider == "bing_rss" for hit in hits)
+    assert all(hit.engines == ["bing"] for hit in hits)
+    query = parse_qs(seen_requests[0].url.query.decode())
+    assert query["q"] == ["site:forum.example Ижевск Пушкинская улица"]
+    assert query["format"] == ["rss"]
+    assert hits[0].query == "site:forum.example Ижевск Пушкинская улица"
+
+
+@pytest.mark.asyncio
+async def test_bing_rss_reports_access_denial_as_blocked():
+    def handler(request_value: httpx.Request) -> httpx.Response:
+        del request_value
+        return httpx.Response(429, text="rate limited")
+
+    provider = BingRssDiscoveryProvider(
+        Settings(),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(DiscoveryBlockedError):
+        await provider.discover(["Ижевск новости"], request())
+
+
+@pytest.mark.asyncio
+async def test_bing_rss_enforces_response_size_limit():
+    oversized = b"x" * 2049
+
+    def handler(request_value: httpx.Request) -> httpx.Response:
+        del request_value
+        return httpx.Response(200, content=oversized)
+
+    provider = BingRssDiscoveryProvider(
+        Settings(max_response_bytes=2048),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(ValueError, match="exceeds configured limit"):
+        await provider.discover(["Ижевск новости"], request())
