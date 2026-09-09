@@ -26,7 +26,7 @@ class MandatoryCoverageToolPackOrchestrator(
     Other tool packs keep the normal collection-budget semantics unchanged.
     """
 
-    mandatory_coverage_version = "mandatory-coverage/2"
+    mandatory_coverage_version = "mandatory-coverage/3"
     emergency_max_pages = 500
     emergency_max_duration_seconds = 7_200.0
     post_mandatory_optional_pages = 24
@@ -68,6 +68,194 @@ class MandatoryCoverageToolPackOrchestrator(
             list(record.checkpoint.get("discovery_providers", [])),
             bool(record.checkpoint.get("discovery_blocked", False)),
         )
+
+    async def _run_serial_public_maps(self, record, pending):
+        """Traverse every radius street through each mandatory public-map provider."""
+
+        pack = resolved_tool_pack_from_request(record.request)
+        if pack is None or pack.planner_policy != "urban_signals":
+            return await super()._run_serial_public_maps(record, pending)
+
+        planner = self.public_map_source_planner
+        if (
+            planner is None
+            or record.checkpoint.get("serial_public_map_complete") is True
+        ):
+            return pending
+
+        requested = [
+            intent
+            for intent in record.request.intents
+            if intent in planner.supported_intents
+        ]
+        if not requested:
+            record.checkpoint = {
+                **record.checkpoint,
+                "serial_public_map_complete": True,
+                "serial_public_map_version": self.serial_public_map_lane_version,
+            }
+            await self.repository.update_collection(record)
+            return pending
+
+        providers = [profile.source_id for profile in planner.sources]
+        states_raw = record.checkpoint.get("serial_public_map_lanes")
+        states = dict(states_raw) if isinstance(states_raw, dict) else {}
+        serial_state = self._serial_state(record, order=providers, kind="public_map")
+        committed = await self.repository.list_observations(record.collection_id)
+        street_anchors = planner.mandatory_street_anchors(record.request, committed)
+        expected_anchors = len(street_anchors)
+
+        for index, provider in enumerate(providers):
+            state_raw = states.get(provider)
+            state = dict(state_raw) if isinstance(state_raw, dict) else {}
+            if state.get("processing_complete") is True:
+                continue
+
+            lane_id = f"public_map:{provider}"
+            lane_tasks, pending = self._take_lane_tasks(pending, lane_id)
+
+            if state.get("attempted") is not True:
+                lane_tasks = planner.mandatory_navigation_tasks(
+                    record.request,
+                    provider_id=provider,
+                    observations=committed,
+                )
+                for task in lane_tasks:
+                    task.metadata["public_map_provider"] = provider
+                    self._tag_serial_lane(
+                        task,
+                        lane_id=lane_id,
+                        lane_kind="public_map",
+                        lane_label=provider,
+                    )
+
+                attempted_anchors = len(lane_tasks)
+                state = {
+                    "attempted": True,
+                    "processing_complete": False,
+                    "status": "discovered" if lane_tasks else "no_results",
+                    "providers_attempted": ["direct_browser"] if lane_tasks else [],
+                    "destinations_selected": attempted_anchors,
+                    "error_codes": [],
+                    "stop_reason": (
+                        "direct_public_street_navigation"
+                        if lane_tasks
+                        else "no_direct_task"
+                    ),
+                    "street_anchors_expected": expected_anchors,
+                    "street_anchors_attempted": attempted_anchors,
+                    "street_anchors_processed": 0,
+                    "street_scope_complete": (
+                        attempted_anchors >= expected_anchors
+                        if expected_anchors
+                        else True
+                    ),
+                    "street_anchors": [
+                        str(task.metadata.get("public_map_anchor") or "")
+                        for task in lane_tasks
+                    ],
+                }
+                states[provider] = state
+                serial_state["active_lane"] = lane_id
+                record.checkpoint = {
+                    **record.checkpoint,
+                    "serial_public_map_version": self.serial_public_map_lane_version,
+                    "serial_public_map_lanes": states,
+                    "serial_public_map_state": serial_state,
+                    "pending_tasks": [
+                        self._task_dict(item) for item in [*lane_tasks, *pending]
+                    ],
+                }
+                record.stage = f"discovery:public_map:{provider}"
+                record.updated_at = now()
+                await self.repository.update_collection(record)
+
+            if lane_tasks:
+                base_page_limit = 4 if provider == "2gis_web" else 3
+                page_limit = max(base_page_limit, len(lane_tasks) * 2)
+                latest, stats = await self._process_serial_lane(
+                    record,
+                    lane_tasks,
+                    pending,
+                    lane_id=lane_id,
+                    lane_kind="public_map",
+                    lane_label=provider,
+                    page_limit=page_limit,
+                    future_lane_count=len(providers) - index - 1,
+                )
+                self._adopt_record(record, latest)
+                state = dict(states.get(provider, state))
+                state.update(stats)
+                processed = min(
+                    int(state.get("street_anchors_expected", 0) or 0),
+                    int(stats.get("processed_pages", 0) or 0),
+                )
+                state["street_anchors_processed"] = processed
+                state["street_scope_complete"] = (
+                    processed >= int(state.get("street_anchors_expected", 0) or 0)
+                )
+                if (
+                    stats.get("errors_added", 0)
+                    or stats.get("blocked_pages", 0)
+                    or not state["street_scope_complete"]
+                ):
+                    state["status"] = "completed_with_warnings"
+                else:
+                    state["status"] = "completed"
+
+            state["processing_complete"] = True
+            if expected_anchors and not state.get("street_scope_complete", False):
+                state["status"] = "completed_with_warnings"
+            states[provider] = state
+            serial_state = self._serial_state(record, order=providers, kind="public_map")
+            serial_state["active_lane"] = None
+            completed = list(serial_state.get("completed_lanes", []))
+            if lane_id not in completed:
+                completed.append(lane_id)
+            serial_state["completed_lanes"] = completed
+            serial_state["last_completed_lane"] = lane_id
+
+            record.checkpoint = {
+                **record.checkpoint,
+                "serial_public_map_lanes": states,
+                "serial_public_map_state": serial_state,
+                "pending_tasks": [self._task_dict(item) for item in pending],
+            }
+            record.stage = f"serial_complete:{lane_id}"
+            record.updated_at = now()
+            await self.repository.update_collection(record)
+
+            if self._execution_budget_exhausted(record):
+                break
+
+        all_complete = bool(providers) and all(
+            isinstance(states.get(provider), dict)
+            and states[provider].get("processing_complete") is True
+            for provider in providers
+        )
+        record.checkpoint = {
+            **record.checkpoint,
+            "serial_public_map_version": self.serial_public_map_lane_version,
+            "serial_public_map_lanes": states,
+            "serial_public_map_state": serial_state,
+            "serial_public_map_complete": all_complete,
+            "public_map_direct_navigation_complete": all_complete,
+            "public_map_direct_navigation_providers": providers,
+            "public_map_direct_navigation_version": getattr(
+                planner,
+                "direct_navigation_version",
+                None,
+            ),
+            "public_map_street_scope": {
+                "street_anchors": street_anchors,
+                "street_anchors_expected": expected_anchors,
+                "providers_expected": providers,
+            },
+            "pending_tasks": [self._task_dict(item) for item in pending],
+        }
+        record.updated_at = now()
+        await self.repository.update_collection(record)
+        return pending
 
     async def _apply_urban_signal_execution_guard(self, record) -> bool:
         pack = resolved_tool_pack_from_request(record.request)
