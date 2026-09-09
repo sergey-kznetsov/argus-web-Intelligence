@@ -28,6 +28,54 @@ def test_extracts_source_declared_article_without_navigation_shell():
     assert "Поделиться Подписаться" not in item.text
 
 
+def test_repeated_linked_article_cards_are_navigation_not_atomic_publications():
+    html = """
+    <html><body>
+      <article>
+        <h2><a href="/news/101-water-break">Авария на Пушкинской улице</a></h2>
+        <p>Краткая карточка сообщает об аварии на водопроводе и временном ограничении.</p>
+        <p>Полный материал содержит подробности, сроки и комментарий коммунальной службы.</p>
+      </article>
+      <article>
+        <h2><a href="/news/102-road-repair">Ремонт дороги в центре</a></h2>
+        <p>Краткая карточка сообщает о начале дорожных работ и изменении схемы движения.</p>
+        <p>Полный материал содержит адреса участков, сроки и официальные комментарии.</p>
+      </article>
+    </body></html>
+    """
+
+    result = extract_atomic_html_blocks(
+        html,
+        content_type="text/html",
+        base_url="https://example.org/news/",
+    )
+
+    assert result.items == ()
+    assert result.truncated is False
+
+
+def test_single_destination_article_remains_atomic_even_with_linked_heading():
+    html = """
+    <html><body>
+      <article>
+        <h1><a href="/news/101-water-break">Авария на Пушкинской улице</a></h1>
+        <time datetime="2026-09-09T08:00:00+04:00">9 сентября</time>
+        <p>На Пушкинской улице произошла авария на водопроводной сети рядом с домами.</p>
+        <p>Коммунальная служба сообщает о ремонтной бригаде и плановом восстановлении подачи.</p>
+      </article>
+    </body></html>
+    """
+
+    result = extract_atomic_html_blocks(
+        html,
+        content_type="text/html",
+        base_url="https://example.org/news/101-water-break",
+    )
+
+    assert len(result.items) == 1
+    assert result.items[0].title == "Авария на Пушкинской улице"
+
+
 def test_generic_css_card_is_not_promoted_to_atomic_observation():
     html = """
     <html><body>
