@@ -16,6 +16,7 @@ from argus.observability import OperationalMetrics
 from argus.orchestrator.mandatory_coverage import MandatoryCoverageToolPackOrchestrator
 from argus.recipes.service import RecipeManager
 from argus.research.browser_serp import (
+    BingRssDiscoveryProvider,
     DuckDuckGoFastDiscoveryProvider,
     MojeekFastDiscoveryProvider,
 )
@@ -68,7 +69,7 @@ def configured_discovery_provider_names(settings: Settings) -> list[str]:
     if settings.searxng_url:
         names.append("searxng")
     if settings.browser_serp_enabled:
-        names.extend(("duckduckgo_fast", "mojeek_fast"))
+        names.extend(("duckduckgo_fast", "mojeek_fast", "bing_rss"))
     return names
 
 
@@ -93,6 +94,7 @@ def build_discovery(
             (
                 DuckDuckGoFastDiscoveryProvider(settings, fast),
                 MojeekFastDiscoveryProvider(settings, fast),
+                BingRssDiscoveryProvider(settings),
             )
         )
     if not providers:
@@ -358,33 +360,35 @@ def build_services(settings: Settings) -> ServiceContainer:
     followup_planner = _build_followup_planner(coverage)
     supervisor = HeuristicResearchSupervisor(
         target_sources_per_intent=2,
-        coverage=coverage,
+        max_rounds=3,
+    )
+    area_entity_planner = RadiusAwareAreaEntityResearchPlanner(
+        AreaEntityResearchPlanner()
+    )
+    historical_branch_planner = HistoricalBranchPlanner(
+        max_queries=settings.discovery_max_queries,
     )
     orchestrator = MandatoryCoverageToolPackOrchestrator(
         repository=repository,
         registry=registry,
         planner=planner,
-        max_concurrency=settings.max_concurrency,
         discovery=discovery,
-        historical_branch_planner=HistoricalBranchPlanner(),
-        historical_source_planner=historical_source_planner,
-        area_entity_planner=RadiusAwareAreaEntityResearchPlanner(AreaEntityResearchPlanner()),
+        coverage=coverage,
         followup_planner=followup_planner,
-        research_supervisor=supervisor,
-        entity_hypothesis_extractor=None,
-        intent_coverage=coverage,
+        supervisor=supervisor,
+        area_entity_planner=area_entity_planner,
+        historical_branch_planner=historical_branch_planner,
+        historical_source_planner=historical_source_planner,
+        source_task_timeout_seconds=min(settings.browser_timeout_seconds, 45.0),
         max_followup_rounds=3,
-        auto_execute=settings.execution_role == "embedded",
-        metrics=metrics,
     )
     return ServiceContainer(
+        settings=settings,
         repository=repository,
-        registry=registry,
-        map_registry=map_registry,
         orchestrator=orchestrator,
+        registry=registry,
         fast=fast,
         browser=browser,
+        recipes=recipes,
         metrics=metrics,
-        llm_health=None,
-        llm_required_on_start=False,
     )
