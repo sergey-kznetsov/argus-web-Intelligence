@@ -92,18 +92,22 @@ def nearby_radius_street_names(
     request: CollectionRequest,
     observations: Iterable[Observation],
     *,
-    limit: int = 8,
+    limit: int | None = 8,
 ) -> list[str]:
     """Return named OSM streets admitted by the request's spatial inventory.
 
     The Overpass around query is the inclusion boundary. A returned way can intersect
     the circle while its representative centre lies outside it, so coordinates are used
     only to order streets by proximity and never to reject an admitted way.
+
+    ``limit=None`` is the completeness mode used by mandatory urban research. It preserves
+    every distinct named street returned by the bounded radius inventory instead of silently
+    truncating the territory to the historical eight-street convenience limit.
     """
 
     territory = request.territory
     if (
-        limit <= 0
+        (limit is not None and limit <= 0)
         or territory.point is None
         or territory.radius_meters is None
     ):
@@ -139,7 +143,8 @@ def nearby_radius_street_names(
         candidates.append((distance, key, name))
 
     candidates.sort(key=lambda item: (item[0], item[1]))
-    return [name for _, _, name in candidates[:limit]]
+    names = [name for _, _, name in candidates]
+    return names if limit is None else names[:limit]
 
 
 def radius_scope_text(
