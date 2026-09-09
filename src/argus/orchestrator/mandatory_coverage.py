@@ -4,6 +4,7 @@ from argus.orchestrator.service import now
 from argus.orchestrator.toolpack_aware import (
     ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator,
 )
+from argus.research.lane_coverage import build_research_lane_coverage
 from argus.toolpacks import resolved_tool_pack_from_request
 
 
@@ -151,6 +152,14 @@ class MandatoryCoverageToolPackOrchestrator(
         if guard.get("mandatory_complete") is True:
             return False
 
+        observations = await self.repository.list_observations(record.collection_id)
+        evidence = await self.repository.list_evidence(record.collection_id)
+        research_lane_coverage = build_research_lane_coverage(
+            record,
+            observations,
+            evidence,
+        )
+
         visited = record.checkpoint.get("visited", [])
         visited_count = len(visited) if isinstance(visited, list) else 0
         total_page_ceiling = min(
@@ -168,6 +177,7 @@ class MandatoryCoverageToolPackOrchestrator(
         record.checkpoint = {
             **record.checkpoint,
             "execution_budget_started_at": optional_started_at.isoformat(),
+            "research_lane_coverage": research_lane_coverage,
             "mandatory_coverage": {
                 **guard,
                 "version": self.mandatory_coverage_version,
