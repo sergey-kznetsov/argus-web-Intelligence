@@ -8,7 +8,7 @@ from argus.contracts.models import CollectionRecord, Evidence, Observation
 from argus.research.public_map_sources import PUBLIC_MAP_SOURCES
 from argus.research.source_contours import URBAN_SIGNAL_SOURCE_CONTOURS
 
-RESEARCH_LANE_COVERAGE_VERSION = "research-lane-coverage/1"
+RESEARCH_LANE_COVERAGE_VERSION = "research-lane-coverage/2"
 SOURCE_CONTOUR_IDS = tuple(profile.contour_id for profile in URBAN_SIGNAL_SOURCE_CONTOURS)
 PUBLIC_MAP_IDS = tuple(profile.source_id for profile in PUBLIC_MAP_SOURCES)
 
@@ -75,6 +75,7 @@ def _normalized_status(
     errors = errors_added + len(error_codes)
     warnings = blocked_pages + truncated_tasks
     fetched = _count(state.get("processed_pages"))
+    street_scope_incomplete = state.get("street_scope_complete") is False
 
     if blocked and observations == 0 and evidence == 0:
         return "blocked"
@@ -82,6 +83,8 @@ def _normalized_status(
         return "failed"
     if errors and observations == 0 and evidence == 0 and fetched == 0:
         return "failed"
+    if street_scope_incomplete:
+        return "partial"
     if observations == 0 and evidence == 0:
         if errors or warnings:
             return "partial"
@@ -89,6 +92,20 @@ def _normalized_status(
     if errors or warnings or raw_status in {"completed_with_warnings", "partial", "degraded"}:
         return "partial"
     return "completed"
+
+
+def _street_scope(state: Mapping[str, Any]) -> dict[str, object]:
+    expected = _count(state.get("street_anchors_expected"))
+    attempted = _count(state.get("street_anchors_attempted"))
+    processed = _count(state.get("street_anchors_processed"))
+    complete_raw = state.get("street_scope_complete")
+    complete = complete_raw if isinstance(complete_raw, bool) else None
+    return {
+        "expected": expected,
+        "attempted": attempted,
+        "processed": processed,
+        "complete": complete,
+    }
 
 
 def _row(
@@ -126,7 +143,37 @@ def _row(
         "error_codes": error_codes,
         "stop_reason": str(state.get("stop_reason") or "").strip() or None,
         "processing_complete": state.get("processing_complete") is True,
+        "street_scope": _street_scope(state),
     }
+
+
+def _source_state_with_street_scope(
+    state: Mapping[str, Any],
+    *,
+    street_count: int,
+) -> dict[str, Any]:
+    normalized = dict(state)
+    if street_count <= 0:
+        return normalized
+    normalized.setdefault("street_anchors_expected", street_count)
+    raw_status = str(normalized.get("status") or "").strip().casefold()
+    processing_complete = normalized.get("processing_complete") is True
+    blocked = normalized.get("blocked") is True
+    scope_complete = (
+        processing_complete
+        and not blocked
+        and raw_status not in {"blocked", "degraded", "error", "failed"}
+    )
+    normalized.setdefault(
+        "street_anchors_attempted",
+        street_count if scope_complete else 0,
+    )
+    normalized.setdefault(
+        "street_anchors_processed",
+        street_count if scope_complete else 0,
+    )
+    normalized.setdefault("street_scope_complete", scope_complete)
+    return normalized
 
 
 def build_research_lane_coverage(
@@ -160,6 +207,10 @@ def build_research_lane_coverage(
             "status_counts": {},
         }
 
+    street_inventory = _mapping(checkpoint.get("radius_street_inventory"))
+    street_names = _strings(street_inventory.get("street_names"))
+    street_count = len(street_names)
+
     observation_contours: Counter[str] = Counter()
     observation_maps: Counter[str] = Counter()
     evidence_contours: Counter[str] = Counter()
@@ -181,7 +232,11 @@ def build_research_lane_coverage(
 
     rows: list[dict[str, object]] = []
     for contour_id in SOURCE_CONTOUR_IDS:
-        state = _mapping(source_states.get(contour_id))
+        raw_state = _mapping(source_states.get(contour_id))
+        state = _source_state_with_street_scope(
+            raw_state,
+            street_count=street_count,
+        )
         rows.append(
             _row(
                 lane_id=contour_id,
@@ -220,6 +275,12 @@ def build_research_lane_coverage(
         "reported_lanes": len(rows),
         "complete": complete,
         "strict_order": [*SOURCE_CONTOUR_IDS, *PUBLIC_MAP_IDS],
+        "territory_scope": {
+            "street_inventory_status": str(street_inventory.get("status") or "").strip()
+            or None,
+            "street_count": street_count,
+            "street_names": street_names,
+        },
         "counter_semantics": {
             "queries": "discovery queries issued for the lane; direct map navigation uses zero",
             "discovered": "destinations selected for the lane",
@@ -228,6 +289,9 @@ def build_research_lane_coverage(
             "evidence": "stored evidence carrying this lane provenance",
             "warnings": "blocked pages plus truncated queued tasks",
             "errors": "runtime lane errors plus non-empty discovery error codes",
+            "street_scope": (
+                "named radius streets expected, attempted and processed by the mandatory lane"
+            ),
         },
         "coverage": rows,
         "status_counts": dict(sorted(status_counts.items())),
