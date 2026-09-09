@@ -27,6 +27,7 @@ PUBLIC_MAP_ORDER = [
     "2gis_web",
     "google_maps_web",
 ]
+EXPECTED_LANE_ORDER = [*SOURCE_CONTOUR_ORDER, *PUBLIC_MAP_ORDER]
 
 
 class FakeRepository:
@@ -206,11 +207,9 @@ async def test_requested_max_pages_cannot_skip_mandatory_7_plus_3() -> None:
     telemetry = record.checkpoint["research_lane_coverage"]
     assert telemetry["expected_lanes"] == 10
     assert telemetry["reported_lanes"] == 10
-    assert telemetry["strict_order"] is True
-    assert [row["lane_id"] for row in telemetry["rows"]] == [
-        *SOURCE_CONTOUR_ORDER,
-        *PUBLIC_MAP_ORDER,
-    ]
+    assert telemetry["complete"] is True
+    assert telemetry["strict_order"] == EXPECTED_LANE_ORDER
+    assert [row["lane_id"] for row in telemetry["coverage"]] == EXPECTED_LANE_ORDER
 
 
 @pytest.mark.asyncio
