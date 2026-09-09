@@ -305,7 +305,8 @@ class DiscoveryService:
         elif not outcome.tasks and outcome.stop_reason is None:
             outcome.stop_reason = "providers_exhausted"
         elif (
-            outcome.tasks
+            multi_batch
+            and outcome.tasks
             and outcome.queries_attempted == outcome.queries_requested
             and len(outcome.tasks) < task_budget
         ):
