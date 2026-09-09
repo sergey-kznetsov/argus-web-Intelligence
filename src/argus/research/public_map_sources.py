@@ -48,11 +48,13 @@ class PublicMapSourceResearchPlanner:
 
     Search-engine discovery remains useful, but interactive map surfaces are not indexed
     uniformly. 2GIS and Google Maps therefore also receive bounded direct public browser
-    search tasks. Those tasks only navigate to public pages; factual coverage is granted
-    solely from content that ARGUS actually fetches and stores as Evidence/Provenance.
+    search tasks. Mandatory urban coverage can additionally navigate all three public map
+    providers once for every named street admitted by the radius inventory. Those tasks only
+    navigate to public pages; factual coverage is granted solely from content that ARGUS
+    actually fetches and stores as Evidence/Provenance.
     """
 
-    version = "public-map-sources/7"
+    version = "public-map-sources/8"
     supported_intents = frozenset(
         {
             "reviews",
@@ -61,7 +63,7 @@ class PublicMapSourceResearchPlanner:
             "discussions",
         }
     )
-    direct_navigation_version = "public-map-direct-navigation/2"
+    direct_navigation_version = "public-map-direct-navigation/3"
 
     def __init__(
         self,
@@ -108,25 +110,101 @@ class PublicMapSourceResearchPlanner:
             if url is None:
                 continue
             tasks.append(
-                SourceTask(
-                    source_id="generic_web",
+                self._navigation_task(
+                    request,
+                    profile=profile,
+                    anchor=anchor,
                     goal=goal,
+                    navigation_goals=navigation_goals,
                     url=url,
-                    depth=0,
-                    task_key=f"public_map_direct:{profile.source_id}:{anchor.casefold()}",
-                    metadata={
-                        "public_map_direct_navigation": True,
-                        "public_map_direct_navigation_version": self.direct_navigation_version,
-                        "public_map_provider": profile.source_id,
-                        "public_map_anchor": anchor,
-                        "research_goals": list(dict.fromkeys(navigation_goals)),
-                        "allowed_domains": list(request.constraints.allowed_domains),
-                    },
+                    mandatory_street_scope=False,
                 )
             )
             if len(tasks) >= limit:
                 break
         return tasks
+
+    def mandatory_navigation_tasks(
+        self,
+        request: CollectionRequest,
+        *,
+        provider_id: str,
+        observations: list[Observation] | None = None,
+    ) -> list[SourceTask]:
+        """Return one public map navigation task per radius street for one provider.
+
+        This method is intentionally separate from the normal bounded direct-navigation
+        helper. Mandatory 7+3 execution needs complete territorial traversal, while generic
+        research should keep its historical small fan-out.
+        """
+
+        navigation_goals = [
+            intent for intent in request.intents if intent in self.supported_intents
+        ]
+        if not navigation_goals:
+            return []
+        profile = next(
+            (item for item in self.sources if item.source_id == provider_id),
+            None,
+        )
+        if profile is None:
+            return []
+        anchors = self.mandatory_street_anchors(request, observations or [])
+        if not anchors:
+            return []
+        factual_goals = self._requested_intents(request)
+        goal = (factual_goals or navigation_goals)[0]
+        tasks: list[SourceTask] = []
+        for anchor in anchors:
+            url = self._mandatory_direct_search_url(profile, anchor)
+            if url is None:
+                continue
+            tasks.append(
+                self._navigation_task(
+                    request,
+                    profile=profile,
+                    anchor=anchor,
+                    goal=goal,
+                    navigation_goals=navigation_goals,
+                    url=url,
+                    mandatory_street_scope=True,
+                )
+            )
+        return tasks
+
+    def mandatory_street_anchors(
+        self,
+        request: CollectionRequest,
+        observations: list[Observation],
+    ) -> list[str]:
+        """Return the complete named street scope used by mandatory public-map lanes."""
+
+        city = (request.territory.city or "").strip()
+        street_names: list[str] = []
+        trusted_street = radius_street_text(request)
+        if trusted_street:
+            street_names.append(trusted_street)
+        street_names.extend(
+            nearby_radius_street_names(request, observations, limit=None)
+        )
+
+        result: list[str] = []
+        seen: set[str] = set()
+        for street_name in street_names:
+            clean = self._clean_anchor(street_name)
+            if clean is None:
+                continue
+            anchor = f"{city}, {clean}" if city else clean
+            key = anchor.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(anchor)
+
+        if result:
+            return result
+        territory = radius_scope_text(request) if self._is_urban_signals(request) else self._territory_text(request)
+        return [territory] if territory else []
 
     def queries(
         self,
@@ -208,6 +286,7 @@ class PublicMapSourceResearchPlanner:
                 "access": "public_web_browser",
                 "paid_api": False,
                 "direct_navigation": item.direct_search_mode is not None,
+                "mandatory_street_navigation": True,
             }
             for item in self.sources
         ]
@@ -277,6 +356,34 @@ class PublicMapSourceResearchPlanner:
                 break
         return values
 
+    def _navigation_task(
+        self,
+        request: CollectionRequest,
+        *,
+        profile: PublicMapSourceProfile,
+        anchor: str,
+        goal: str,
+        navigation_goals: list[str],
+        url: str,
+        mandatory_street_scope: bool,
+    ) -> SourceTask:
+        return SourceTask(
+            source_id="generic_web",
+            goal=goal,
+            url=url,
+            depth=0,
+            task_key=f"public_map_direct:{profile.source_id}:{anchor.casefold()}",
+            metadata={
+                "public_map_direct_navigation": True,
+                "public_map_direct_navigation_version": self.direct_navigation_version,
+                "public_map_provider": profile.source_id,
+                "public_map_anchor": anchor,
+                "public_map_mandatory_street_scope": mandatory_street_scope,
+                "research_goals": list(dict.fromkeys(navigation_goals)),
+                "allowed_domains": list(request.constraints.allowed_domains),
+            },
+        )
+
     @staticmethod
     def _suffix(
         intents: list[str],
@@ -322,6 +429,15 @@ class PublicMapSourceResearchPlanner:
         if profile.direct_search_mode == "google_maps_url":
             return f"https://www.google.com/maps/search/?api=1&query={quote_plus(anchor)}"
         return None
+
+    @staticmethod
+    def _mandatory_direct_search_url(
+        profile: PublicMapSourceProfile,
+        anchor: str,
+    ) -> str | None:
+        if profile.source_id == "yandex_maps_web":
+            return f"https://yandex.ru/maps/?text={quote_plus(anchor)}"
+        return PublicMapSourceResearchPlanner._direct_search_url(profile, anchor)
 
     def _clean_anchor(self, value: str) -> str | None:
         clean = " ".join(value.replace('"', " ").replace("\\", " ").split()).strip()
