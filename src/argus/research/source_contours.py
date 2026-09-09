@@ -249,7 +249,7 @@ class SourceContourResearchPlanner:
                     queries=queries,
                     max_destinations=max(
                         profile.max_destinations,
-                        len(nearby_streets),
+                        len(queries),
                     ),
                     description=profile.description,
                     denied_domain_roots=profile.denied_domain_roots,
