@@ -44,7 +44,7 @@ from argus.research.task_context import ResearchInputPlanner
 from argus.security.runtime_posture import enforce_runtime_security
 from argus.security.urls import UrlGuard
 from argus.services import ServiceContainer
-from argus.sources.intent_evidence_web import IntentEvidenceWebAdapter
+from argus.sources.atomic_content_web import AtomicContentWebAdapter
 from argus.sources.json_feed import JSONFeedAdapter
 from argus.sources.mingkh_residential import MingkhResidentialAdapter
 from argus.sources.overpass_map import OverpassSourceAdapter
@@ -294,7 +294,7 @@ def build_services(settings: Settings) -> ServiceContainer:
     coverage = IntentCoverageEvaluator()
 
     registry = SourceRegistry(metrics=metrics)
-    generic_web = IntentEvidenceWebAdapter(
+    generic_web = AtomicContentWebAdapter(
         repository=repository,
         fast=fast,
         browser=browser,
