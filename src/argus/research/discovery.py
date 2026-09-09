@@ -55,6 +55,10 @@ class DiscoveryOutcome:
     archive_companions_skipped_budget: int = 0
     task_budget: int = 0
     stop_reason: str | None = None
+    queries_requested: int = 0
+    queries_attempted: int = 0
+    query_batches: int = 0
+    query_batches_attempted: int = 0
 
 
 @dataclass(slots=True)
@@ -71,12 +75,14 @@ class DiscoveryService:
     """Turn research queries into bounded, ranked factual-source crawl tasks.
 
     Discovery hits are navigation only, never Evidence. Providers remain ordered
-    fallbacks: ARGUS uses the first provider that yields valid destinations and does
-    not generate extra search traffic once factual crawl candidates exist.
+    fallbacks for each bounded query batch: ARGUS uses the first provider that yields valid
+    destinations for that batch. ``max_queries`` limits one provider request, not the whole
+    research plan, so mandatory callers can submit a complete territorial query set without
+    silently losing everything after the historical first eight queries.
     """
 
     ranking_version = "discovery-ranking/1"
-    telemetry_version = "discovery-telemetry/2"
+    telemetry_version = "discovery-telemetry/3"
     stop_policy = "first_provider_with_valid_destinations"
 
     def __init__(
@@ -88,7 +94,7 @@ class DiscoveryService:
     ) -> None:
         self.providers = providers
         self.url_guard = url_guard
-        self.max_queries = max_queries
+        self.max_queries = max(1, int(max_queries))
         self.historical_archive_source_id = historical_archive_source_id
 
     async def discover(
@@ -97,10 +103,19 @@ class DiscoveryService:
         request: CollectionRequest,
     ) -> DiscoveryOutcome:
         outcome = DiscoveryOutcome()
-        selected_queries = [query for query in queries if query.strip()][: self.max_queries]
+        selected_queries = list(
+            dict.fromkeys(query.strip() for query in queries if query.strip())
+        )
+        outcome.queries_requested = len(selected_queries)
         if not selected_queries:
             outcome.stop_reason = "no_queries"
             return outcome
+
+        query_batches = [
+            selected_queries[index : index + self.max_queries]
+            for index in range(0, len(selected_queries), self.max_queries)
+        ]
+        outcome.query_batches = len(query_batches)
 
         allowed_order = self._normalized_domains(request.constraints.allowed_domains)
         allowed = set(allowed_order)
@@ -109,120 +124,146 @@ class DiscoveryService:
         seen: set[str] = set()
         task_budget = max(1, int(request.constraints.max_pages))
         outcome.task_budget = task_budget
+        blocked_providers: set[str] = set()
+        any_provider_attempted = False
 
-        for provider in self.providers:
-            outcome.providers_attempted.append(provider.name)
-            try:
-                hits = await provider.discover(selected_queries, request)
-            except DiscoveryBlockedError as exc:
-                outcome.blocked = True
-                outcome.errors.append(
-                    StructuredError(
-                        code="DISCOVERY_BLOCKED",
-                        message=safe_error_message(exc, max_length=300),
-                        retryable=True,
-                        source_id=f"discovery:{provider.name}",
-                    )
-                )
-                continue
-            except Exception as exc:
-                outcome.errors.append(
-                    StructuredError(
-                        code="DISCOVERY_ERROR",
-                        message=safe_error_message(exc, max_length=300),
-                        retryable=True,
-                        source_id=f"discovery:{provider.name}",
-                    )
-                )
-                continue
+        for batch in query_batches:
+            batch_counted = False
+            batch_had_valid_destinations = False
 
-            outcome.candidates_seen += len(hits)
-            prepared = await self._prepare_hits(
-                hits,
-                allowed=allowed,
-                denied=denied,
-                allowed_order=allowed_order,
-                locality_tokens=locality_tokens,
-                seen=seen,
-            )
-            outcome.valid_destinations += len(prepared)
-            prepared.sort(key=self._ranking_key)
+            for provider in self.providers:
+                if provider.name in blocked_providers:
+                    continue
+                if provider.name not in outcome.providers_attempted:
+                    outcome.providers_attempted.append(provider.name)
+                any_provider_attempted = True
+                if not batch_counted:
+                    outcome.queries_attempted += len(batch)
+                    outcome.query_batches_attempted += 1
+                    batch_counted = True
 
-            destinations_added = 0
-            for index, candidate in enumerate(prepared):
-                if len(outcome.tasks) >= task_budget:
-                    outcome.destinations_skipped_budget += len(prepared) - index
-                    outcome.stop_reason = "task_budget_reached"
-                    break
-                hit = candidate.hit
-                canonical_url = candidate.canonical_url
-                seen.add(canonical_url)
-                ranking_components = {
-                    "domain_priority": candidate.domain_priority,
-                    "provider_rank": hit.rank,
-                    "locality_matches": candidate.locality_matches,
-                    "https": candidate.https,
-                }
-                common_metadata = {
-                    "discovery_provider": hit.provider,
-                    "discovery_engines": hit.engines,
-                    "discovery_rank": hit.rank,
-                    "discovery_query": hit.query,
-                    "discovery_original_url": hit.url,
-                    "discovery_canonical_url": canonical_url,
-                    "discovery_domain_priority": candidate.domain_priority,
-                    "discovery_locality_matches": candidate.locality_matches,
-                    "discovery_https": candidate.https,
-                    "discovery_navigation_score": candidate.navigation_score,
-                    "discovery_ranking_components": ranking_components,
-                    "discovery_ranking_version": self.ranking_version,
-                    "discovery_telemetry_version": self.telemetry_version,
-                    "discovery_stop_policy": self.stop_policy,
-                    "discovery_task_budget": task_budget,
-                    "allowed_domains": list(request.constraints.allowed_domains),
-                    "research_goals": list(request.intents),
-                }
-                outcome.tasks.append(
-                    SourceTask(
-                        source_id="generic_web",
-                        goal=request.intents[0],
-                        url=canonical_url,
-                        depth=0,
-                        metadata=dict(common_metadata),
-                    )
-                )
-                destinations_added += 1
-                outcome.destinations_selected += 1
-
-                archive_requested = bool(
-                    self.historical_archive_source_id
-                    and "historical_context" in request.intents
-                )
-                if archive_requested:
-                    if len(outcome.tasks) < task_budget:
-                        outcome.tasks.append(
-                            SourceTask(
-                                source_id=str(self.historical_archive_source_id),
-                                goal="historical_context",
-                                url=canonical_url,
-                                depth=0,
-                                task_key=f"{self.historical_archive_source_id}:{canonical_url}",
-                                metadata={
-                                    **common_metadata,
-                                    "archive_target_url": canonical_url,
-                                },
-                            )
+                try:
+                    hits = await provider.discover(batch, request)
+                except DiscoveryBlockedError as exc:
+                    outcome.blocked = True
+                    blocked_providers.add(provider.name)
+                    outcome.errors.append(
+                        StructuredError(
+                            code="DISCOVERY_BLOCKED",
+                            message=safe_error_message(exc, max_length=300),
+                            retryable=True,
+                            source_id=f"discovery:{provider.name}",
                         )
-                    else:
-                        outcome.archive_companions_skipped_budget += 1
-                        outcome.stop_reason = "task_budget_reached"
+                    )
+                    continue
+                except Exception as exc:
+                    outcome.errors.append(
+                        StructuredError(
+                            code="DISCOVERY_ERROR",
+                            message=safe_error_message(exc, max_length=300),
+                            retryable=True,
+                            source_id=f"discovery:{provider.name}",
+                        )
+                    )
+                    continue
 
-            if destinations_added:
-                if outcome.stop_reason is None:
+                outcome.candidates_seen += len(hits)
+                prepared = await self._prepare_hits(
+                    hits,
+                    allowed=allowed,
+                    denied=denied,
+                    allowed_order=allowed_order,
+                    locality_tokens=locality_tokens,
+                    seen=seen,
+                )
+                outcome.valid_destinations += len(prepared)
+                prepared.sort(key=self._ranking_key)
+                if not prepared:
+                    continue
+
+                batch_had_valid_destinations = True
+                destinations_added = 0
+                for index, candidate in enumerate(prepared):
+                    if len(outcome.tasks) >= task_budget:
+                        outcome.destinations_skipped_budget += len(prepared) - index
+                        outcome.stop_reason = "task_budget_reached"
+                        break
+                    hit = candidate.hit
+                    canonical_url = candidate.canonical_url
+                    seen.add(canonical_url)
+                    ranking_components = {
+                        "domain_priority": candidate.domain_priority,
+                        "provider_rank": hit.rank,
+                        "locality_matches": candidate.locality_matches,
+                        "https": candidate.https,
+                    }
+                    common_metadata = {
+                        "discovery_provider": hit.provider,
+                        "discovery_engines": hit.engines,
+                        "discovery_rank": hit.rank,
+                        "discovery_query": hit.query,
+                        "discovery_original_url": hit.url,
+                        "discovery_canonical_url": canonical_url,
+                        "discovery_domain_priority": candidate.domain_priority,
+                        "discovery_locality_matches": candidate.locality_matches,
+                        "discovery_https": candidate.https,
+                        "discovery_navigation_score": candidate.navigation_score,
+                        "discovery_ranking_components": ranking_components,
+                        "discovery_ranking_version": self.ranking_version,
+                        "discovery_telemetry_version": self.telemetry_version,
+                        "discovery_stop_policy": self.stop_policy,
+                        "discovery_task_budget": task_budget,
+                        "allowed_domains": list(request.constraints.allowed_domains),
+                        "research_goals": list(request.intents),
+                    }
+                    outcome.tasks.append(
+                        SourceTask(
+                            source_id="generic_web",
+                            goal=request.intents[0],
+                            url=canonical_url,
+                            depth=0,
+                            metadata=dict(common_metadata),
+                        )
+                    )
+                    destinations_added += 1
+                    outcome.destinations_selected += 1
+
+                    archive_requested = bool(
+                        self.historical_archive_source_id
+                        and "historical_context" in request.intents
+                    )
+                    if archive_requested:
+                        if len(outcome.tasks) < task_budget:
+                            outcome.tasks.append(
+                                SourceTask(
+                                    source_id=str(self.historical_archive_source_id),
+                                    goal="historical_context",
+                                    url=canonical_url,
+                                    depth=0,
+                                    task_key=(
+                                        f"{self.historical_archive_source_id}:{canonical_url}"
+                                    ),
+                                    metadata={
+                                        **common_metadata,
+                                        "archive_target_url": canonical_url,
+                                    },
+                                )
+                            )
+                        else:
+                            outcome.archive_companions_skipped_budget += 1
+                            outcome.stop_reason = "task_budget_reached"
+
+                if destinations_added and outcome.stop_reason is None:
                     outcome.stop_reason = self.stop_policy
+                # A provider with valid prepared destinations owns this batch even when the
+                # task budget is already full. Falling through to another provider would add
+                # search traffic without creating any additional factual crawl capacity.
                 break
 
-        if not outcome.tasks and outcome.providers_attempted and outcome.blocked:
+            if batch_had_valid_destinations:
+                continue
+
+        if not outcome.tasks and any_provider_attempted and outcome.blocked:
             outcome.stop_reason = "blocked_without_destinations"
             outcome.errors.append(
                 StructuredError(
@@ -235,7 +276,7 @@ class DiscoveryService:
                     source_id="discovery",
                 )
             )
-        elif not outcome.tasks and outcome.providers_attempted and not outcome.errors:
+        elif not outcome.tasks and any_provider_attempted and not outcome.errors:
             outcome.stop_reason = "no_valid_destinations"
             outcome.errors.append(
                 StructuredError(
@@ -250,6 +291,12 @@ class DiscoveryService:
             )
         elif not outcome.tasks and outcome.stop_reason is None:
             outcome.stop_reason = "providers_exhausted"
+        elif (
+            outcome.tasks
+            and outcome.queries_attempted == outcome.queries_requested
+            and len(outcome.tasks) < task_budget
+        ):
+            outcome.stop_reason = "all_query_batches_attempted"
         return outcome
 
     async def _prepare_hits(
