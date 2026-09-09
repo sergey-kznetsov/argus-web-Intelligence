@@ -19,7 +19,7 @@ class ContentItemNavigationRanker:
     first, but it never changes an Observation type and never counts as Evidence.
     """
 
-    version = "content-item-navigation/1"
+    version = "content-item-navigation/2"
     max_links_considered = 5_000
 
     _CONTENT_ROUTES = frozenset(
@@ -35,6 +35,8 @@ class ContentItemNavigationRanker:
             "complaints",
             "discussion",
             "discussions",
+            "forum",
+            "forums",
             "incident",
             "incidents",
             "message",
@@ -75,6 +77,7 @@ class ContentItemNavigationRanker:
             "contacts",
             "feed",
             "help",
+            "index",
             "login",
             "menu",
             "page",
@@ -126,6 +129,36 @@ class ContentItemNavigationRanker:
             for index, url in enumerate(urls[: self.max_links_considered])
         ]
         return sorted(candidates, key=lambda item: (-item.score, item.original_index))
+
+    def is_navigation_shell(self, url: str) -> bool:
+        """Return True only for URL shapes that are clearly navigation/listing surfaces.
+
+        This classification is deliberately conservative. It is used to suppress atomic
+        fallback claims on obvious home/search/category/listing shells, never to decide the
+        factual meaning of a destination page.
+        """
+
+        parsed = urlsplit(str(url))
+        path = unquote(parsed.path).casefold()
+        segments = [self._route_token(segment) for segment in path.split("/") if segment]
+        segments = [segment for segment in segments if segment]
+        query = {
+            key.casefold(): value
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        }
+
+        if not segments:
+            return True
+        if any(segment in self._NAVIGATION_ROUTES for segment in segments):
+            return True
+        if len(segments) == 1 and segments[0] in self._CONTENT_ROUTES:
+            return True
+        negative_query = bool(self._NEGATIVE_QUERY_KEYS.intersection(query))
+        positive_query = bool(
+            self._POSITIVE_QUERY_KEYS.intersection(query)
+            and any(query.get(key) for key in self._POSITIVE_QUERY_KEYS)
+        )
+        return negative_query and not positive_query
 
     def score(self, url: str) -> int:
         parsed = urlsplit(str(url))
