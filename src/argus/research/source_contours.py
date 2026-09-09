@@ -44,6 +44,7 @@ class SourceContourPlan:
     max_destinations: int
     description: str
     denied_domain_roots: tuple[str, ...] = ()
+    street_names: tuple[str, ...] = ()
 
 
 URBAN_SIGNAL_SOURCE_CONTOURS: tuple[SourceContourProfile, ...] = (
@@ -161,20 +162,24 @@ class SourceContourResearchPlanner:
     facts must still be fetched, normalized and backed by Evidence/Provenance.
     """
 
-    version = "source-contours/4"
+    version = "source-contours/5"
 
     def __init__(
         self,
         *,
         policy_profiles: dict[str, tuple[SourceContourProfile, ...]] | None = None,
         max_query_chars: int = 512,
-        max_nearby_streets: int = 8,
+        max_nearby_streets: int | None = None,
     ) -> None:
         self.policy_profiles = policy_profiles or {
             "urban_signals": URBAN_SIGNAL_SOURCE_CONTOURS,
         }
         self.max_query_chars = max(64, int(max_query_chars))
-        self.max_nearby_streets = max(1, int(max_nearby_streets))
+        self.max_nearby_streets = (
+            None
+            if max_nearby_streets is None
+            else max(1, int(max_nearby_streets))
+        )
 
     def supports_policy(self, planner_policy: str) -> bool:
         return planner_policy in self.policy_profiles
@@ -242,9 +247,13 @@ class SourceContourResearchPlanner:
                     contour_id=profile.contour_id,
                     priority=profile.priority,
                     queries=queries,
-                    max_destinations=profile.max_destinations,
+                    max_destinations=max(
+                        profile.max_destinations,
+                        len(nearby_streets),
+                    ),
                     description=profile.description,
                     denied_domain_roots=profile.denied_domain_roots,
+                    street_names=tuple(nearby_streets),
                 )
             )
         return plans
