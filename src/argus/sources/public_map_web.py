@@ -25,6 +25,7 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
     """
 
     semantic_escalation_version = "public-map-goal-escalation/6"
+    public_map_delivery_version = "public-map-information-only/1"
     semantic_escalation_goals = frozenset(
         {"reviews", "comments", "discussions", "complaints"}
     )
@@ -330,6 +331,12 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             "status_code": task.metadata.get("public_map_review_view_status_code"),
             "blocked": bool(task.metadata.get("public_map_review_view_blocked")),
         }
+        delivery = {
+            "version": self.public_map_delivery_version,
+            "information_only": True,
+            "message_candidate": False,
+            "evidence_preserved": True,
+        }
         for observation in result.observations:
             provenance = classify_public_map_url(observation.url)
             if provenance is None:
@@ -337,7 +344,10 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             observation.provenance["public_map_source"] = dict(provenance)
             observation.provenance["public_map_semantic_escalation"] = dict(escalation)
             observation.provenance["public_map_review_view"] = dict(review_view)
+            observation.provenance["public_map_delivery"] = dict(delivery)
             observation.quality["public_map_source_identified"] = True
+            observation.quality["public_map_information_only"] = True
+            observation.quality["message_candidate"] = False
 
         for evidence in result.evidence:
             provenance = classify_public_map_url(evidence.source.url)
@@ -346,6 +356,8 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             evidence.metadata["public_map_source"] = dict(provenance)
             evidence.metadata["public_map_semantic_escalation"] = dict(escalation)
             evidence.metadata["public_map_review_view"] = dict(review_view)
+            evidence.metadata["public_map_information_only"] = True
+            evidence.metadata["public_map_delivery"] = dict(delivery)
 
     async def health(self) -> dict[str, object]:
         payload = dict(await super().health())
@@ -355,6 +367,12 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             "classification_basis": "url_host_path",
             "content_inference": False,
             "paid_api": False,
+            "delivery_contract": {
+                "version": self.public_map_delivery_version,
+                "information_only": True,
+                "source_message_candidate": False,
+                "evidence_preserved": True,
+            },
             "direct_browser_navigation": {
                 "enabled": True,
                 "providers": ["2gis_web", "google_maps_web"],
