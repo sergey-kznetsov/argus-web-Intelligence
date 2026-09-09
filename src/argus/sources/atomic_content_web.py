@@ -14,6 +14,7 @@ from argus.extraction.atomic_html import extract_atomic_html_blocks
 from argus.normalization.identity import stable_evidence_id, stable_observation_id
 from argus.sources.base import SourceResult, SourceTask
 from argus.sources.intent_evidence_web import IntentEvidenceWebAdapter
+from argus.sources.navigation_web import ContentNavigationMixin
 
 _ATOMIC_ENTITY_TYPES = frozenset({"publication", "post", "comment", "review"})
 _INHERITED_PROVENANCE_KEYS = (
@@ -34,12 +35,13 @@ _INHERITED_EVIDENCE_KEYS = (
 )
 
 
-class AtomicContentWebAdapter(IntentEvidenceWebAdapter):
+class AtomicContentWebAdapter(ContentNavigationMixin, IntentEvidenceWebAdapter):
     """Add deterministic atomic publication fallback to the generic web chain.
 
     Stronger schema.org/microformats observations win. Public-map surfaces are deliberately
     excluded from this HTML fallback: maps remain information sources unless their existing
-    structured extractors expose an actual review/comment/post entity.
+    structured extractors expose an actual review/comment/post entity. Obvious navigation
+    shells stay crawl surfaces only; likely item links are ranked before bounded fan-out.
     """
 
     atomic_html_max_scan_chars = 750_000
@@ -57,10 +59,14 @@ class AtomicContentWebAdapter(IntentEvidenceWebAdapter):
             return result
         if self._is_public_map_surface(task, result):
             return result
+        if self.content_navigation.is_navigation_shell(str(fetched.final_url or task.url)):
+            task.metadata["atomic_content_suppressed"] = "navigation_shell"
+            return result
 
         extraction = extract_atomic_html_blocks(
             fetched.text,
             content_type=fetched.content_type,
+            base_url=str(fetched.final_url or task.url),
             max_scan_chars=self.atomic_html_max_scan_chars,
             max_items=self.atomic_html_max_items,
             max_text_chars=self.atomic_html_max_text_chars,
@@ -227,14 +233,21 @@ class AtomicContentWebAdapter(IntentEvidenceWebAdapter):
     async def health(self) -> dict[str, object]:
         payload = dict(await super().health())
         payload["atomic_html"] = {
-            "version": "html-atomic/1",
+            "version": "html-atomic/2",
             "source_declared_semantics_only": True,
             "css_class_heuristics": False,
+            "linked_heading_listing_cards": "navigation_only",
+            "obvious_navigation_shells": "navigation_only",
             "source_contour_as_semantic_label": False,
             "public_map_fallback": False,
             "max_items": self.atomic_html_max_items,
             "max_scan_chars": self.atomic_html_max_scan_chars,
             "max_text_chars": self.atomic_html_max_text_chars,
+        }
+        payload["content_navigation"] = {
+            "version": self.content_navigation.version,
+            "item_first_bounded_fanout": True,
+            "ranking_is_evidence": False,
         }
         return payload
 
