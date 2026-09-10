@@ -20,6 +20,7 @@ from argus.pagination import (
     decode_result_cursor,
     encode_result_cursor,
 )
+from argus.research.lane_coverage import PUBLIC_MAP_IDS, SOURCE_CONTOUR_IDS
 from argus.storage.sqlite import SQLiteRepository
 
 
@@ -75,13 +76,45 @@ def make_evidence(observation: Observation, index: int) -> Evidence:
     )
 
 
-async def seed_result_database(path: Path, collection_id: str, *, terminal: bool = True) -> None:
+def make_research_lane_coverage() -> dict[str, object]:
+    lane_ids = [*SOURCE_CONTOUR_IDS, *PUBLIC_MAP_IDS]
+    return {
+        "version": "research-lane-coverage/4",
+        "collection_id": "coverage-result",
+        "applicable": True,
+        "expected_lanes": 10,
+        "reported_lanes": 10,
+        "complete": True,
+        "strict_order": lane_ids,
+        "coverage": [
+            {
+                "lane_id": lane_id,
+                "lane_kind": (
+                    "source_contour" if lane_id in SOURCE_CONTOUR_IDS else "public_map"
+                ),
+                "status": "no_data",
+            }
+            for lane_id in lane_ids
+        ],
+        "status_counts": {"no_data": 10},
+    }
+
+
+async def seed_result_database(
+    path: Path,
+    collection_id: str,
+    *,
+    terminal: bool = True,
+    research_lane_coverage: dict[str, object] | None = None,
+) -> None:
     repository = SQLiteRepository(path)
     await repository.initialize()
     record = make_record(
         collection_id,
         CollectionStatus.COMPLETED if terminal else CollectionStatus.RUNNING,
     )
+    if research_lane_coverage is not None:
+        record.checkpoint["research_lane_coverage"] = research_lane_coverage
     await repository.create_collection(record)
     for index in range(3):
         observation = make_observation(collection_id, index)
@@ -138,6 +171,7 @@ def test_large_result_requires_pagination_and_pages_are_stable(tmp_path: Path):
         assert summary_payload["observation_count"] == 3
         assert summary_payload["evidence_count"] == 3
         assert summary_payload["delivery_limits"]["page_max_size"] == 2
+        assert summary_payload["research_lane_coverage"] is None
 
         first = client.get(
             f"/v1/collections/{collection_id}/result/observations?limit=1",
@@ -188,6 +222,52 @@ def test_small_result_keeps_legacy_full_result_contract(tmp_path: Path):
         assert len(payload["observations"]) == 3
         assert len(payload["evidence"]) == 3
         assert payload["status"] == "completed"
+        assert payload["research_lane_coverage"] is None
+
+
+def test_result_api_delivers_additive_7_plus_3_lane_coverage(tmp_path: Path):
+    db_path = tmp_path / "argus.sqlite"
+    collection_id = "coverage-result"
+    lane_coverage = make_research_lane_coverage()
+    asyncio.run(
+        seed_result_database(
+            db_path,
+            collection_id,
+            research_lane_coverage=lane_coverage,
+        )
+    )
+    settings = Settings(
+        db_path=db_path,
+        token_file=tmp_path / "token",
+        browser_serp_enabled=False,
+        api_full_result_max_items=10,
+        api_full_result_max_bytes=1024 * 1024,
+    )
+
+    with TestClient(create_app(settings)) as client:
+        headers = auth_headers(settings)
+        summary = client.get(
+            f"/v1/collections/{collection_id}/result/summary",
+            headers=headers,
+        )
+        full = client.get(
+            f"/v1/collections/{collection_id}/result",
+            headers=headers,
+        )
+
+    assert summary.status_code == 200
+    assert full.status_code == 200
+    for payload in (summary.json(), full.json()):
+        diagnostics = payload["research_lane_coverage"]
+        assert diagnostics["version"] == "research-lane-coverage/4"
+        assert diagnostics["expected_lanes"] == 10
+        assert diagnostics["reported_lanes"] == 10
+        assert diagnostics["strict_order"] == [*SOURCE_CONTOUR_IDS, *PUBLIC_MAP_IDS]
+        assert [row["lane_id"] for row in diagnostics["coverage"]] == [
+            *SOURCE_CONTOUR_IDS,
+            *PUBLIC_MAP_IDS,
+        ]
+        assert payload["coverage"] == []
 
 
 def test_paged_result_requires_terminal_collection(tmp_path: Path):
