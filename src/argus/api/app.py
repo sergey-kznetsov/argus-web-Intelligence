@@ -55,6 +55,11 @@ _TERMINAL_RESULT_STATUSES = {
 }
 
 
+def _research_lane_coverage(record: CollectionRecord) -> dict[str, object] | None:
+    payload = record.checkpoint.get("research_lane_coverage")
+    return dict(payload) if isinstance(payload, dict) else None
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
@@ -370,6 +375,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             full_result_available=full_available,
             delivery_limits=delivery_limits(),
             coverage=record.coverage,
+            research_lane_coverage=_research_lane_coverage(record),
             errors=record.errors,
         )
 
@@ -410,6 +416,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             observations=bundle.observations,
             evidence=bundle.evidence,
             coverage=record.coverage,
+            research_lane_coverage=_research_lane_coverage(record),
             errors=record.errors,
         )
 
