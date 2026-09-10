@@ -240,6 +240,10 @@ class CollectionOrchestrator:
                     pending = self._merge_tasks(pending, plan.tasks, record.collection_id)
                     planning_complete = True
 
+                pending = await self._prepare_research(record, pending)
+                if await self._is_cancelled(collection_id):
+                    return
+
                 record.checkpoint = {
                     **record.checkpoint,
                     "queries": plan.queries,
@@ -333,6 +337,15 @@ class CollectionOrchestrator:
                 )
             finally:
                 self._cancelled.discard(collection_id)
+
+    async def _prepare_research(self, record, pending):
+        """Apply research-policy prerequisites independently of seed intent coverage.
+
+        This boundary also runs for recovered plans before ordinary pending tasks.
+        The base policy has no additional prerequisites.
+        """
+
+        return pending
 
     async def _discover_uncovered_intents(
         self,

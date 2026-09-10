@@ -26,7 +26,7 @@ class MandatoryCoverageToolPackOrchestrator(
     Other tool packs keep the normal collection-budget semantics unchanged.
     """
 
-    mandatory_coverage_version = "mandatory-coverage/4"
+    mandatory_coverage_version = "mandatory-coverage/5"
     emergency_max_pages = 500
     emergency_max_duration_seconds = 7_200.0
     post_mandatory_optional_pages = 24
@@ -54,11 +54,6 @@ class MandatoryCoverageToolPackOrchestrator(
                 uncovered_intents,
             )
 
-        pending = await self._run_pre_contour_street_inventory(record, pending)
-        pending = await self._run_serial_source_contours(record, pending)
-        pending = await self._run_serial_public_maps(record, pending)
-        await self._activate_post_mandatory_budget(record)
-
         # ``general_web`` already provides the catch-all discovery family. Re-running the
         # base per-intent discovery here duplicates the same open-web candidates and was the
         # source of long generic_web/RSS queues after mandatory coverage had completed.
@@ -68,6 +63,31 @@ class MandatoryCoverageToolPackOrchestrator(
             list(record.checkpoint.get("discovery_providers", [])),
             bool(record.checkpoint.get("discovery_blocked", False)),
         )
+
+    async def _prepare_research(self, record, pending):
+        """Run mandatory lanes even when seeds cover every intent or a plan is resumed."""
+
+        pack = resolved_tool_pack_from_request(record.request)
+        if pack is None or pack.planner_policy != "urban_signals":
+            return await super()._prepare_research(record, pending)
+
+        pending = await self._run_pre_contour_street_inventory(record, pending)
+        pending = await self._run_serial_source_contours(record, pending)
+        pending = await self._run_serial_public_maps(record, pending)
+        await self._activate_post_mandatory_budget(record)
+
+        # An interrupted mandatory phase still has ten diagnostic rows. Never hide
+        # unattempted lanes behind absent telemetry or the legacy fetch counter.
+        observations = await self.repository.list_observations(record.collection_id)
+        evidence = await self.repository.list_evidence(record.collection_id)
+        record.checkpoint = {
+            **record.checkpoint,
+            "research_lane_coverage": build_research_lane_coverage(
+                record, observations, evidence
+            ),
+        }
+        await self.repository.update_collection(record)
+        return pending
 
     async def _process_serial_lane(
         self,

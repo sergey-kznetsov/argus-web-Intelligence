@@ -256,3 +256,61 @@ async def test_checkpoint_resume_skips_completed_mandatory_lanes() -> None:
         record.checkpoint["serial_public_map_lanes"][label]["processing_complete"] is True
         for label in PUBLIC_MAP_ORDER
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovered", [False, True])
+@pytest.mark.parametrize("discovery_enabled", [False, True])
+async def test_seed_coverage_and_recovered_plan_cannot_bypass_mandatory_lanes(
+    recovered, discovery_enabled
+):
+    """Exercise the real collection entrypoint, not just individual lane helpers."""
+    from argus.orchestrator.service import CollectionOrchestrator
+    from argus.sources.registry import SourceRegistry
+
+    record = running_record(checkpoint={"planning_complete": recovered})
+    seed = SourceTask(source_id="generic_web", goal="complaints", url="https://seed.test/item")
+    record.checkpoint["pending_tasks"] = [MandatorySerialHarness._task_dict(seed)]
+    record.checkpoint["planning_initial_tasks_complete"] = recovered
+    record.checkpoint["covered_intents"] = list(record.request.intents) if recovered else []
+
+    class Repository(FakeRepository):
+        async def get_collection(self, collection_id):
+            return record
+
+    class Planner:
+        async def plan(self, request):
+            return SimpleNamespace(tasks=[], queries=[], notes=[])
+
+    class Harness(MandatorySerialHarness):
+        async def _initial_tasks(self, current):
+            return [seed], set(current.request.intents)
+
+        async def _run_pre_contour_street_inventory(self, current, pending):
+            return pending
+
+        async def _process_tasks(self, current, pending):
+            self.events.append(("ordinary", "seed"))
+            current.status = CollectionStatus.COMPLETED
+
+    harness = Harness()
+    CollectionOrchestrator.__init__(
+        harness, Repository(), SourceRegistry(), Planner(),
+        discovery=FakeDiscovery() if discovery_enabled else None,
+    )
+    with activate_tool_pack(kraken_pack(record.request)):
+        await CollectionOrchestrator._run(harness, record.collection_id)
+
+    assert record.status is CollectionStatus.COMPLETED, record.errors
+    assert harness.events == [
+        *[("source_contour", lane) for lane in SOURCE_CONTOUR_ORDER if discovery_enabled],
+        *[("public_map", lane) for lane in PUBLIC_MAP_ORDER],
+        ("ordinary", "seed"),
+    ]
+    assert record.checkpoint["research_lane_coverage"]["strict_order"] == EXPECTED_LANE_ORDER
+    if discovery_enabled:
+        assert record.checkpoint["mandatory_coverage"]["phase"] == "optional"
+    else:
+        telemetry = record.checkpoint["research_lane_coverage"]
+        assert telemetry["complete"] is False
+        assert all(row["status"] == "partial" for row in telemetry["coverage"][:7])
