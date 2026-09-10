@@ -16,14 +16,16 @@ class ConsumerDeliveryProjector:
     """Apply consumer-selected transport policies without domain interpretation.
 
     The projector is intentionally technical. It may collapse exact/canonical duplicate
-    text and redundant same-page wrapper documents, but it never decides whether a text is
-    a complaint, incident, review, historical fact or any other consumer-domain concept.
+    text and redundant same-page wrapper documents, and it enforces explicit transport
+    semantics such as public-map information-only observations. It never decides whether
+    ordinary text is a complaint, incident, review, historical fact or any other
+    consumer-domain concept.
 
     ToolPack metadata selects the policy, keeping this behavior consumer-scoped without
     adding consumer IDs to ARGUS Core control flow.
     """
 
-    version: str = "consumer-delivery/1"
+    version: str = "consumer-delivery/2"
     min_dedup_chars: int = 40
     _indexes: dict[str, dict[str, str]] = field(default_factory=dict)
 
@@ -48,11 +50,21 @@ class ConsumerDeliveryProjector:
                 "observations_input": len(observations),
                 "observations_output": len(observations),
                 "duplicates_collapsed": 0,
+                "information_only_observations_suppressed": 0,
+                "information_only_filtering_applied": False,
             }
 
+        deliverable, information_only_ids = self._partition_information_only(observations)
+        detached_evidence = self._detach_information_only_evidence(
+            evidence,
+            information_only_ids,
+        )
         index = await self._index_for(repository, collection_id)
-        kept, duplicate_to_canonical = self._deduplicate_batch(observations, index)
-        remapped_evidence = self._remap_evidence(evidence, duplicate_to_canonical)
+        kept, duplicate_to_canonical = self._deduplicate_batch(deliverable, index)
+        remapped_evidence = self._remap_evidence(
+            detached_evidence,
+            duplicate_to_canonical,
+        )
         for observation in kept:
             key = self._dedup_key(observation)
             if key is not None:
@@ -65,11 +77,69 @@ class ConsumerDeliveryProjector:
             "observations_input": len(observations),
             "observations_output": len(kept),
             "duplicates_collapsed": len(duplicate_to_canonical),
+            "information_only_observations_suppressed": len(information_only_ids),
+            "information_only_filtering_applied": bool(information_only_ids),
             "semantic_filtering_applied": False,
         }
 
     def release(self, collection_id: str) -> None:
         self._indexes.pop(collection_id, None)
+
+    @staticmethod
+    def _is_public_map_information_only(observation: Observation) -> bool:
+        if observation.quality.get("public_map_information_only") is True:
+            return True
+        public_map_delivery = observation.provenance.get("public_map_delivery")
+        return (
+            isinstance(public_map_delivery, dict)
+            and public_map_delivery.get("information_only") is True
+        )
+
+    def _partition_information_only(
+        self,
+        observations: list[Observation],
+    ) -> tuple[list[Observation], set[str]]:
+        deliverable: list[Observation] = []
+        suppressed_ids: set[str] = set()
+        for observation in observations:
+            if self._is_public_map_information_only(observation):
+                suppressed_ids.add(observation.observation_id)
+            else:
+                deliverable.append(observation)
+        return deliverable, suppressed_ids
+
+    def _detach_information_only_evidence(
+        self,
+        evidence: Iterable[Evidence],
+        suppressed_observation_ids: set[str],
+    ) -> list[Evidence]:
+        if not suppressed_observation_ids:
+            return list(evidence)
+
+        result: list[Evidence] = []
+        for item in evidence:
+            observation_id = item.observation_id
+            if observation_id not in suppressed_observation_ids:
+                result.append(item)
+                continue
+
+            metadata = dict(item.metadata)
+            metadata["consumer_delivery_information_only"] = {
+                "version": self.version,
+                "context_observation_id": observation_id,
+                "observation_delivered": False,
+                "evidence_preserved": True,
+                "semantic_filtering_applied": False,
+            }
+            result.append(
+                item.model_copy(
+                    update={
+                        "observation_id": None,
+                        "metadata": metadata,
+                    }
+                )
+            )
+        return result
 
     async def _index_for(self, repository, collection_id: str) -> dict[str, str]:
         cached = self._indexes.get(collection_id)
