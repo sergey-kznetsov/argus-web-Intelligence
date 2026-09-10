@@ -588,42 +588,51 @@ class PostgresRepository:
     ) -> str | None:
         lease = max(1.0, float(lease_seconds))
         async with self._pool.connection() as conn:
-            cursor = await conn.execute(
-                """
-                SELECT c.collection_id
-                FROM argus.collections AS c
-                LEFT JOIN argus.collection_leases AS l
-                  ON l.collection_id = c.collection_id
-                WHERE c.status IN ('queued', 'running')
-                  AND (l.collection_id IS NULL OR l.lease_until <= NOW())
-                ORDER BY c.created_at ASC, c.collection_id ASC
-                FOR UPDATE OF c SKIP LOCKED
-                LIMIT 1
-                """
-            )
-            row = await cursor.fetchone()
-            if not row:
-                return None
-            collection_id = str(row["collection_id"])
-            cursor = await conn.execute(
-                """
-                INSERT INTO argus.collection_leases(
-                  collection_id, worker_id, leased_at, heartbeat_at, lease_until
-                )
-                VALUES(%s, %s, NOW(), NOW(), NOW() + (%s * INTERVAL '1 second'))
-                ON CONFLICT (collection_id) DO UPDATE
-                SET worker_id=EXCLUDED.worker_id,
-                    leased_at=NOW(),
-                    heartbeat_at=NOW(),
-                    lease_until=EXCLUDED.lease_until
-                WHERE argus.collection_leases.lease_until <= NOW()
-                   OR argus.collection_leases.worker_id = EXCLUDED.worker_id
-                """,
-                (collection_id, worker_id, lease),
-            )
-            if cursor.rowcount != 1:
-                return None
-            return collection_id
+            while True:
+                async with conn.transaction():
+                    cursor = await conn.execute(
+                        """
+                        SELECT c.collection_id
+                        FROM argus.collections AS c
+                        LEFT JOIN argus.collection_leases AS l
+                          ON l.collection_id = c.collection_id
+                        WHERE c.status IN ('queued', 'running')
+                          AND (l.collection_id IS NULL OR l.lease_until <= NOW())
+                        ORDER BY c.created_at ASC, c.collection_id ASC
+                        FOR UPDATE OF c SKIP LOCKED
+                        LIMIT 1
+                        """
+                    )
+                    row = await cursor.fetchone()
+                    if not row:
+                        return None
+                    collection_id = str(row["collection_id"])
+                    cursor = await conn.execute(
+                        """
+                        INSERT INTO argus.collection_leases(
+                          collection_id, worker_id, leased_at, heartbeat_at, lease_until
+                        )
+                        VALUES(%s, %s, NOW(), NOW(), NOW() + (%s * INTERVAL '1 second'))
+                        ON CONFLICT (collection_id) DO UPDATE
+                        SET worker_id=EXCLUDED.worker_id,
+                            leased_at=NOW(),
+                            heartbeat_at=NOW(),
+                            lease_until=EXCLUDED.lease_until
+                        WHERE argus.collection_leases.lease_until <= NOW()
+                           OR argus.collection_leases.worker_id = EXCLUDED.worker_id
+                        RETURNING collection_id
+                        """,
+                        (collection_id, worker_id, lease),
+                    )
+                    claimed = await cursor.fetchone()
+                    if claimed:
+                        return str(claimed["collection_id"])
+
+                # The candidate was visible in the SELECT snapshot but another
+                # worker committed its lease before this transaction could claim it.
+                # Retry with a new READ COMMITTED statement snapshot instead of
+                # reporting an empty queue while other claimable work may remain.
+                await asyncio.sleep(0)
 
     async def renew_collection_lease(
         self,
