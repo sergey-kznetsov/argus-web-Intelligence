@@ -335,6 +335,8 @@ class AtomicContentWebAdapter(IntentEvidenceWebAdapter):
             "version": self.content_navigation.version,
             "item_first_bounded_fanout": True,
             "ranking_is_evidence": False,
+            "serial_item_followup_version": self.serial_item_followup_version,
+            "mandatory_source_contour_followup": "one_terminal_item_or_feed_per_entry",
         }
         return payload
 
