@@ -8,7 +8,7 @@ from argus.contracts.models import CollectionRecord, Evidence, Observation
 from argus.research.public_map_sources import PUBLIC_MAP_SOURCES
 from argus.research.source_contours import URBAN_SIGNAL_SOURCE_CONTOURS
 
-RESEARCH_LANE_COVERAGE_VERSION = "research-lane-coverage/2"
+RESEARCH_LANE_COVERAGE_VERSION = "research-lane-coverage/3"
 SOURCE_CONTOUR_IDS = tuple(profile.contour_id for profile in URBAN_SIGNAL_SOURCE_CONTOURS)
 PUBLIC_MAP_IDS = tuple(profile.source_id for profile in PUBLIC_MAP_SOURCES)
 
@@ -100,11 +100,13 @@ def _street_scope(state: Mapping[str, Any]) -> dict[str, object]:
     processed = _count(state.get("street_anchors_processed"))
     complete_raw = state.get("street_scope_complete")
     complete = complete_raw if isinstance(complete_raw, bool) else None
+    telemetry = str(state.get("street_scope_telemetry") or "").strip() or None
     return {
         "expected": expected,
         "attempted": attempted,
         "processed": processed,
         "complete": complete,
+        "telemetry": telemetry,
     }
 
 
@@ -130,6 +132,9 @@ def _row(
             evidence=evidence,
         ),
         "queries": max(0, int(query_count)),
+        "queries_attempted": _count(state.get("queries_attempted")),
+        "query_batches": _count(state.get("query_batches")),
+        "query_batches_attempted": _count(state.get("query_batches_attempted")),
         "discovered": _count(state.get("destinations_selected")),
         # The serial executor exposes processed_pages rather than a separate successful-fetch
         # counter. This field therefore means pages consumed by the bounded fetch/extract lane,
@@ -152,27 +157,62 @@ def _source_state_with_street_scope(
     *,
     street_count: int,
 ) -> dict[str, Any]:
+    """Project street coverage without inventing progress from lane completion.
+
+    Older checkpoints did not persist source-contour street telemetry. The previous
+    projection treated a clean lane completion as proof that every radius street had been
+    attempted and processed. That can create false 100% coverage. Coverage now fails closed:
+    only explicit checkpoint counters (or explicit discovery query-attempt telemetry for the
+    attempted count) are accepted as proof of street progress.
+    """
+
     normalized = dict(state)
     if street_count <= 0:
         return normalized
-    normalized.setdefault("street_anchors_expected", street_count)
-    raw_status = str(normalized.get("status") or "").strip().casefold()
-    processing_complete = normalized.get("processing_complete") is True
-    blocked = normalized.get("blocked") is True
-    scope_complete = (
-        processing_complete
-        and not blocked
-        and raw_status not in {"blocked", "degraded", "error", "failed"}
+
+    expected = _count(normalized.get("street_anchors_expected")) or street_count
+    normalized["street_anchors_expected"] = expected
+
+    explicit_attempted = "street_anchors_attempted" in normalized
+    explicit_processed = "street_anchors_processed" in normalized
+    explicit_complete = isinstance(normalized.get("street_scope_complete"), bool)
+
+    if explicit_attempted:
+        attempted = min(expected, _count(normalized.get("street_anchors_attempted")))
+        attempted_source = "explicit_checkpoint"
+    elif "queries_attempted" in normalized:
+        # SourceContourResearchPlanner emits one street query per radius street first,
+        # followed by generic contour queries. Therefore the bounded attempted-query count
+        # can conservatively prove at most this many street anchors were attempted.
+        attempted = min(expected, _count(normalized.get("queries_attempted")))
+        attempted_source = "discovery_queries_attempted"
+    else:
+        attempted = 0
+        attempted_source = "missing_checkpoint"
+
+    if explicit_processed:
+        processed = min(attempted, _count(normalized.get("street_anchors_processed")))
+        processed_source = "explicit_checkpoint"
+    else:
+        processed = 0
+        processed_source = "missing_checkpoint"
+
+    requested_complete = normalized.get("street_scope_complete") is True
+    complete = bool(
+        explicit_complete
+        and requested_complete
+        and attempted >= expected
+        and processed >= expected
     )
-    normalized.setdefault(
-        "street_anchors_attempted",
-        street_count if scope_complete else 0,
+
+    normalized["street_anchors_attempted"] = attempted
+    normalized["street_anchors_processed"] = processed
+    normalized["street_scope_complete"] = complete
+    normalized["street_scope_telemetry"] = (
+        "explicit_checkpoint"
+        if explicit_attempted and explicit_processed and explicit_complete
+        else f"attempted:{attempted_source};processed:{processed_source}"
     )
-    normalized.setdefault(
-        "street_anchors_processed",
-        street_count if scope_complete else 0,
-    )
-    normalized.setdefault("street_scope_complete", scope_complete)
     return normalized
 
 
@@ -282,7 +322,10 @@ def build_research_lane_coverage(
             "street_names": street_names,
         },
         "counter_semantics": {
-            "queries": "discovery queries issued for the lane; direct map navigation uses zero",
+            "queries": "discovery queries requested for the lane; direct map navigation uses zero",
+            "queries_attempted": "discovery queries whose batch was actually attempted",
+            "query_batches": "bounded discovery batches planned for the lane",
+            "query_batches_attempted": "bounded discovery batches actually attempted",
             "discovered": "destinations selected for the lane",
             "fetched": "pages consumed by the bounded serial fetch/extract lane",
             "observations": "stored observations carrying this lane provenance",
@@ -290,7 +333,8 @@ def build_research_lane_coverage(
             "warnings": "blocked pages plus truncated queued tasks",
             "errors": "runtime lane errors plus non-empty discovery error codes",
             "street_scope": (
-                "named radius streets expected, attempted and processed by the mandatory lane"
+                "named radius streets expected, attempted and processed by the mandatory lane; "
+                "missing source-contour telemetry is never inferred as complete"
             ),
         },
         "coverage": rows,
