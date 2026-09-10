@@ -160,9 +160,16 @@ class SourceContourResearchPlanner:
     Source contours are navigation policy, not domain interpretation. They ensure that one
     highly ranked source class (for example map reviews) cannot monopolize discovery. Actual
     facts must still be fetched, normalized and backed by Evidence/Provenance.
+
+    ``source-contours/6`` additionally defines the radius-street traversal contract used by
+    mandatory coverage telemetry: one query for every named radius street is emitted first,
+    in street-inventory order, before generic contour queries. Discovery is expected to use
+    its exhaustive bounded batching contract, so a non-blocked completed discovery pass can
+    prove that every emitted street query was attempted even when some streets return no
+    destination.
     """
 
-    version = "source-contours/5"
+    version = "source-contours/6"
 
     def __init__(
         self,
