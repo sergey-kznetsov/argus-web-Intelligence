@@ -4,7 +4,11 @@ from argus.contracts.models import CollectionRecord, CollectionRequest, Collecti
 from argus.research.lane_coverage import build_research_lane_coverage
 
 
-def _record(source_state: dict[str, object]) -> CollectionRecord:
+def _record(
+    source_state: dict[str, object],
+    *,
+    source_contour_version: str | None = None,
+) -> CollectionRecord:
     request = CollectionRequest(
         consumer="kraken.development.uds",
         consumer_profile_version=1,
@@ -21,19 +25,22 @@ def _record(source_state: dict[str, object]) -> CollectionRecord:
         constraints={"language": "ru", "max_pages": 30},
     )
     timestamp = utcnow()
+    checkpoint: dict[str, object] = {
+        "radius_street_inventory": {
+            "status": "completed",
+            "street_names": ["Пушкинская улица", "Советская улица"],
+        },
+        "source_contours": {"official_government": source_state},
+    }
+    if source_contour_version is not None:
+        checkpoint["source_contour_version"] = source_contour_version
     return CollectionRecord(
         collection_id="street-scope-collection",
         request=request,
         status=CollectionStatus.COMPLETED,
         created_at=timestamp,
         updated_at=timestamp,
-        checkpoint={
-            "radius_street_inventory": {
-                "status": "completed",
-                "street_names": ["Пушкинская улица", "Советская улица"],
-            },
-            "source_contours": {"official_government": source_state},
-        },
+        checkpoint=checkpoint,
     )
 
 
@@ -43,7 +50,7 @@ def _official_row(payload: dict[str, object]) -> dict[str, object]:
     return next(row for row in rows if row["lane_id"] == "official_government")
 
 
-def test_clean_lane_completion_does_not_invent_full_street_scope() -> None:
+def test_clean_legacy_lane_completion_does_not_invent_full_street_scope() -> None:
     payload = build_research_lane_coverage(
         _record(
             {
@@ -60,7 +67,7 @@ def test_clean_lane_completion_does_not_invent_full_street_scope() -> None:
 
     row = _official_row(payload)
     scope = row["street_scope"]
-    assert payload["version"] == "research-lane-coverage/3"
+    assert payload["version"] == "research-lane-coverage/4"
     assert row["status"] == "partial"
     assert scope == {
         "expected": 2,
@@ -134,3 +141,62 @@ def test_explicit_processed_street_scope_can_be_reported_complete() -> None:
         "complete": True,
         "telemetry": "explicit_checkpoint",
     }
+
+
+def test_v6_clean_discovery_proves_every_radius_street_query_was_processed() -> None:
+    payload = build_research_lane_coverage(
+        _record(
+            {
+                "attempted": True,
+                "processing_complete": True,
+                "status": "completed",
+                "queries": ["street query one", "street query two", "generic query"],
+                "processed_pages": 0,
+                "blocked": False,
+                "error_codes": ["DISCOVERY_NO_RESULTS"],
+            },
+            source_contour_version="source-contours/6",
+        ),
+        [],
+        [],
+    )
+
+    row = _official_row(payload)
+    scope = row["street_scope"]
+    assert row["queries"] == 3
+    assert row["queries_attempted"] == 3
+    assert row["status"] == "no_data"
+    assert scope["expected"] == 2
+    assert scope["attempted"] == 2
+    assert scope["processed"] == 2
+    assert scope["complete"] is True
+    assert scope["telemetry"] == (
+        "source-contours/6:attempted=source-contours/6;processed=source-contours/6"
+    )
+
+
+def test_v6_blocked_discovery_never_claims_complete_street_scope() -> None:
+    payload = build_research_lane_coverage(
+        _record(
+            {
+                "attempted": True,
+                "processing_complete": True,
+                "status": "blocked",
+                "queries": ["street query one", "street query two", "generic query"],
+                "processed_pages": 0,
+                "blocked": True,
+                "error_codes": ["DISCOVERY_BLOCKED", "DISCOVERY_INCOMPLETE"],
+            },
+            source_contour_version="source-contours/6",
+        ),
+        [],
+        [],
+    )
+
+    row = _official_row(payload)
+    scope = row["street_scope"]
+    assert row["status"] == "blocked"
+    assert row["queries_attempted"] == 0
+    assert scope["attempted"] == 0
+    assert scope["processed"] == 0
+    assert scope["complete"] is False
