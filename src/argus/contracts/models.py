@@ -246,6 +246,7 @@ class CollectionResult(BaseModel):
     observations: list[Observation]
     evidence: list[Evidence]
     coverage: list[SourceCoverage]
+    research_lane_coverage: dict[str, Any] | None = None
     errors: list[StructuredError]
 
 
@@ -269,6 +270,7 @@ class CollectionResultSummary(BaseModel):
     full_result_available: bool
     delivery_limits: ResultDeliveryLimits
     coverage: list[SourceCoverage]
+    research_lane_coverage: dict[str, Any] | None = None
     errors: list[StructuredError]
 
 
