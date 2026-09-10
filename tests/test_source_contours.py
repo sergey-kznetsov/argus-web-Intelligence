@@ -302,7 +302,7 @@ async def test_tool_pack_orchestrator_executes_each_contour_as_an_independent_la
         for state in record.checkpoint["source_contours"].values()
     )
     assert all(
-        task.metadata["source_contour_version"] == "source-contours/5"
+        task.metadata["source_contour_version"] == "source-contours/6"
         for task in pending
     )
     protected_calls = harness.discovery.calls[:3]
