@@ -9,7 +9,8 @@ from argus.orchestrator.toolpack_aware import (
     ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator,
 )
 from argus.sources.atomic_content_web import AtomicContentWebAdapter
-from argus.sources.base import SourceTask
+from argus.sources.base import SourceResult, SourceTask
+from argus.sources.intent_evidence_web import IntentEvidenceWebAdapter
 
 
 def _request() -> CollectionRequest:
@@ -137,6 +138,76 @@ def test_terminal_item_followup_never_creates_grandchildren() -> None:
         )
         == []
     )
+
+
+@pytest.mark.asyncio
+async def test_listing_followup_becomes_atomic_publication(monkeypatch) -> None:
+    adapter = object.__new__(AtomicContentWebAdapter)
+    adapter.sitemap_discovery_enabled = False
+    request = _request()
+    listing = FetchResult(
+        url="https://example.org/news/",
+        final_url="https://example.org/news/",
+        status_code=200,
+        content_type="text/html",
+        text="<html><body>listing</body></html>",
+        links=[
+            "https://example.org/news/2026/09/09/water-main-break-pushkinskaya",
+            "https://example.org/news/",
+        ],
+    )
+
+    selected = adapter._discovered_tasks(
+        _contour_task(listing.final_url),
+        listing,
+        request,
+        "collection-atomic-flow",
+    )[0]
+    selected.metadata["collection_id"] = "collection-atomic-flow"
+    selected.depth = 1
+
+    async def fake_parent_extract(self, task, fetched, request):
+        del self, task, fetched, request
+        return SourceResult(observations=[])
+
+    monkeypatch.setattr(
+        IntentEvidenceWebAdapter,
+        "extract",
+        fake_parent_extract,
+    )
+    item = FetchResult(
+        url=selected.url,
+        final_url=selected.url,
+        status_code=200,
+        content_type="text/html",
+        text=(
+            "<html><body><article><h1>Авария на Пушкинской улице</h1>"
+            "<p>Жители сообщили о повреждении водопровода на Пушкинской улице. "
+            "Коммунальная служба огородила участок и начала ремонтные работы.</p>"
+            "<p>В публикации указано, что восстановление подачи воды ожидается "
+            "после завершения аварийных работ в этом квартале.</p>"
+            "</article></body></html>"
+        ),
+        links=[],
+    )
+
+    result = await adapter.extract(selected, item, request)
+
+    publications = [
+        observation
+        for observation in result.observations
+        if observation.entity_type == "publication"
+    ]
+    assert len(publications) == 1
+    publication = publications[0]
+    assert publication.source_kind == "html_atomic"
+    assert publication.title == "Авария на Пушкинской улице"
+    assert "повреждении водопровода" in (publication.text or "")
+    assert publication.quality["atomic_content"] is True
+    assert publication.quality["whole_page_document"] is False
+    assert len(result.evidence) == 1
+    assert result.evidence[0].observation_id == publication.observation_id
+    assert selected.metadata["serial_item_followup_terminal"] is True
 
 
 @pytest.mark.asyncio
