@@ -146,6 +146,103 @@ async def test_kraken_same_page_thin_document_wrapper_prefers_typed_post():
 
 
 @pytest.mark.asyncio
+async def test_kraken_public_map_observation_is_not_delivered_as_message_candidate():
+    map_text = "Техническая оболочка карточки карты с рейтингом, координатами и служебными полями."
+    map_observation = _observation(
+        "map-shell",
+        text=map_text,
+        url="https://yandex.ru/maps/org/example/123/",
+        entity_type="review",
+        source_kind="public_map_web",
+    ).model_copy(
+        update={
+            "quality": {
+                "public_map_information_only": True,
+                "message_candidate": False,
+                "delivery_semantics": "evidence_context_only",
+            },
+            "provenance": {
+                "public_map_delivery": {
+                    "information_only": True,
+                    "message_candidate": False,
+                }
+            },
+        }
+    )
+    ordinary = _observation(
+        "ordinary-post",
+        text="Жители Пушкинской сообщают о сломанном освещении у пешеходного перехода.",
+        url="https://example.test/post/1",
+        entity_type="post",
+        source_kind="json_ld",
+    )
+    map_evidence = _evidence("map-shell", "ev-map", text=map_text).model_copy(
+        update={"metadata": {"public_map_information_only": True}}
+    )
+    ordinary_evidence = _evidence(
+        "ordinary-post",
+        "ev-post",
+        text=ordinary.text or "",
+    )
+    projector = ConsumerDeliveryProjector()
+    pack = resolved_tool_pack_from_request(_request())
+    assert pack is not None
+
+    observations, evidence, stats = await projector.project_task_result(
+        _Repository(),
+        collection_id="collection-1",
+        pack=pack,
+        observations=[map_observation, ordinary],
+        evidence=[map_evidence, ordinary_evidence],
+    )
+
+    assert [item.observation_id for item in observations] == ["ordinary-post"]
+    by_id = {item.evidence_id: item for item in evidence}
+    assert set(by_id) == {"ev-map", "ev-post"}
+    assert by_id["ev-map"].observation_id is None
+    info_only = by_id["ev-map"].metadata["consumer_delivery_information_only"]
+    assert info_only["context_observation_id"] == "map-shell"
+    assert info_only["observation_delivered"] is False
+    assert info_only["evidence_preserved"] is True
+    assert by_id["ev-post"].observation_id == "ordinary-post"
+    assert stats["information_only_observations_suppressed"] == 1
+    assert stats["information_only_filtering_applied"] is True
+    assert stats["semantic_filtering_applied"] is False
+
+
+@pytest.mark.asyncio
+async def test_public_map_provenance_marker_is_defensive_delivery_guard():
+    map_observation = _observation(
+        "map-provenance-only",
+        text="Map shell payload that must remain evidence context only for Kraken.",
+        url="https://www.google.com/maps/place/example",
+    ).model_copy(
+        update={
+            "provenance": {
+                "public_map_delivery": {
+                    "information_only": True,
+                }
+            }
+        }
+    )
+    projector = ConsumerDeliveryProjector()
+    pack = resolved_tool_pack_from_request(_request())
+    assert pack is not None
+
+    observations, evidence, stats = await projector.project_task_result(
+        _Repository(),
+        collection_id="collection-1",
+        pack=pack,
+        observations=[map_observation],
+        evidence=[],
+    )
+
+    assert observations == []
+    assert evidence == []
+    assert stats["information_only_observations_suppressed"] == 1
+
+
+@pytest.mark.asyncio
 async def test_other_consumer_keeps_default_delivery_semantics():
     observation = _observation(
         "generic",
@@ -169,3 +266,5 @@ async def test_other_consumer_keeps_default_delivery_semantics():
     assert stats["policy"] == "intent_evidence"
     assert stats["dedup_policy"] == "none"
     assert stats["duplicates_collapsed"] == 0
+    assert stats["information_only_observations_suppressed"] == 0
+    assert stats["information_only_filtering_applied"] is False
