@@ -100,14 +100,16 @@ def _street_scope(state: Mapping[str, Any]) -> dict[str, object]:
     processed = _count(state.get("street_anchors_processed"))
     complete_raw = state.get("street_scope_complete")
     complete = complete_raw if isinstance(complete_raw, bool) else None
-    telemetry = str(state.get("street_scope_telemetry") or "").strip() or None
-    return {
+    result: dict[str, object] = {
         "expected": expected,
         "attempted": attempted,
         "processed": processed,
         "complete": complete,
-        "telemetry": telemetry,
     }
+    telemetry = str(state.get("street_scope_telemetry") or "").strip()
+    if telemetry:
+        result["telemetry"] = telemetry
+    return result
 
 
 def _row(
