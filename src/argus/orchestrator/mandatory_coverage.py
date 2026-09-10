@@ -26,7 +26,7 @@ class MandatoryCoverageToolPackOrchestrator(
     Other tool packs keep the normal collection-budget semantics unchanged.
     """
 
-    mandatory_coverage_version = "mandatory-coverage/3"
+    mandatory_coverage_version = "mandatory-coverage/4"
     emergency_max_pages = 500
     emergency_max_duration_seconds = 7_200.0
     post_mandatory_optional_pages = 24
@@ -67,6 +67,41 @@ class MandatoryCoverageToolPackOrchestrator(
             list(record.checkpoint.get("discovery_queries", [])),
             list(record.checkpoint.get("discovery_providers", [])),
             bool(record.checkpoint.get("discovery_blocked", False)),
+        )
+
+    async def _process_serial_lane(
+        self,
+        record,
+        lane_tasks,
+        deferred_pending,
+        *,
+        lane_id,
+        lane_kind,
+        lane_label,
+        page_limit,
+        future_lane_count,
+    ):
+        """Give every mandatory source entry room for one bounded item follow-up.
+
+        The base serial executor intentionally uses FIFO. With several discovery destinations
+        that meant the old ``max_destinations + 1`` budget consumed every entry page and then
+        only one child from the first listing. Source-contour navigation now emits at most one
+        terminal item/feed follow-up for each depth-0 entry, so a ``2 * entries`` ceiling is
+        both sufficient and bounded. Public-map and non-source lanes retain their established
+        limits unchanged.
+        """
+
+        if lane_kind == "source_contour" and lane_tasks:
+            page_limit = max(int(page_limit), len(lane_tasks) * 2)
+        return await super()._process_serial_lane(
+            record,
+            lane_tasks,
+            deferred_pending,
+            lane_id=lane_id,
+            lane_kind=lane_kind,
+            lane_label=lane_label,
+            page_limit=page_limit,
+            future_lane_count=future_lane_count,
         )
 
     async def _run_serial_public_maps(self, record, pending):
