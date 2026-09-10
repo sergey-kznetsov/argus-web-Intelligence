@@ -1,84 +1,70 @@
-# Standalone ARGUS deployment on Windows Server
+# Развёртывание standalone ARGUS на Windows Server
 
-ARGUS is a server-level infrastructure service. It is not a Geo Analyzer installable module and must not appear in the Geo Analyzer module lifecycle or analysis-launch UI.
-
-The runtime topology is:
+ARGUS — server-level infrastructure service. Он не устанавливается через Module Manager Geo Analyzer.
 
 ```text
 Windows Server
-  ├─ ARGUS API       127.0.0.1:8787
-  ├─ ARGUS worker    127.0.0.1:8788 readiness probe
-  ├─ Geo Analyzer TEST
-  │    └─ Kraken ───────────────┐
-  └─ Geo Analyzer PROD          │
-       └─ Kraken ───────────────┤
-                                ↓
-                         standalone ARGUS
+  ├─ ARGUS API     127.0.0.1:8787
+  ├─ ARGUS Worker  127.0.0.1:8788 readiness probe
+  ├─ Geo Analyzer TEST -> modules -> ARGUS
+  └─ Geo Analyzer PROD -> modules -> ARGUS
 ```
-
-Geo Analyzer does not start, stop, reinstall, update or delete ARGUS. Consumer modules inherit the two generic server variables from the Geo Analyzer process environment:
-
-```text
-ARGUS_SERVICE_BASE_URL=http://127.0.0.1:8787
-ARGUS_SERVICE_TOKEN_FILE=C:\ProgramData\ARGUS\secrets\argus.token
-```
-
-Kraken prefers these generic names. Its old `KRAKEN_ARGUS_*` variables remain only as a temporary backwards-compatible fallback.
 
 ## Server layout
 
 ```text
-C:\argus\releases\<commit>\        immutable application release
-C:\ProgramData\ARGUS\argus.env    service configuration
-C:\ProgramData\ARGUS\secrets\    bearer token and PostgreSQL DSN
-C:\ProgramData\ARGUS\logs\       API and worker logs
+C:\argus\releases\<commit>\
+C:\ProgramData\ARGUS\argus.env
+C:\ProgramData\ARGUS\secrets\argus.token
+C:\ProgramData\ARGUS\secrets\database-dsn.txt
+C:\ProgramData\ARGUS\secrets\github-token.txt   # только если нужен GitHub auth
+C:\ProgramData\ARGUS\logs\
 C:\ProgramData\ARGUS\deployment.json
 ```
 
-Two SYSTEM scheduled tasks provide the single logical service:
+Scheduled Tasks:
 
 ```text
 ARGUS-API
 ARGUS-Worker
 ```
 
-Both are configured to start at boot and restart after process failure. The API and worker bind only to loopback; there is no public ARGUS ingress.
+Обе задачи запускаются как SYSTEM, стартуют при загрузке и перезапускаются после process failure.
 
-## Deployment safety
+## PostgreSQL
 
-`deploy/windows/deploy-server.ps1` is plan-only unless `-Apply` is supplied. `-Ref` must always be an immutable 40-character Git commit SHA; branch names such as `main` are rejected.
+`deploy/windows/deploy-server.ps1` **не читает** `C:\server\saas.env`, TEST `saas.env` или другой Geo Analyzer environment file для получения БД.
 
-Apply performs these steps:
+Перед `-Apply` должен существовать ARGUS-owned файл:
 
-1. verifies the exact GitHub commit;
-2. builds a new immutable release and isolated Python 3.11 virtual environment;
-3. installs Chromium for the Playwright path;
-4. preserves the server bearer token and copies the PostgreSQL DSN into an ARGUS-owned secret file;
-5. runs ARGUS schema migrations and schema verification before cutover;
-6. stops the previous ARGUS tasks and points them at the new release;
-7. starts worker and API and waits for both readiness checks;
-8. rolls the tasks back to the previous release if the new release does not become healthy;
-9. keeps the current and previous releases for rollback.
+```text
+C:\ProgramData\ARGUS\secrets\database-dsn.txt
+```
 
-ARGUS owns only the `argus` PostgreSQL schema. It may use the same PostgreSQL instance/database as Geo Analyzer while remaining a separate application lifecycle.
+Deploy проверяет DSN и прерывается, если:
 
-## Deploy
+```text
+dbname != argus
+user   != argus
+```
 
-Set the exact CI-green commit SHA:
+Следовательно, канонический standalone deployment использует отдельную PostgreSQL database `argus`, service role `argus` и schema `argus`. PostgreSQL server как инфраструктура может быть тем же физическим сервером, но database/login/lifecycle ARGUS изолированы от Geo Analyzer.
+
+## Plan и Apply
+
+`-Ref` должен быть точным 40-символьным Git commit SHA. Branch name `main` для deploy запрещён.
 
 ```powershell
 $Ref = "<40-character-CI-green-commit-SHA>"
-```
 
-Plan:
-
-```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File deploy\windows\deploy-server.ps1 `
   -Ref $Ref
 ```
 
-Apply only after the plan has been checked:
+Plan-only ничего не меняет.
+
+После проверки плана:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -87,13 +73,20 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -Apply
 ```
 
-Confirmed production Geo Analyzer database configuration source on this server:
+Apply:
 
-```text
-C:\server\saas.env
-```
-
-The deployment copies only the resolved DSN value into `C:\ProgramData\ARGUS\secrets\database-dsn.txt`; runtime ARGUS does not depend on reading Geo Analyzer's environment file. ARGUS migrations remain scoped to PostgreSQL schema `argus`.
+1. проверяет commit через GitHub;
+2. скачивает immutable snapshot;
+3. создаёт Python 3.11 venv;
+4. устанавливает ARGUS и Chromium;
+5. проверяет ARGUS-owned DB identity;
+6. создаёт/preserves Bearer token;
+7. формирует managed `argus.env`;
+8. запускает migrations + schema check;
+9. переключает `ARGUS-Worker` и `ARGUS-API`;
+10. ждёт worker/API readiness;
+11. проверяет, что listeners принадлежат новой release;
+12. при failure возвращает Scheduled Tasks на previous release.
 
 ## Health
 
@@ -103,13 +96,18 @@ Invoke-RestMethod http://127.0.0.1:8788/readyz
 Get-ScheduledTask -TaskName "ARGUS-*" | Select-Object TaskName,State
 ```
 
-The API is considered ready only when PostgreSQL is healthy and a worker is active.
+API readiness для role=`api` требует PostgreSQL + свежий worker heartbeat.
 
-Never print `C:\ProgramData\ARGUS\secrets\argus.token` or the database DSN during diagnostics.
+## Подключение Geo Analyzer
 
-## Connect Geo Analyzer TEST
+Consumers получают:
 
-Run plan first:
+```text
+ARGUS_SERVICE_BASE_URL=http://127.0.0.1:8787
+ARGUS_SERVICE_TOKEN_FILE=C:\ProgramData\ARGUS\secrets\argus.token
+```
+
+Для TEST helper:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -118,39 +116,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -TaskName GeoAnalyzerTest
 ```
 
-Then apply the same command with `-Apply`.
+Сначала plan, затем та же команда с `-Apply`.
 
-The consumer script writes only:
+Для PROD helper применяется к фактическому production environment и Scheduled Task только после успешной TEST-интеграции. Helper записывает лишь `ARGUS_SERVICE_BASE_URL` и `ARGUS_SERVICE_TOKEN_FILE`; он не переносит PostgreSQL credentials.
 
-```text
-ARGUS_SERVICE_BASE_URL
-ARGUS_SERVICE_TOKEN_FILE
-```
+## Обновление
 
-After Geo Analyzer TEST restarts, install or reinstall only Kraken through the Geo Analyzer module interface. Kraken inherits the generic ARGUS service variables from Geo Analyzer and calls the already-running standalone service.
+ARGUS обновляется отдельным запуском `deploy-server.ps1` с новым CI-green commit SHA. Geo Analyzer/Kraken не должны переустанавливаться только из-за совместимого обновления ARGUS protocol.
 
-## TEST acceptance
-
-The required integrated acceptance path is:
-
-```text
-Geo Analyzer TEST
-  -> Kraken installed through Module Manager
-  -> standalone ARGUS
-  -> public source
-  -> Observation/Evidence/Provenance/Coverage
-  -> Kraken analytics
-  -> Geo Analyzer result
-```
-
-The corrected staging smoke does not install ARGUS. It requires an already-running standalone service and an already-installed Kraken module.
-
-## Connect Geo Analyzer PROD
-
-Production is configured only after the same Kraken flow passes in TEST. Use the same consumer script with the confirmed production Geo Analyzer environment file `C:\server\saas.env` and Scheduled Task `GeoAnalyzerSaaS`.
-
-No separate production ARGUS instance is created: TEST and PROD consume the same standalone service through localhost.
-
-## Upgrade ARGUS
-
-Run `deploy-server.ps1` again with a new CI-green immutable commit SHA. Geo Analyzer and Kraken do not need reinstall merely because ARGUS is upgraded, provided the protocol remains compatible. ARGUS cutover and rollback remain entirely inside the standalone service lifecycle.
+Нельзя выводить Bearer token или DB DSN в диагностике.

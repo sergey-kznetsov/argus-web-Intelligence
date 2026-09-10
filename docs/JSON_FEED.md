@@ -1,77 +1,75 @@
-# JSON Feed source
+# JSON Feed
 
-ARGUS supports JSON Feed 1.0 and 1.1 as a factual public syndication source alongside RSS and Atom.
+ARGUS поддерживает JSON Feed 1.0 и 1.1 как factual public syndication source наряду с RSS/Atom.
 
-JSON Feed is treated as source data, not as a search result or analytical conclusion. Feed items become evidence-backed publication Observations. Kraken, Janus and other consumers remain responsible for interpretation.
+JSON Feed — source data, а не search result или аналитический вывод. Items становятся evidence-backed publication Observations; interpretation остаётся consumer module.
 
 ## Discovery
 
-Generic Web pages may advertise a JSON Feed through the standard HTML alternate link:
+Generic Web может обнаружить JSON Feed через стандартный alternate link:
 
 ```html
 <link rel="alternate" type="application/feed+json" href="/feed.json">
 ```
 
-ARGUS resolves the URL against the page URL, removes fragments and applies the same allowed/denied-domain boundary used for RSS/Atom discovery.
+URL разрешается относительно page URL, fragment удаляется, применяются те же allowed/denied domain boundaries.
 
-`application/json` is intentionally not accepted as an HTML feed-discovery MIME type. It is too broad and commonly identifies arbitrary JSON APIs. Standard autodiscovery requires `application/feed+json`.
+`application/json` не принимается как feed-autodiscovery MIME type, потому что это слишком общий тип для произвольных JSON API. Для autodiscovery нужен `application/feed+json`.
 
-Explicit seed URLs use a deliberately narrow filename heuristic (`feed.json`, `*.feed.json`, `*.jsonfeed`) so a generic public JSON dataset is not duplicated as both a dataset and a publication feed.
+Explicit seed URLs используют узкую filename heuristic (`feed.json`, `*.feed.json`, `*.jsonfeed`), чтобы обычный JSON dataset не дублировался как publication feed.
 
-## Parsing and limits
+## Parsing и limits
 
-JSON Feed does not introduce a second JSON parser. The adapter uses ARGUS `BoundedStructuredDataExtractor`, so the existing structured-data controls apply before semantic feed handling:
+JSON Feed использует `BoundedStructuredDataExtractor`, поэтому до semantic feed handling действуют:
 
-- transport/parser byte limit;
-- strict UTF-8 JSON decoding;
-- rejection of NaN/Infinity;
-- JSON node/depth/container/string limits;
-- no parser network access.
+- byte limit;
+- strict UTF-8 decoding;
+- rejection NaN/Infinity;
+- node/depth/container/string limits;
+- отсутствие parser network access.
 
-After bounded JSON parsing the adapter requires:
+После bounded parsing требуется:
 
 - root object;
-- `version` equal to `https://jsonfeed.org/version/1` or `https://jsonfeed.org/version/1.1`;
-- non-empty string `title`;
+- `version` = `https://jsonfeed.org/version/1` или `https://jsonfeed.org/version/1.1`;
+- непустой string `title`;
 - array `items`.
 
-At most 100 items are normalized per feed, further bounded by `ARGUS_STRUCTURED_DATA_MAX_RECORDS`. Hitting the item budget is explicit partial coverage (`JSON_FEED_ITEM_LIMIT`), never silent truncation.
+Нормализуется максимум 100 items и не больше `ARGUS_STRUCTURED_DATA_MAX_RECORDS`. Достижение лимита даёт `partial=true` + `JSON_FEED_ITEM_LIMIT`.
 
 ## Item normalization
 
-A usable item requires:
+Usable item требует:
 
-- `id` as a string or JSON number (numbers are deterministically converted to strings);
-- at least one non-empty `content_text` or `content_html` value.
+- `id` как string или JSON number;
+- хотя бы один непустой `content_text` или `content_html`.
 
-Invalid items are skipped and reported as `JSON_FEED_ITEM_INVALID`, making the source result partial rather than pretending complete coverage.
+Invalid items пропускаются с `JSON_FEED_ITEM_INVALID`, а source result становится partial.
 
-`content_text` is preferred for the Observation text. If only `content_html` is present, ARGUS derives inert plain text with BeautifulSoup and removes script/style/noscript/svg nodes. The source HTML is not executed.
+Для Observation text предпочтителен `content_text`. Если есть только `content_html`, ARGUS извлекает inert plain text через BeautifulSoup, удаляя script/style/noscript/svg. HTML не исполняется.
 
-Item `url` is resolved against the feed URL and accepted only as public-looking HTTP(S) syntax without URL userinfo. Network SSRF validation still occurs when ARGUS later fetches any URL as a task; item URLs stored as provenance are not automatically fetched by this adapter.
+Item `url` разрешается относительно feed URL и принимается только как HTTP(S) без URL userinfo. SSRF validation применяется, когда URL позже реально fetch'ится как task; сам adapter автоматически его не открывает.
 
-## Identity, Evidence and provenance
+## Identity, Evidence и provenance
 
-Each valid item produces:
+Каждый valid item создаёт:
 
-- `Observation.entity_type = publication`;
-- `Observation.source_kind = json_feed_item`;
-- stable Observation identity from collection, source, item id, item URL and canonical item content hash;
-- canonical source item JSON in `Observation.data.item`;
-- canonical source item JSON (bounded to the normal Evidence text limit) as `json_feed_item` Evidence;
-- feed Snapshot identity;
-- feed URL, item URL, JSON Feed version, research goals and structured-extractor version in provenance.
+- `entity_type=publication`;
+- `source_kind=json_feed_item`;
+- stable Observation identity из collection/source/item id/item URL/canonical item hash;
+- canonical source item JSON в `Observation.data.item`;
+- bounded canonical JSON как `json_feed_item` Evidence;
+- feed Snapshot ID;
+- feed URL, item URL, version, goals и extractor version в provenance.
 
-The item content hash is calculated from canonical source JSON rather than rendered plain text. Two source items that render similarly but differ in declared structured fields therefore remain distinguishable.
+Content hash строится из canonical source JSON, а не rendered plain text.
 
-## Scope
+## Ограничения
 
-The adapter does not:
+Adapter не:
 
-- execute embedded HTML or scripts;
-- follow `next_url` pagination automatically;
-- interpret authors/tags as audience or business conclusions;
-- treat arbitrary `application/json` links as feeds;
-- bypass authentication, CAPTCHA or access controls.
-
-Pagination and additional feed semantics can be added later if real source coverage demonstrates the need; they are deliberately omitted from the first implementation under YAGNI.
+- исполняет embedded HTML/scripts;
+- автоматически следует `next_url`;
+- интерпретирует authors/tags как business meaning;
+- считает любой `application/json` feed'ом;
+- обходит authentication/CAPTCHA/access control.

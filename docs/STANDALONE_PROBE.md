@@ -1,28 +1,28 @@
-# Standalone ARGUS probe
+# Standalone-проверка ARGUS
 
-`argus probe` runs one real ARGUS collection without Geo Analyzer.
+`argus probe` запускает одну реальную Collection без Geo Analyzer.
 
-It uses the normal ARGUS service graph, source adapters, discovery, FAST/BROWSER escalation, extractors, provenance, Evidence/Observation models and collection orchestrator. The deployment substitutions are intentionally limited to:
+Probe использует обычные ARGUS contracts, source adapters, discovery, FAST/BROWSER, extractors, provenance, Observation/Evidence и CollectionOrchestrator. Отличия deployment ограничены:
 
-- `ARGUS_EXECUTION_ROLE=embedded`;
-- local SQLite storage;
-- no external Geo Analyzer module manager;
-- no separate collection worker process.
+```text
+ARGUS_EXECUTION_ROLE=embedded
+local SQLite storage
+нет Geo Analyzer Module Manager
+нет отдельного server worker process
+```
 
-This mode is for factual inspection, acceptance checks and development diagnostics. It is not the product server topology.
+Это инструмент factual inspection, acceptance и development diagnostics, а не production topology.
 
-## Installation
+## Установка
 
 ```bash
 python -m pip install -e '.[dev]'
 playwright install chromium
 ```
 
-Chromium is needed when browser discovery or BROWSER fallback is used. A deterministic seed-URL probe that stays on a normal server-rendered page can use FAST without browser execution.
+Chromium нужен для BROWSER/discovery paths. Deterministic seed URL, доступный через обычный HTML FAST, может пройти без browser execution.
 
-## Deterministic source test
-
-Use an explicit public page and disable discovery when you want to inspect exactly what ARGUS extracts from that page:
+## Проверка конкретного source
 
 ```bash
 argus probe \
@@ -34,57 +34,52 @@ argus probe \
   --max-depth 0
 ```
 
-The console prints a bounded summary with factual intent coverage, source coverage plus Observation and Evidence previews. The full JSON is written under `.argus/probes/<collection_id>.json` unless `--output` is supplied.
+Console показывает bounded summary с factual intent coverage, source coverage и previews Observation/Evidence. Полный JSON пишется в `.argus/probes/<collection_id>.json`, если `--output` не задан.
 
-The JSON report contains:
+JSON report содержит:
 
-- the exact `CollectionRequest`;
-- terminal `CollectionRecord` and checkpoint state;
-- complete `CollectionResult`;
-- every Observation;
-- every Evidence item with provider and source URL;
-- provenance and quality metadata;
-- evidence-aware acceptance state for every requested intent;
-- count of canonical factual source URLs supporting each requested intent;
+- exact `CollectionRequest`;
+- terminal CollectionRecord/checkpoint;
+- complete CollectionResult;
+- Observations;
+- Evidence с provider/source URL;
+- provenance/quality;
+- acceptance state requested intents;
+- canonical factual source counts;
 - semantic exact-excerpt Evidence count;
-- public-map providers that produced factual evidence for at least one requested intent;
-- source health state;
-- operational metrics for the run;
-- elapsed time and local probe database path.
+- public-map providers с factual evidence;
+- source health;
+- operational metrics;
+- elapsed time и local probe DB path.
 
-Canonical source counting removes fragments, default ports and common tracking parameters such as `utm_*`, `gclid` and `yclid`. Reaching the same factual page through advertising/tracking URL variants therefore does not inflate acceptance coverage.
+Canonical source counting удаляет fragment/default ports/common tracking parameters, поэтому tracking URL variants не увеличивают coverage.
 
-To also print the complete JSON to stdout, add `--json`.
+`--json` дополнительно печатает полный JSON в stdout.
 
-## Strict acceptance mode
+## Strict acceptance
 
-A collection reaching `completed` or producing many pages does not by itself prove that the requested research goals were satisfied. The probe therefore evaluates final observations with the same `IntentCoverageEvaluator` used by adaptive follow-up research.
-
-Use `--require-covered-intents` when the command should fail unless every requested intent has factual coverage:
+Terminal `completed` или большое число fetched pages не доказывает покрытие research goals. Probe использует тот же `IntentCoverageEvaluator`, что и adaptive research.
 
 ```bash
 argus probe \
   --city "Ижевск" \
   --address "Пушкинская, 277" \
-  --intent reviews \
   --intent complaints \
   --require-covered-intents
 ```
 
-The report is always written first. If one or more requested intents remain uncovered, the command exits with code `2` and names those intents. This makes `argus probe` suitable for repeatable smoke/acceptance scripts without confusing successful navigation with successful research.
+Если requested intent не имеет factual coverage, report всё равно сохраняется, process exits code `2` и перечисляет uncovered intents.
 
-Coverage is evidence-aware:
+Coverage evidence-aware:
 
-- `research_goals` navigation metadata never counts as proof;
-- source-declared factual shapes such as `Review` may satisfy the corresponding intent;
-- exact-excerpt semantic findings may satisfy supported semantic intents only after the excerpt is verified against fetched source text;
-- model-generated text never counts as Evidence.
+- `research_goals` navigation metadata не доказательство;
+- source-declared factual shape может покрыть соответствующий intent;
+- exact-excerpt semantic finding учитывается только после проверки excerpt в fetched source text;
+- generated text не является Evidence.
 
-For future/custom intents that the current coverage evaluator does not know how to prove, strict mode will correctly leave them uncovered until a factual coverage rule is implemented.
+Unknown/custom intent остаётся uncovered, пока для него нет factual coverage rule.
 
-## Address-driven discovery test
-
-To test how ARGUS searches for sources from a location rather than from a known URL:
+## Address-driven discovery
 
 ```bash
 argus probe \
@@ -96,26 +91,19 @@ argus probe \
   --max-depth 2
 ```
 
-With no configured SearXNG endpoint, the current free discovery fallback is DuckDuckGo browser discovery. This requires installed Chromium. Discovery hits are navigation hints only; they do not become Evidence until ARGUS fetches the destination page.
+Если SearXNG не настроен, текущий бесплатный discovery bootstrap при `ARGUS_BROWSER_SERP_ENABLED=true` использует `duckduckgo_fast`, `mojeek_fast` и `bing_rss` как ordered fallbacks. Старое описание только DuckDuckGo browser fallback больше не актуально.
 
-## Public-map acceptance test
+Discovery result не Evidence, пока destination не fetched.
 
-To exercise the free public-web map path, request one or more map-specific factual intents such as `reviews` or `complaints` and keep discovery enabled:
+## Kraken mandatory coverage
 
-```bash
-argus probe \
-  --city "Ижевск" \
-  --address "Пушкинская, 277" \
-  --intent reviews \
-  --intent complaints \
-  --max-pages 20 \
-  --max-depth 2 \
-  --require-covered-intents
-```
+Для `consumer=kraken.development.uds` + `capability=urban_signals` обычные `max-pages` semantics временно расширяются mandatory execution guard, чтобы обязательные source/map lanes не обрывались общим маленьким collection budget. После обязательного контура включается bounded optional budget. Probe report/checkpoint позволяет проверять `research_lane_coverage`.
 
-The acceptance block reports a map provider only when an observation from that provider actually supports at least one intent requested by this probe. Merely discovering or opening Yandex Maps, 2GIS or Google Maps does not add a provider to `public_map_providers_with_facts`.
+Публичные map lanes в этом profile используют все street anchors территории. Information-only map observations не должны считаться Kraken subject messages.
 
-When AGENT is deliberately enabled in environment configuration, the same probe also exercises deterministic public review views, bounded semantic AGENT rounds and verified SiteRecipe replay. A CAPTCHA/access block remains a blocked source and is not bypassed.
+## AGENT
+
+Текущий embedded service graph, как и server graph, не подключает AGENT/LLM. Поэтому probe сейчас проверяет FAST/BROWSER и active deterministic SiteRecipe replay, но не agent-generated navigation. Старые примеры «включите AGENT env и probe его проверит» считаются устаревшими до повторного wiring в `build_services()`.
 
 ## Coordinates
 
@@ -127,7 +115,7 @@ argus probe \
   --intent public_mentions
 ```
 
-Nominatim, Overpass and Wayback remain opt-in provider endpoints and are configured with the same environment variables as normal ARGUS. The probe does not silently enable third-party endpoints that product configuration has not enabled.
+В embedded mode Nominatim, Overpass и Wayback остаются opt-in через environment. Server-role auto Overpass не применяется к standalone embedded probe.
 
 ## Domain controls
 
@@ -139,29 +127,27 @@ argus probe \
   --denied-domain ads.example.org
 ```
 
-The same ARGUS URL safety and domain constraints apply in standalone mode.
+Используются те же URL/domain security rules.
 
-## Useful options
+## Полезные options
 
-- `--output PATH` — choose the JSON report path;
-- `--db-path PATH` — choose the local SQLite database;
-- `--preview-items N` — number of Observation/Evidence items shown in the console;
-- `--preview-chars N` — text preview size;
-- `--timeout-seconds N` — stop a hung diagnostic collection;
-- `--discovery / --no-discovery` — enable or disable discovery;
-- `--max-pages` and `--max-depth` — use the normal collection budgets;
-- `--require-covered-intents` — exit `2` when any requested intent lacks factual coverage.
+- `--output PATH` — JSON output;
+- `--db-path PATH` — SQLite DB;
+- `--preview-items N` — число preview items;
+- `--preview-chars N` — preview text size;
+- `--timeout-seconds N` — bounded diagnostic timeout;
+- `--discovery / --no-discovery`;
+- `--max-pages`, `--max-depth`;
+- `--require-covered-intents`.
 
-## What to inspect
+## Что проверять
 
-For every probe, verify at minimum:
+1. `acceptance.requested_intents`, `covered_intents`, `uncovered_intents`, `intent_source_counts`.
+2. `result.status`, `result.errors`.
+3. `result.coverage` и `research_lane_coverage`, если profile его использует.
+4. `observations[*].source_kind/url/data/provenance/quality`.
+5. `evidence[*].source.url/text`.
+6. discovery/checkpoint metadata.
+7. source health и runtime metrics.
 
-1. `acceptance.requested_intents`, `covered_intents`, `uncovered_intents` and `intent_source_counts`;
-2. `result.status` and `result.errors`;
-3. `result.coverage` to see which factual adapters actually ran;
-4. `result.observations[*].source_kind`, `url`, `data`, `provenance`, and `quality`;
-5. `result.evidence[*].source.url` and `text` to confirm the observation is backed by the fetched source;
-6. `collection.checkpoint.discovery_queries` / provider metadata when discovery was used;
-7. source health and runtime metrics for blocked, degraded, retried or escalated paths.
-
-A search snippet, sitemap row or archive index hit is not factual Evidence by itself. The destination content must be fetched before it can support an Observation.
+Search snippet, Sitemap row или archive index hit сами по себе не являются factual Evidence.

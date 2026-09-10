@@ -1,23 +1,25 @@
-# Sitemap discovery
+# Discovery через Sitemap
 
-ARGUS uses `site_discovery` only as an internal navigation aid. Robots.txt and Sitemap entries never become factual coverage by themselves. A selected destination must still pass through `generic_web` and produce normal Observation/Evidence before a consumer can use it as a fact.
+ARGUS использует `site_discovery` только как внутренний navigation layer. `robots.txt` и Sitemap entries сами по себе не создают factual coverage. Выбранный destination должен пройти normal source adapter и дать Observation/Evidence.
 
 ## Scope
 
-Sitemap navigation is restricted to HTTP(S) URLs on the original hostname. Request-level allowed/denied domain constraints remain active for final page URLs. Sitemap-index fan-out, final URL fan-out, collection page budget and index depth remain bounded.
+Sitemap navigation ограничена HTTP(S) URLs на исходном hostname. Request-level allowed/denied domains продолжают применяться к final page URLs. Fan-out Sitemap index, final URLs, collection page budget и index depth ограничены.
 
-Missing, malformed, blocked or oversized Sitemap content is fail-open: ARGUS abandons that optional navigation branch without turning the collection into a factual source failure.
+Missing/malformed/blocked/oversized Sitemap работает fail-open: optional navigation branch прекращается без превращения collection в factual source failure.
 
-## Gzip Sitemap files
+## Gzip Sitemap
 
-ARGUS accepts same-host `.xml.gz`/`.gz` Sitemap URLs declared in `robots.txt` or a Sitemap index. The FAST runtime retains the bounded response bytes; `site_discovery` detects actual gzip content from the gzip magic bytes or gzip media type and decompresses it locally.
+Поддерживаются same-host `.xml.gz`/`.gz`, объявленные в `robots.txt` или Sitemap index. FAST сохраняет bounded response bytes; `site_discovery` распознаёт gzip по magic bytes/media type и распаковывает локально.
 
-Decompression uses a bounded streaming zlib operation. The maximum uncompressed Sitemap size is `ARGUS_MAX_RESPONSE_BYTES`, the same limit used for the fetched response body. A compressed document that would expand beyond that limit is rejected before XML parsing. Invalid, truncated or multi-member/trailing-data gzip payloads are ignored.
+Распаковка выполняется bounded streaming zlib. Максимальный uncompressed Sitemap size = `ARGUS_MAX_RESPONSE_BYTES`. Payload, который превышает лимит после распаковки, отклоняется до XML parsing. Invalid/truncated/multi-member/trailing-data gzip игнорируется как невалидный navigation source.
 
-The decompressed XML is passed to `defusedxml`, exactly like an ordinary Sitemap. DTD/entity expansion remains disabled. Gzip support does not alter the evidence boundary: a Sitemap is still navigation metadata, not evidence.
+Decompressed XML проходит `defusedxml`; DTD/entity expansion отключён.
+
+Sitemap остаётся navigation metadata, а не Evidence.
 
 ## Recursion
 
-A Sitemap index can enqueue only one further index level. Sitemap-discovered final pages are marked with `disable_site_discovery=true`, so those pages do not recursively launch another robots/Sitemap traversal.
+Sitemap index может поставить в очередь только один дополнительный index level. Final pages, найденные через Sitemap, получают `disable_site_discovery=true`, поэтому они не запускают новый recursive robots/Sitemap traversal.
 
-This keeps discovery bounded even on sites with large or cyclic Sitemap graphs.
+Это сохраняет bounded behavior даже для крупных или cyclic Sitemap graphs.

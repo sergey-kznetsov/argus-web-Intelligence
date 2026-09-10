@@ -1,365 +1,102 @@
-# ARGUS Web Intelligence — product charter
+# ARGUS Web Intelligence — продуктовый принцип
 
-Status: binding product definition for the repository.
+Статус: нормативное определение назначения ARGUS. Этот документ описывает границы продукта и одновременно отделяет целевое направление от фактически включённых runtime-возможностей.
 
-This document defines what ARGUS is, what it must do and what it must never become. A change that contradicts this charter is a product regression even if its unit tests pass.
+## 1. Назначение
 
-## 1. Mission
+ARGUS — универсальный backend исследования публичного web для экосистемы Geo Analyzer.
 
-ARGUS is a universal public-web intelligence collector for the Geo Analyzer ecosystem.
-
-Its job is to receive a territory and research intents, independently discover relevant public sources, obtain the material, extract factual information, preserve evidence and provenance, expand the research from newly discovered entities, recover from failures, and return a complete structured factual corpus to the calling analytical module.
-
-Core boundary:
+Он получает территорию и research contract, находит публичные источники, получает материал, извлекает source-backed факты, сохраняет Evidence/Provenance, продолжает bounded исследование по найденным сущностям и возвращает структурированный factual corpus вызывающему модулю.
 
 ```text
 ARGUS = find + obtain + prove + store + continue researching
-Analytical modules = interpret + calculate + conclude
+Module = interpret + calculate + conclude
 ```
 
-ARGUS is not a report writer, risk scorer, parking model, marketing model or consumer-specific business engine.
+ARGUS не пишет итоговый предметный отчёт, не рассчитывает risk/parking/demand и не принимает бизнес-решения за consumer module.
 
-## 2. Product, not an MVP
-
-ARGUS is developed as a complete product. Milestones are implementation slices, not permission to remove the original requirements.
-
-The following are not acceptable end states:
-
-- a skeleton with placeholder interfaces;
-- a set of unrelated parsers;
-- a crawler that stops after the first search result page;
-- a historical mode limited to comparing two HTML snapshots;
-- a geo mode limited to returning POI names;
-- an LLM used only to rewrite collected text;
-- a source list without a working retrieval path;
-- a feature declared complete only because one adapter exists.
-
-A feature is complete only when its end-to-end product result works and is covered by automated tests or a reproducible standalone probe.
-
-## 3. System position
+## 2. Положение в системе
 
 ```text
-User
-  ↓
 Geo Analyzer
-  ↓
-selected analytical modules
-  ↓
-Kraken / Janus / Historical / future modules
-  ↓
-ARGUS
-  ↓
-public internet / sites / maps / archives / portals / documents
+  -> analytical modules
+  -> ARGUS
+  -> public internet / maps / archives / portals / documents
 ```
 
-ARGUS is one standalone server-level infrastructure service. It must not appear as a user analysis checkbox, capability card or installable Geo Analyzer module. The server deployment owns ARGUS install, start, health-check, update, rollback and removal. Geo Analyzer TEST, Geo Analyzer PROD and analytical modules consume the same service through the generic deployment-owned contract:
+ARGUS — один standalone server service. Его lifecycle принадлежит серверному deployment, а не Module Manager Geo Analyzer.
+
+Общий consumer contract:
 
 ```text
 ARGUS_SERVICE_BASE_URL=http://127.0.0.1:8787
 ARGUS_SERVICE_TOKEN_FILE=C:\ProgramData\ARGUS\secrets\argus.token
 ```
 
-Geo Analyzer does not contain ARGUS-specific lifecycle branches. Analytical modules decide when their methodology requires web intelligence and call ARGUS through a module-local connector.
+## 3. Consumer profiles
 
-ARGUS must never branch on consumer identity (`if kraken`, `if janus`, etc.). A consumer describes the requested information through `territory`, `intents`, `requested_facts` and constraints.
+Consumer передаёт stable `consumer`, profile version, capability, requested facts, territory, intents и constraints. ARGUS использует декларативные registries/tool packs для выбора разрешённого исследовательского контура. В Core не должно появляться бизнес-условий по названию модуля.
 
-## 4. Input contract
+## 4. Исследование территории
 
-A collection request describes:
+При radius-анализе ARGUS не ограничивается одним исходным домом. Он должен использовать доказанные entity/street anchors внутри территории и запускать bounded дополнительные ветки. Для текущего Kraken `urban_signals` обязательный контур проходит все обязательные research lanes, включая street scope, до bounded optional research.
 
-- consumer;
-- analysis id;
-- city/address/coordinates/geometry;
-- radius/territory context;
-- one or more research intents;
-- limits and optional domain constraints;
-- seed URLs when known.
+Recursive branch остаётся гипотезой, пока отдельный source fetch не создаст Evidence.
 
-ARGUS decides which public sources and retrieval strategies are appropriate.
+## 5. LLM/AGENT
 
-## 5. Required research behaviour
+Целевой принцип допускает локальный LLM только как navigation/research assistant, но не как factual authority. Однако **в текущем production service graph LLM/AGENT отключён**: `build_services()` не создаёт agent и LLM health service.
 
-A normal address research run is iterative, not one-shot:
+Если AGENT будет возвращён, модель может предлагать query/navigation actions только в bounded контракте; factual output всё равно должен быть подтверждён fetched source. CAPTCHA/access-control не обходятся.
 
-```text
-address / point / territory
-  ↓
-initial research plan
-  ↓
-current entities around the location
-  ↓
-public web discovery
-  ↓
-factual retrieval
-  ↓
-new entities / old names / organisations / events / documents
-  ↓
-new search branches
-  ↓
-coverage-gap check
-  ↓
-additional searches
-  ↓
-stop only when the configured research budget is exhausted or no meaningful new branch remains
-```
+## 6. Retrieval
 
-### 5.1 Territory research
-
-For a radius around an address ARGUS must not research only the exact building. It must create a bounded inventory of relevant named entities in the territory and use those entities as additional research anchors.
-
-Requested intents may include, among others:
-
-- reviews;
-- comments;
-- complaints and public appeals;
-- discussions and forums;
-- public mentions;
-- local news;
-- incidents;
-- historical context;
-- explicit map/place categories;
-- future universal intents added by consumers.
-
-### 5.2 Recursive research
-
-A source result may produce new factual entities. Those entities may create new navigation hypotheses, but they become facts only after a normal source is fetched and evidence is stored.
-
-Example:
-
-```text
-"former factory X" found in a source
-  ↓
-factory X
-  ↓
-old addresses / owners / closure / demolition / reconstruction
-  ↓
-related documents / news / maps / photos
-  ↓
-subsequent use of the site
-```
-
-Recursive research must be bounded by depth, pages, query budget, deduplication and persistent checkpoints.
-
-## 6. LLM role
-
-The local LLM is part of the research engine, not a factual authority.
-
-LLM may:
-
-- create and refine search plans;
-- identify missing research directions;
-- propose follow-up queries;
-- identify entities and navigation hypotheses;
-- understand unfamiliar site interfaces;
-- choose browser actions;
-- help recover a broken SiteRecipe.
-
-LLM must not:
-
-- invent facts;
-- turn its own prose into Evidence;
-- choose a business conclusion for a consumer;
-- bypass CAPTCHA or access controls.
-
-Default local LLM backend is Ollama. Paid cloud LLMs must never be required for the base product.
-
-## 7. Retrieval escalation
-
-Every public web target follows the same escalation concept:
+Фактическая текущая эскалация:
 
 ```text
 FAST
-  ↓ if insufficient
-BROWSER
-  ↓ if deterministic browser navigation is insufficient
-AGENT
+  -> BROWSER, если FAST недостаточен
 ```
 
-FAST is for ordinary HTML, XML, JSON, feeds, documents and public endpoints.
+Verified active SiteRecipe может быть replayed до/в рамках BROWSER path. AGENT остаётся неактивным extension point.
 
-BROWSER is for JavaScript, SPA, lazy loading, forms, tabs, infinite/virtual scroll and other deterministic UI interaction.
+## 7. Источники и форматы
 
-AGENT is the last resort for an unknown interface. A successful agent route must be converted into a candidate SiteRecipe and verified by deterministic browser replay before it is trusted for reuse.
+ARGUS поддерживает generic web и специализированные source adapters. В репозитории фактически реализованы bounded extraction paths для HTML, RSS/Atom, JSON Feed, Sitemap navigation, PDF, CSV/TSV/JSON/XML, gzip structured files, DOCX/XLSX, HTML tables, JSON-LD/Microdata/page metadata, GeoJSON, KML/KMZ, snapshots/Wayback/PastVu и OSM/Overpass.
 
-## 8. Source architecture
+Наличие source catalogue не означает наличие dedicated adapter для каждого перечисленного сайта.
 
-All sources implement the common SourceAdapter behaviour:
+## 8. Исторический контур
 
-```text
-discover → fetch/navigate → extract → normalize
-```
+История строится из source-backed captures/snapshots и public archive sources. ARGUS может фиксировать page/entity changes между подтверждёнными captures, но не должен выдумывать единую историю при конфликтующих или неполных данных.
 
-Source adapters collect facts. They do not contain Kraken/Janus/Historical business logic.
+## 9. Evidence rule
 
-ARGUS must support both universal formats and dedicated public-source adapters when a source needs stable special navigation.
+Каждый factual Observation должен быть связан с Evidence/Provenance. Search snippet, query, navigation score, Sitemap row, model text или сам факт нахождения URL не являются предметным доказательством.
 
-Expected source families include:
+Неизвестная publication date остаётся `null`.
 
-- generic web;
-- RSS/Atom/JSON Feed;
-- HTML metadata and semantic structures;
-- PDF and office documents;
-- structured CSV/TSV/JSON/XML;
-- maps/geospatial data;
-- SERP/discovery providers;
-- public map interfaces;
-- review/discussion sources;
-- official/municipal/public portals;
-- historical archives, maps and photo archives.
+## 10. Free base contour
 
-## 9. SiteRecipe
+Базовый продукт работает без обязательных платных search APIs, proxies, CAPTCHA solving, commercial browser clouds, Google/Yandex/2GIS APIs и paid LLM.
 
-When AGENT successfully learns a public-site route, ARGUS stores a versioned SiteRecipe only after deterministic BROWSER verification.
+## 11. Recovery
 
-```text
-agent exploration
-  ↓
-candidate recipe
-  ↓
-Playwright replay
-  ↓ success
-active SiteRecipe
-```
+Server storage — PostgreSQL database/schema ARGUS; local embedded — SQLite. Collection state, observations, evidence, snapshots, checkpoints и leases должны переживать restart и обеспечивать replay-safe продолжение.
 
-Repeated failures invalidate the version. Interface change leads to new agent research and a new verified recipe version.
+## 12. Standalone verification
 
-## 10. Historical intelligence
+`argus probe` остаётся инструментом проверки реального embedded service graph без Geo Analyzer. Он не должен подменять production topology, но обязан использовать те же planners/adapters/extractors/contracts.
 
-History is a core capability, not a separate afterthought.
+## 13. Definition of done
 
-ARGUS must combine:
+Capability готова только когда:
 
-- its own temporal snapshots;
-- Wayback captures;
-- old maps;
-- historical photographs;
-- archival catalogues and digitised documents;
-- newspapers/publications;
-- old names and organisations discovered during research;
-- historical source-specific catalogues.
+1. работает end-to-end через реальный runtime;
+2. factual output имеет Evidence/Provenance;
+3. определены failure/recovery semantics;
+4. есть явные limits;
+5. важный путь покрыт tests/probe;
+6. документация описывает именно текущую реализацию.
 
-For a place, ARGUS must strive to construct an evidence-backed sequence of dated observations. It must preserve uncertainty and conflicting sources rather than fabricate a single narrative.
-
-Historical output may contain:
-
-- first/last observed state;
-- appeared/disappeared between captures;
-- changed name/operator/brand;
-- construction/demolition/reconstruction mentions;
-- historical map references;
-- historical image references;
-- archival documents and publications;
-- links between current and historical entities.
-
-ARGUS stores the evidence. A downstream Historical analytical module may interpret the timeline.
-
-## 11. Images and visual historical evidence
-
-Historical images are first-class factual references.
-
-For a public image discovered on an archive/page, ARGUS should preserve at minimum:
-
-- source page URL;
-- image URL when publicly addressable;
-- caption/alt/title when source-declared;
-- date or date range when source-declared;
-- place/entity relation when source-declared or explicitly established by the archive;
-- author/collection/identifier when available;
-- snapshot/provenance linking the reference to the fetched source page.
-
-ARGUS must not infer a place/date merely from image pixels unless a future dedicated computer-vision capability explicitly produces a separately qualified inference.
-
-## 12. Evidence rule
-
-Every factual Observation must have traceable Evidence/provenance. Search snippets and LLM output are navigation, not Evidence.
-
-The universal Observation model remains consumer-neutral and includes source, source_kind, URL, entity identity, text/data, geo, published/collected times, content hash, provenance and quality.
-
-## 13. Historical/public source priority
-
-For Russia, the Russian Empire and former USSR, `historical_context` must preferentially search the curated free/public sources maintained in `docs/HISTORICAL_SOURCES_RUSSIA_USSR.md`, in addition to generic web discovery and Wayback.
-
-Source-specific scraping must respect public access restrictions and copyright/terms. A source may remain discovery-only if copying/downloading the underlying media is restricted.
-
-## 14. Free base contour
-
-The base ARGUS product must work without mandatory paid services.
-
-Allowed base mechanisms include public HTML, browser parsing, RSS/Atom, public JSON/XML endpoints, open datasets, open-source software, and free/self-hosted services.
-
-Paid SERP, paid proxy networks, paid CAPTCHA solving, commercial browser clouds, mandatory paid Google/Yandex/2GIS APIs and mandatory paid LLMs are not base dependencies.
-
-CAPTCHA/access controls are never bypassed. ARGUS records blocked/partial coverage and continues through other public sources.
-
-## 15. Storage and recovery
-
-Server product storage is PostgreSQL; embedded standalone/test mode may use SQLite.
-
-Persist at minimum:
-
-- collections;
-- observations;
-- evidence;
-- snapshots;
-- coverage/errors;
-- pending/visited checkpoint state;
-- SiteRecipes;
-- worker leases and operational state.
-
-Crash/restart must resume from durable state without fabricating duplicate factual history.
-
-## 16. API and consumer integration
-
-ARGUS exposes an internal authenticated collection API. Consumers submit a collection and later read bounded/paginated results.
-
-The API contract is consumer-neutral. The presence of `consumer` is for identity/provenance/idempotency and must not select hidden source logic.
-
-The standalone server deployment owns service lifecycle. Analytical modules own the decision to call ARGUS and consume it through `ARGUS_SERVICE_BASE_URL` and `ARGUS_SERVICE_TOKEN_FILE`. Geo Analyzer only passes its deployment environment to installed modules through generic runtime inheritance; it does not install or supervise ARGUS.
-
-## 17. Standalone verification outside Geo Analyzer
-
-ARGUS must always be testable independently of Geo Analyzer and analytical modules.
-
-Required path:
-
-```text
-argus probe --address "..." --intent ...
-```
-
-Standalone probe uses the same production service graph in embedded mode with local SQLite. It must expose enough output to answer:
-
-- what queries were planned;
-- which sources were attempted;
-- which pages/documents were fetched;
-- which entities were discovered;
-- which Observation/Evidence items were stored;
-- what historical branches were created;
-- what was blocked or missing;
-- why the run stopped.
-
-Probe is a product acceptance tool, not a mock implementation.
-
-## 18. Security boundary
-
-ARGUS is an internal backend, loopback-bound by default. It requires bearer authentication for server API, URL/redirect validation, SSRF protection, response/download limits, browser timeouts, safe logging, secret-file handling and bounded resource use.
-
-Safety controls must not be weakened merely to make a difficult public source pass.
-
-## 19. Definition of done
-
-A product capability is done only when:
-
-1. the intended end result works through the real service graph;
-2. factual output has Evidence/provenance;
-3. failure/recovery behaviour is defined;
-4. resource and recursion limits are explicit;
-5. standalone probe can demonstrate the result where applicable;
-6. regression/integration tests cover the important path;
-7. documentation reflects the actual runtime;
-8. CI is green.
-
-## 20. Governance
-
-When code, README, architecture notes or a future task conflicts with this charter, this charter wins unless the product owner explicitly changes it.
-
-The repository must not use "MVP" or "skeleton" as justification for omitting the original product behaviour. Incomplete work must be labelled incomplete and kept on the implementation plan until it is actually finished.
+Неподключённый код, будущий adapter или нормативное пожелание должны быть явно названы как planned/dormant, а не как готовая функция.

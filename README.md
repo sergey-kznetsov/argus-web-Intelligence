@@ -1,418 +1,304 @@
 # ARGUS Web Intelligence
 
-ARGUS `0.3.0` is a server-side evidence-first web intelligence backend for Kraken, Janus and future analytical consumers in the Geo Analyzer ecosystem.
+ARGUS `0.3.0` — серверный backend web-intelligence для аналитических модулей экосистемы Geo Analyzer. Сервис собирает факты из публичного интернета по принципу evidence-first: найденный URL, поисковый сниппет или навигационная подсказка сами по себе не считаются фактом. Факт появляется только после получения источника и формирования `Observation` + `Evidence` + `Provenance`.
 
-Core rule: **ARGUS = find + obtain + prove + store. Consumers = interpret + calculate + conclude.**
+Основное разделение ответственности:
 
-ARGUS is one standalone server-level infrastructure service. Geo Analyzer does not install, update, stop or delete it. TEST, PROD and analytical consumers call the same localhost ARGUS API through a server-owned endpoint and token-file contract.
+```text
+Geo Analyzer = orchestration + presentation
+ARGUS        = find + obtain + prove + store + continue researching
+Module       = normalize + interpret + calculate + conclude
+```
 
-## Current product architecture
+ARGUS работает как отдельный серверный инфраструктурный сервис. Он не устанавливается через Module Manager Geo Analyzer и не должен появляться отдельной галочкой в пользовательском анализе.
 
-ARGUS currently provides:
+## Текущее состояние реализации
 
-- protocol `1.0.0` CollectionRequest/CollectionResult contracts;
-- separate server API and collection-worker processes;
-- PostgreSQL-backed queue with worker heartbeat and per-collection leases;
-- atomic queue claim through `FOR UPDATE ... SKIP LOCKED`;
-- FIFO recovery so interrupted older work is not starved by new submissions;
-- SQL lease fencing so expired/transferred workers cannot mutate collection output;
-- replay-safe worker recovery after process or PostgreSQL interruption;
-- idempotent server collection submission with a bounded 24-hour default retry window;
-- atomic queue admission/backpressure across concurrent API processes;
-- authenticated operational queue metrics and keyset-paginated collection listing;
-- bounded automatic PostgreSQL retention under a shared maintenance lock;
-- bounded result delivery with summary + opaque keyset pages for large collections;
-- terminal PostgreSQL cancellation that stale workers cannot overwrite;
-- persistent research/discovery checkpoints for restart recovery;
-- product PostgreSQL storage in dedicated schema `argus`;
-- local/dev SQLite backend through the same Repository contract;
-- versioned/checksummed PostgreSQL migrations protected by an advisory lock;
-- Psycopg 3 native async pools with explicit startup/shutdown lifecycle;
-- persistent Crawlee FAST and Playwright BROWSER runtimes;
-- optional local AGENT escalation through Browser Use/Ollama;
-- deterministic SiteRecipe replay before recipe persistence;
-- SearXNG discovery with DuckDuckGo HTML browser fallback;
-- Generic Web, RSS/Atom, Sitemap, Wayback CDX and OpenStreetMap/Overpass factual paths;
-- optional Nominatim geocoding;
-- bounded recursive historical research;
-- embedded bounded JSON-LD extraction without remote `@context` dereferencing;
-- Observation + Evidence + provenance + SHA-256 temporal snapshots/diffs;
-- deterministic task/Observation/Evidence and collection-scoped Snapshot identities;
-- per-source operational health;
-- redirect-aware SSRF defenses, Bearer authentication, inbound-body/resource/rate limits and secret-safe logging;
-- GitHub CI configured with a PostgreSQL service.
+Документ сверён с `main` на 10 сентября 2026 года. Фактическая версия пакета — `0.3.0`, версия Collection Protocol — `1.0.0`, идентификатор сервиса в runtime manifest — `argus.web.intelligence`.
 
-Discovery results and navigation hints are not facts. Search snippets, Sitemap entries and archive navigation metadata only seed factual retrieval. A destination page must be fetched before it can become page Evidence. Embedded JSON-LD is evidence only because it is contained in the already fetched page.
+Сейчас в рабочем runtime реализованы:
 
-## Standalone server deployment
+- отдельные процессы API и worker для серверного режима;
+- PostgreSQL-очередь с heartbeat worker'ов, lease на коллекции и SQL lease fencing;
+- атомарный claim через `FOR UPDATE ... SKIP LOCKED`;
+- FIFO-восстановление незавершённых коллекций;
+- replay-safe восстановление после остановки процесса или временного сбоя PostgreSQL;
+- идемпотентная постановка коллекций с окном повторного запроса 24 часа по умолчанию;
+- глобальный и per-consumer backpressure очереди;
+- PostgreSQL storage в отдельной БД `argus`, под ролью `argus`, в schema `argus`;
+- SQLite для `embedded`/локальной разработки;
+- версионируемые и checksummed миграции PostgreSQL;
+- отдельные FAST и BROWSER runtime на Crawlee/Playwright;
+- универсальное получение HTML, RSS/Atom, JSON Feed, Sitemap, структурированных данных, PDF, DOCX/XLSX, GeoJSON/KML/KMZ и machine-readable HTML-разметки;
+- `dom.mingkh.ru` как отдельный residential adapter;
+- PastVu и Wayback-контур для исторических задач;
+- OpenStreetMap/Overpass-контур;
+- snapshots, diffs, `Observation`, `Evidence`, provenance и техническая оценка качества доказательств;
+- SiteRecipe storage/replay infrastructure;
+- bounded recursive research и checkpoint recovery;
+- bounded выдача больших результатов через summary + keyset pagination;
+- source health и operational metrics;
+- Bearer auth, SSRF/redirect guards, лимиты запросов/ресурсов и secret-safe logging;
+- отдельный операторский Web UI, который работает поверх того же ARGUS API.
 
-ARGUS is deployed independently of Geo Analyzer under `C:\\argus` with configuration and secrets under `C:\\ProgramData\\ARGUS`. On Windows Server the service is composed of `ARGUS-API` and `ARGUS-Worker` SYSTEM scheduled tasks, both loopback-only.
+### Что в коде есть, но сейчас не включено в рабочий crawler graph
 
-Geo Analyzer consumers receive only these generic server variables:
+В репозитории сохраняется код AGENT/LLM-навигации, Browser Use/Ollama и связанные lifecycle-компоненты SiteRecipe. Однако текущий `build_services()` создаёт crawler graph с `agent=None`, `llm_health=None`; legacy-параметры Ollama читаются только для совместимости старых env-файлов. Поэтому документация не считает AGENT или LLM активной частью production runtime.
+
+Рабочая цепочка получения web-страниц сейчас:
+
+```text
+research plan
+  -> discovery
+  -> source adapter
+  -> FAST
+  -> BROWSER при необходимости
+  -> extraction / normalization
+  -> Observation + Evidence + Provenance
+  -> storage
+```
+
+AGENT остаётся подготовленной, но не подключённой возможностью. Его нельзя указывать как фактически используемый fallback, пока он снова явно не подключён в `build_services()` и это не подтверждено тестами.
+
+## Consumer profiles и Tool Packs
+
+ARGUS остаётся единым backend, но исследовательский контракт зависит от зарегистрированного consumer profile. Выбор делается через декларативные `ConsumerProfileRegistry` и `ToolPackRegistry`, а не через бизнес-ветки вида `if consumer == "kraken"`.
+
+Сейчас зарегистрированы:
+
+- `kraken.development.uds`, profile version `1`, capability `urban_signals`;
+- `test`, profile version `1`, capability `generic_research` — только для CI/manual smoke.
+
+Для Kraken допустимые `requested_facts`:
+
+```text
+complaint
+public_appeal
+post
+comment
+resident_message
+local_news_mention
+incident_mention
+```
+
+Отзывы заведений (`review`) не входят в текущий factual contract Kraken. Публичные карты могут использоваться как территориальный и навигационный контекст, но их information-only observations не передаются Kraken как обычные предметные сообщения; соответствующий Evidence сохраняется отдельно.
+
+Для `urban_signals` действует обязательный исследовательский контур: ARGUS выполняет обязательные source-contour проходы, затем обязательные публичные карты, и только после этого переходит к ограниченному optional research. На текущей версии `mandatory-coverage/5` эти обязательные линии запускаются даже если seed URL уже формально покрывает intents или коллекция восстановлена из checkpoint.
+
+Для публичных карт обязательная логика проходит все улицы, попавшие в радиус территории, по каждому включённому map-provider, а не ограничивается только исходным адресом. Состояние обязательных линий публикуется как `research_lane_coverage` в result API.
+
+## Discovery
+
+В текущем bootstrap доступны:
+
+- SearXNG, если задан `ARGUS_SEARXNG_URL`;
+- бесплатные fallback-провайдеры при `ARGUS_BROWSER_SERP_ENABLED=true`: `duckduckgo_fast`, `mojeek_fast`, `bing_rss`;
+- Sitemap navigation;
+- source-specific routing, включая `dom.mingkh.ru` -> `mingkh_residential`.
+
+Текущее значение `ARGUS_DISCOVERY_MAX_QUERIES` по умолчанию — `12`.
+
+Discovery остаётся навигацией. Поисковый результат должен привести к реально полученному источнику, прежде чем данные попадут в factual layer.
+
+## OpenStreetMap / Overpass
+
+В `embedded` режиме Overpass остаётся opt-in, если endpoint не задан явно.
+
+В серверных ролях `api`/`worker` ARGUS автоматически включает бесплатный bounded Overpass contour, если `ARGUS_OVERPASS_URL` не задан:
+
+```text
+primary:  https://overpass-api.de/api/interpreter
+fallback: https://overpass.private.coffee/api/interpreter
+```
+
+Для автоматически включённого режима timeout ограничен 15 секундами, допускается один failover/retry. Явная операторская конфигурация не перезаписывается.
+
+Nominatim остаётся opt-in и включается только при заданном `ARGUS_NOMINATIM_URL`.
+
+## Серверное развёртывание
+
+Канонический Windows layout:
+
+```text
+C:\argus\releases\<commit>\
+C:\ProgramData\ARGUS\argus.env
+C:\ProgramData\ARGUS\secrets\argus.token
+C:\ProgramData\ARGUS\secrets\database-dsn.txt
+C:\ProgramData\ARGUS\logs\
+C:\ProgramData\ARGUS\deployment.json
+```
+
+Scheduled Tasks:
+
+```text
+ARGUS-API
+ARGUS-Worker
+```
+
+Внутренние endpoints:
+
+```text
+API          http://127.0.0.1:8787
+worker probe http://127.0.0.1:8788/readyz
+```
+
+Geo Analyzer и его модули получают только общий service contract:
 
 ```text
 ARGUS_SERVICE_BASE_URL=http://127.0.0.1:8787
-ARGUS_SERVICE_TOKEN_FILE=C:\\ProgramData\\ARGUS\\secrets\\argus.token
+ARGUS_SERVICE_TOKEN_FILE=C:\ProgramData\ARGUS\secrets\argus.token
 ```
 
-The standalone deploy performs migrations before cutover, waits for API/worker readiness and rolls back the scheduled tasks to the previous immutable release if health fails. See [`docs/SERVER_DEPLOYMENT_WINDOWS.md`](docs/SERVER_DEPLOYMENT_WINDOWS.md).
+`deploy/windows/deploy-server.ps1` принимает только конкретный 40-символьный commit SHA. В `-Apply` режиме он требует заранее подготовленный ARGUS-owned DSN-файл. Скрипт проверяет, что DSN указывает именно на PostgreSQL database `argus` и user `argus`. Он не читает `saas.env` Geo Analyzer и не копирует DSN из TEST/PROD автоматически.
 
-## Server queue and recovery
+Подробнее: [`docs/SERVER_DEPLOYMENT_WINDOWS.md`](docs/SERVER_DEPLOYMENT_WINDOWS.md) и [`docs/POSTGRES_OPERATIONS.md`](docs/POSTGRES_OPERATIONS.md).
 
-Server API and collection execution are intentionally separated:
+## API
+
+Health:
 
 ```text
-Kraken / Janus
-      |
-      v
+GET  /v1/health
+HEAD /v1/health
+```
+
+Остальные API endpoints требуют Bearer token:
+
+```text
+GET  /v1/manifest
+GET  /v1/capabilities
+
 POST /v1/collections
-      |
-      v
-PostgreSQL queued collection
-      |
-      v
-worker claim + lease
-      |
-      v
-CollectionOrchestrator
-      |
-      v
-Observation / Evidence / snapshots
+GET  /v1/collections/{collection_id}
+POST /v1/collections/{collection_id}/cancel
+
+GET  /v1/collections/{collection_id}/result
+GET  /v1/collections/{collection_id}/result/summary
+GET  /v1/collections/{collection_id}/result/observations
+GET  /v1/collections/{collection_id}/result/evidence
+
+GET  /v1/operations/queue
+GET  /v1/operations/collections
+GET  /v1/operations/metrics
+
+GET  /v1/sources
+GET  /v1/sources/{source_id}/health
 ```
 
-Workers register in `argus.worker_instances`. A collection is claimed through `argus.collection_leases`; concurrent workers skip already locked/leased work. The worker periodically renews both its own heartbeat and each active collection lease. An expired lease allows another worker to resume the persisted collection checkpoint after a crash.
+Отдельного `retry` endpoint сейчас нет. Повторная отправка одной и той же CollectionRequest обрабатывается через idempotency/recovery semantics, а не через `/retry`.
 
-Worker execution is additionally fenced at the PostgreSQL mutation boundary. Collection state, Observation, Evidence and collection-scoped Snapshot writes are accepted only while the current worker still owns a non-expired lease. If another worker already claimed an expired lease, the old worker cannot commit a late checkpoint or factual row even before its next heartbeat detects the transfer.
+### Readiness
 
-Lease-owned PostgreSQL failures abort the current attempt with replay semantics rather than being recorded as `SOURCE_ERROR`. An unfinished task therefore remains absent from the durable `visited` set and can be retried from the last checkpoint. Observation/Evidence IDs and unchanged collection-scoped Snapshot IDs are deterministic, so replay converges on the already persisted rows after a crash between factual persistence and checkpoint persistence.
+Для server API `GET /v1/health` проверяет не только PostgreSQL, но и наличие свежего heartbeat хотя бы одного worker. Если worker отсутствует, статус API становится `degraded`.
 
-Claim ordering is FIFO by collection creation time regardless of whether a record is freshly `queued` or recovered `running`. This prevents interrupted older work from being permanently displaced by a continuous stream of new requests.
+## Очередь и восстановление
 
-Defaults:
-
-```bash
-ARGUS_WORKER_CONCURRENCY=2
-ARGUS_WORKER_POLL_INTERVAL_SECONDS=1
-ARGUS_WORKER_LEASE_SECONDS=90
-ARGUS_WORKER_HEARTBEAT_SECONDS=20
-ARGUS_WORKER_HEALTH_MAX_AGE_SECONDS=60
+```text
+consumer module
+  -> POST /v1/collections
+  -> PostgreSQL: queued collection
+  -> worker claim + lease
+  -> CollectionOrchestrator
+  -> atomic task commit
+  -> Observation / Evidence / Snapshot / checkpoint
 ```
 
-`ARGUS_WORKER_HEARTBEAT_SECONDS` must be shorter than the lease duration.
+Незавершённый `SourceTask` может быть выполнен повторно после сбоя, но публикация результата задачи происходит атомарно. Snapshot, Observation, Evidence и обновлённый checkpoint фиксируются одной транзакцией. Lease fencing не позволяет старому worker записать данные после передачи lease другому worker.
 
-Cancellation is terminal in PostgreSQL. If API records `cancelled`, a stale worker cannot change the collection back to `running`; Observation/Evidence writes that start after the cancellation is visible are rejected by the storage layer. A network operation already in flight may finish before the worker observes cancellation, but it cannot resurrect the collection state.
+Подробнее: [`docs/RECOVERY.md`](docs/RECOVERY.md).
 
-Detailed failure/replay contract: `docs/RECOVERY.md`.
+## Идемпотентность и backpressure
 
-## Idempotent collection submission
+По умолчанию:
 
-`POST /v1/collections` is idempotent in server API mode.
-
-A consumer may supply an explicit `idempotency_key`:
-
-```json
-{
-  "protocol_version": "1.0.0",
-  "consumer": "kraken",
-  "analysis_id": "analysis-id",
-  "idempotency_key": "kraken-analysis-id-attempt-1",
-  "territory": {
-    "city": "Ижевск",
-    "address": "Ижевск, Пушкинская, 277"
-  },
-  "intents": ["public_mentions", "local_news"],
-  "constraints": {
-    "max_pages": 30,
-    "max_depth": 2
-  },
-  "allow_partial": true
-}
-```
-
-Rules:
-
-- retrying the same request with the same explicit key inside the configured window returns the original `collection_id`;
-- an explicit key is scoped by `consumer`;
-- reusing one consumer's key for a different request inside the window returns HTTP `409`;
-- blank keys are rejected;
-- without a key ARGUS uses a SHA-256 fingerprint of the canonical request;
-- the transport `idempotency_key` is excluded from that fingerprint;
-- default window is 86,400 seconds (24 hours);
-- after expiry the same request/key may intentionally create a fresh collection.
-
-```bash
+```text
 ARGUS_IDEMPOTENCY_WINDOW_SECONDS=86400
-```
-
-Because `analysis_id` is part of the request fingerprint, a genuinely new consumer analysis should use a new analysis ID.
-
-## Queue admission and operations
-
-New server collections are admitted under a PostgreSQL transaction-level advisory lock, making count-and-insert atomic across API processes.
-
-```bash
 ARGUS_QUEUE_MAX_ACTIVE_COLLECTIONS=500
 ARGUS_QUEUE_MAX_ACTIVE_PER_CONSUMER=100
 ARGUS_QUEUE_RETRY_AFTER_SECONDS=15
 ```
 
-An already-admitted idempotent retry bypasses capacity rejection. New requests above the per-consumer limit return `429`; global saturation returns `503`; both include `Retry-After`.
+В пределах idempotency window одинаковый key + одинаковый запрос возвращает существующую collection. Тот же key для другого запроса возвращает `409`. При переполнении consumer quota новый запрос получает `429`, глобальной очереди — `503`; оба ответа содержат `Retry-After`.
 
-Authenticated operational endpoints:
+## Выдача больших результатов
 
-- `GET /v1/operations/queue` — queued/running counts, leases, workers and oldest job ages;
-- `GET /v1/operations/collections` — summary-only collection history with `status`/`consumer` filters and opaque keyset cursor, maximum 100 rows per page.
+По умолчанию полный `/result` разрешён, пока одновременно выполняются:
 
-These endpoints read PostgreSQL directly and do not create a second operational datastore.
-
-## Retention
-
-Server workers run bounded retention passes automatically. A PostgreSQL advisory lock elects one maintainer at a time.
-
-```bash
-ARGUS_RETENTION_MAINTENANCE_INTERVAL_SECONDS=3600
-ARGUS_RETENTION_COLLECTION_DAYS=180
-ARGUS_RETENTION_SNAPSHOT_DAYS=365
-ARGUS_RETENTION_WORKER_REGISTRATION_DAYS=7
-ARGUS_RETENTION_BATCH_SIZE=500
-```
-
-Rules:
-
-- active `queued`/`running` collections are never purged;
-- only terminal collections older than collection retention are removed;
-- child Observation/Evidence/idempotency/lease rows follow foreign-key cleanup;
-- expired idempotency mappings are independently removed;
-- stale worker registrations are removed after their retention period;
-- old snapshots are removed in bounded batches, but the newest snapshot for each `source_url` is preserved;
-- SiteRecipe records are not automatically purged;
-- snapshot retention cannot be shorter than collection retention.
-
-Manual operator commands are also available:
-
-```bash
-python -m argus.storage.cli operations
-python -m argus.storage.cli retention
-```
-
-## Bounded result delivery
-
-The legacy `GET /v1/collections/{collection_id}/result` remains compatible for small collections, but ARGUS checks storage size before loading rows into API memory.
-
-Defaults:
-
-```bash
+```text
 ARGUS_API_FULL_RESULT_MAX_ITEMS=100
 ARGUS_API_FULL_RESULT_MAX_BYTES=4194304
-ARGUS_API_RESULT_PAGE_DEFAULT_SIZE=50
-ARGUS_API_RESULT_PAGE_MAX_SIZE=100
-ARGUS_API_RESULT_PAGE_MAX_BYTES=2097152
 ```
 
-When either full-result limit is exceeded, `/result` returns HTTP `409` with `detail.code=RESULT_REQUIRES_PAGINATION`. ARGUS never silently truncates a successful `CollectionResult`.
+При превышении лимита `/result` возвращает `409 RESULT_REQUIRES_PAGINATION`. Данные не обрезаются молча. Consumer использует `/result/summary`, `/result/observations` и `/result/evidence` с opaque keyset cursors.
 
-Consumers then use:
+Подробнее: [`docs/RESULT_DELIVERY.md`](docs/RESULT_DELIVERY.md).
 
-- `GET /v1/collections/{collection_id}/result/summary`;
-- `GET /v1/collections/{collection_id}/result/observations`;
-- `GET /v1/collections/{collection_id}/result/evidence`.
+## Локальная установка
 
-Observation/Evidence pages use opaque cursors bound to both the collection and result kind. A cursor cannot be reused for another collection or swapped between observation/evidence streams. Pages are bounded by both item count and stored JSON bytes and report `page_stored_bytes`.
-
-Paged traversal is available only after a terminal collection state. A `queued` or `running` collection returns `409 RESULT_NOT_FINAL`. PostgreSQL result reads use a separate small async pool and `REPEATABLE READ READ ONLY` transactions so a retention pass cannot produce a mixed response midway through one read.
-
-Detailed contract: `docs/RESULT_DELIVERY.md`.
-
-## Storage
-
-### Server/product
-
-Server deployment uses PostgreSQL. ARGUS owns schema `argus` and stores collections, idempotency mappings, worker/lease state, observations, evidence, temporal snapshots and SiteRecipe state there. Product runtime uses `FencedPostgresRepository`, which keeps normal API/admin behavior while enforcing lease ownership for worker execution.
-
-```bash
-python -m argus.storage.cli migrate
-python -m argus.storage.cli check
-```
-
-Migrations are versioned and checksummed. Application startup refuses readiness if the schema is missing or at the wrong version.
-
-### Local development
-
-SQLite implements the same core collection storage contract for local/embedded development. Snapshot inserts are idempotent by `snapshot_id` so local crash-replay fixtures preserve the same identity behavior as server recovery.
-
-```bash
-ARGUS_EXECUTION_ROLE=embedded
-ARGUS_STORAGE_BACKEND=sqlite
-ARGUS_DB_PATH=.argus/argus.sqlite3
-```
-
-For direct PostgreSQL development:
-
-```bash
-ARGUS_STORAGE_BACKEND=postgresql
-ARGUS_DATABASE_DSN=postgresql://user:password@127.0.0.1:5432/argus
-```
-
-ARGUS also accepts `ARGUS_DATABASE_DSN_FILE`; the secret-file form is preferred when available.
-
-## Local install
-
-Python 3.11+ is required.
+Требуется Python `3.11+`.
 
 ```bash
 python -m venv .venv
-. .venv/bin/activate              # Windows: .venv\\Scripts\\activate
+. .venv/bin/activate              # Windows: .venv\Scripts\activate
 pip install -e '.[dev]'
 playwright install chromium
 argus init-token
 argus serve
 ```
 
-The default local bind is `127.0.0.1:8787` and local CLI/API use embedded execution unless configured otherwise.
+Локальный режим по умолчанию:
 
-## API
-
-Module management:
-
-- `GET /v1/manifest`;
-- `GET /v1/health`;
-- `HEAD /v1/health`.
-
-Collections/results:
-
-- `POST /v1/collections`;
-- `GET /v1/collections/{collection_id}`;
-- `GET /v1/collections/{collection_id}/result`;
-- `GET /v1/collections/{collection_id}/result/summary`;
-- `GET /v1/collections/{collection_id}/result/observations`;
-- `GET /v1/collections/{collection_id}/result/evidence`;
-- `POST /v1/collections/{collection_id}/cancel`.
-
-Capabilities/operations/sources:
-
-- `GET /v1/capabilities`;
-- `GET /v1/operations/queue`;
-- `GET /v1/operations/collections`;
-- `GET /v1/sources`;
-- `GET /v1/sources/{source_id}/health`.
-
-All endpoints except `GET/HEAD /v1/health` require `Authorization: Bearer <token>`. Inbound request bodies are limited by `ARGUS_API_MAX_REQUEST_BYTES` (1 MiB by default), including streamed/chunked bodies.
-
-`consumer` records who requested data; it never selects a Kraken/Janus branch. `intents` define factual research goals.
-
-## CLI
-
-```bash
-argus collect --consumer test --address "Ижевск, Пушкинская, 277" --intent public_mentions
-argus status <collection_id>
-argus result <collection_id>
-argus sources
+```text
+ARGUS_EXECUTION_ROLE=embedded
+ARGUS_STORAGE_BACKEND=sqlite
+ARGUS_HOST=127.0.0.1
+ARGUS_PORT=8787
 ```
 
-## Discovery
+Для воспроизводимой проверки без Geo Analyzer используется `argus probe`. Подробнее: [`docs/STANDALONE_PROBE.md`](docs/STANDALONE_PROBE.md).
 
-### SearXNG
+## Web UI
 
-A configured/self-hosted SearXNG JSON endpoint is the preferred external discovery provider:
+`argus-web` — отдельный операторский gateway поверх того же ARGUS API. Он не содержит второй crawler, свою БД или отдельную исследовательскую логику. Внутренний Bearer token браузеру не передаётся; gateway добавляет его только к server-side запросам в ARGUS API.
 
-```bash
-ARGUS_SEARXNG_URL=http://127.0.0.1:8888
-ARGUS_DISCOVERY_MAX_QUERIES=8
-ARGUS_SEARXNG_MAX_RESULTS_PER_QUERY=10
-```
+Подробнее: [`docs/WEB_UI.md`](docs/WEB_UI.md).
 
-ARGUS accesses it as a separate HTTP service and does not vendor/import SearXNG code.
+## Безопасность
 
-### DuckDuckGo browser fallback
+Базовые ограничения:
 
-When enabled, Playwright submits the public DuckDuckGo no-JS HTML form. This is a low-volume fallback, not a private API integration.
-
-```bash
-ARGUS_BROWSER_SERP_ENABLED=true
-ARGUS_BROWSER_SERP_MAX_RESULTS_PER_QUERY=5
-ARGUS_BROWSER_SERP_WAIT_MS=750
-```
-
-CAPTCHA/access challenges are reported as blocked; ARGUS does not bypass them.
-
-### Intent-specific planning
-
-Discovery is run independently for uncovered intents while sharing one collection-level query budget. A seed URL does not automatically mark every intent covered. If one URL serves several intents, ARGUS fetches it once and merges research goals into provenance.
-
-Discovery progress is checkpointed after each intent, so restart resumes only unfinished discovery branches.
-
-## Same-host robots.txt and Sitemap
-
-After a top-level HTML fetch, ARGUS can inspect same-host `robots.txt` and `/sitemap.xml` for bounded navigation candidates.
-
-```bash
-ARGUS_SITEMAP_DISCOVERY_ENABLED=true
-ARGUS_SITEMAP_MAX_URLS=20
-ARGUS_SITEMAP_MAX_INDEXES=5
-```
-
-Only same-host HTTP(S) candidates are accepted; domain constraints remain active. Sitemap tasks consume normal page budget and are navigation-only/fail-open.
-
-RSS/Atom and Sitemap XML use `defusedxml` to reject unsafe DTD/entity payloads.
-
-## JSON-LD
-
-ARGUS extracts bounded `application/ld+json` entities embedded in HTML. It does not dereference remote contexts or perform hidden network requests. Accepted entities receive separate `source_kind=json_ld` Observation/Evidence backed by the fetched page snapshot.
-
-## Historical research and Wayback
-
-`historical_context` can trigger bounded recursive discovery from already collected factual labels. Follow-up labels remain hypotheses until a new source is fetched.
-
-Optional Wayback CDX support performs exact-URL capture lookup only:
-
-```bash
-ARGUS_WAYBACK_CDX_URL=https://web.archive.org/cdx/search/cdx
-ARGUS_WAYBACK_CAPTURE_BASE_URL=https://web.archive.org/web
-ARGUS_WAYBACK_MAX_CAPTURES=5
-```
-
-A CDX row proves a capture exists. Archived content is fetched separately through the normal Generic Web pipeline before becoming page Evidence.
-
-## Optional OpenStreetMap providers
-
-No public Overpass or Nominatim endpoint is enabled silently.
-
-```bash
-ARGUS_OVERPASS_URL=https://overpass.example/api/interpreter
-ARGUS_NOMINATIM_URL=https://nominatim.example
-```
-
-OpenStreetMap facts preserve `© OpenStreetMap contributors` / ODbL provenance and public `openstreetmap.org` evidence URLs.
-
-## Retry and rate behavior
-
-Crawlee owns ordinary crawler queue/session/retry/concurrency behavior. Direct providers use separate minimum-interval gates and bounded 429/503 retries.
-
-A valid server `Retry-After` is authoritative. ARGUS never shortens it to make an earlier retry.
-
-## Security boundary
-
-ARGUS includes application-level defenses for:
-
+- loopback-only server API;
+- Bearer token и PostgreSQL DSN в secret files;
 - HTTP(S)-only arbitrary targets;
-- URL userinfo rejection;
-- private/loopback/link-local/reserved/multicast/cloud-metadata target blocking unless explicitly allowlisted;
-- FAST redirect-hop validation;
-- unsafe browser request blocking;
-- inbound API body limits plus response/browser time and size limits;
-- hardened XML/JSON-LD parsing;
-- Bearer token files outside Git;
-- PostgreSQL secret-file preference and `SecretStr` handling;
-- terminal cancellation plus SQL lease fencing against stale workers;
-- replay-safe handling of lease-owned PostgreSQL failures;
-- bounded queue admission and result delivery;
-- structured log/error redaction;
-- CAPTCHA/access-control non-bypass.
+- блокировка private/link-local/reserved/cloud-metadata адресов, кроме явного allowlist;
+- проверка каждого redirect hop;
+- bounded request/response/parser/browser limits;
+- ограниченные retries и recursion;
+- безопасный XML/JSON/OOXML parsing;
+- secret-safe logging;
+- запрет обхода CAPTCHA, login, paywall и access-control механизмов.
 
-Application SSRF validation is defense in depth. Production deployment must also enforce network-level egress policy.
+Application-level SSRF protection — defense in depth. Сетевой egress policy остаётся обязанностью server deployment.
 
-## Development rule
+Подробнее: [`docs/SECURITY.md`](docs/SECURITY.md).
 
-ARGUS remains factual infrastructure. Competition scoring, demand interpretation, risk models and other analytical conclusions belong to Kraken, Janus or other consumers. New providers must preserve common SourceAdapter/Repository/provenance contracts and must not introduce branches keyed by consumer identity.
+## Документация
 
-See `docs/ARCHITECTURE.md`, `docs/RECOVERY.md`, `docs/RESULT_DELIVERY.md` and `geo-analyzer-module.json`.
+Основные документы:
+
+- [`docs/ARGUS_CHARTER.md`](docs/ARGUS_CHARTER.md) — назначение и продуктовые границы;
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — фактическая архитектура сервиса;
+- [`docs/CONSUMER_PROFILES.md`](docs/CONSUMER_PROFILES.md) — consumer profiles и Tool Packs;
+- [`docs/RECOVERY.md`](docs/RECOVERY.md) — recovery/replay/lease fencing;
+- [`docs/SERVER_DEPLOYMENT_WINDOWS.md`](docs/SERVER_DEPLOYMENT_WINDOWS.md) — серверная установка;
+- [`docs/POSTGRES_OPERATIONS.md`](docs/POSTGRES_OPERATIONS.md) — PostgreSQL migrations/backup/restore/retention;
+- [`docs/RESULT_DELIVERY.md`](docs/RESULT_DELIVERY.md) — bounded result delivery;
+- [`docs/PUBLIC_MAP_SOURCES.md`](docs/PUBLIC_MAP_SOURCES.md) — текущая роль публичных карт;
+- [`docs/RESIDENTIAL_SOURCES.md`](docs/RESIDENTIAL_SOURCES.md) — residential facts и `dom.mingkh.ru`;
+- [`docs/SECURITY.md`](docs/SECURITY.md) — security boundary.
+
+## Правило разработки
+
+ARGUS остаётся инфраструктурой фактов. Классификация городских проблем, события, activity/risk, оценка спроса, парковочный потенциал и другие предметные выводы принадлежат аналитическим модулям.
+
+Новая возможность считается реализованной только когда она работает через реальный service graph, сохраняет Evidence/Provenance, имеет определённое поведение при сбоях, ограниченные ресурсы, тесты и документацию, совпадающую с runtime.

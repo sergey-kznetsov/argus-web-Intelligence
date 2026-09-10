@@ -1,10 +1,10 @@
-# KML and KMZ factual geospatial extraction
+# Извлечение геоданных KML и KMZ
 
-ARGUS supports public KML Point facts and KMZ packages without introducing a second XML parser or a general-purpose archive extraction surface.
+ARGUS поддерживает factual KML Point и KMZ packages без отдельного XML parser и без универсальной распаковки архивов.
 
 ## Pipeline
 
-Plain KML:
+Обычный KML:
 
 ```text
 HTTP response
@@ -14,7 +14,7 @@ HTTP response
   -> geospatial_feature Observation + kml_point Evidence
 ```
 
-Gzip-wrapped KML:
+Gzip KML:
 
 ```text
 .kml.gz
@@ -28,116 +28,95 @@ KMZ:
 ```text
 .kmz
   -> bounded ZIP preflight
-  -> root doc.kml only
+  -> только root doc.kml
   -> bounded XML parser
   -> shared KML normalizer
 ```
 
-The fetched source URL remains the factual source URL. A KMZ package keeps the SHA-256 of the package as the source-document identity while provenance separately records the SHA-256 of `doc.kml`.
+Fetched source URL остаётся factual source URL. Для KMZ SHA-256 package остаётся identity исходного документа, а provenance отдельно фиксирует SHA-256 `doc.kml`.
 
-## KML support
+## Поддерживаемый KML subset
 
-The current factual KML subset is intentionally conservative:
+Текущий контракт намеренно ограничен:
 
 - `Placemark`;
 - direct `Point` geometry;
 - `name`;
 - `description`;
-- `coordinates` containing one two- or three-dimensional tuple.
+- `coordinates` с одним 2D/3D tuple.
 
-KML coordinates are interpreted in source order:
+Порядок координат:
 
 ```text
 longitude,latitude[,altitude]
 ```
 
-Longitude must be within `[-180, 180]`, latitude within `[-90, 90]`, and every supplied numeric value must be finite. ARGUS does not swap axes, repair coordinates, infer a location from text, or geocode an invalid KML Point.
+Longitude должен быть в `[-180, 180]`, latitude — в `[-90, 90]`, числа должны быть finite. ARGUS не меняет оси, не чинит координаты, не выводит location из текста и не геокодирует invalid Point.
 
-Altitude, when present, is retained as source-declared data but is not interpreted by ARGUS.
+Altitude сохраняется как source-declared data, но не интерпретируется.
 
-Each accepted Point produces:
+Каждый accepted Point создаёт:
 
 - `source_kind=kml_point`;
 - `entity_type=geospatial_feature`;
-- normalized `Observation.geo` latitude/longitude;
-- source-declared coordinate tuple in Observation data;
-- canonical bounded Placemark Evidence;
-- the parent XML/KMZ Snapshot ID and dataset Observation ID in provenance.
+- `Observation.geo`;
+- source-declared coordinate tuple в data;
+- bounded canonical Placemark Evidence;
+- parent XML/KMZ Snapshot ID и dataset Observation ID в provenance.
 
 ## Unsupported geometry
 
-`LineString`, `LinearRing`, `Polygon`, `MultiGeometry` and `Model` are not converted to Points. ARGUS does not calculate centroids or representative points because doing so would create derived geography rather than preserve a source-declared fact.
+`LineString`, `LinearRing`, `Polygon`, `MultiGeometry`, `Model` не превращаются в points. ARGUS не вычисляет centroid или representative point. Исходная geometry остаётся в bounded XML dataset, а KML summary показывает число skipped Placemarks.
 
-Unsupported geometry remains available inside the bounded source XML dataset. The KML summary records how many such Placemarks were skipped.
+## NetworkLink
 
-## NetworkLink boundary
+KML `NetworkLink` не открывается в процессе normalization. Source-declared data может остаться в XML Evidence, но сам KML extractor делает zero network requests по этим ссылкам.
 
-ARGUS never follows KML `NetworkLink` during KML normalization.
+Любой последующий public URL должен пройти обычный ARGUS discovery/source/URL-security path.
 
-The bounded XML dataset may contain the source-declared `NetworkLink` data as Evidence, but KML factual extraction performs zero additional network requests. The summary and KMZ metadata explicitly record `network_links_followed=0/false`.
+## Limits
 
-Any later retrieval of a public destination must go through the normal ARGUS discovery/source/URL-security path; a KML document cannot bypass SSRF or crawler policy by declaring a link internally.
+KML использует существующие structured-data limits:
 
-## KML limits
+- source bytes;
+- XML node/depth/string/container limits;
+- `kml_max_placemarks`, связанный с `ARGUS_STRUCTURED_DATA_MAX_RECORDS`.
 
-KML reuses the existing structured-data safety surface:
+При превышении Placemark budget bounded facts сохраняются, dataset/result получает partial, ошибка — `KML_EXTRACTION_TRUNCATED`.
 
-- source bytes are transport/parser bounded;
-- XML uses `defusedxml` and the configured node/depth/string/container limits;
-- `kml_max_placemarks` is bound to `ARGUS_STRUCTURED_DATA_MAX_RECORDS` in production bootstrap.
+## KMZ security
 
-If more Placemarks are present than the normalization budget, ARGUS keeps the bounded facts, marks the dataset and result partial, and emits `KML_EXTRACTION_TRUNCATED`.
+KMZ считается недоверенным ZIP package и никогда не распаковывается на диск.
 
-## KMZ package security
+Preflight отклоняет:
 
-KMZ is treated as an untrusted ZIP package. The package is never extracted to disk.
-
-Preflight rejects:
-
-- packages over the compressed byte limit;
-- too many file members;
-- total declared uncompressed size over the configured limit;
-- individual members over the member limit;
+- package сверх compressed byte limit;
+- слишком много members;
+- total declared uncompressed size сверх лимита;
+- отдельный member сверх лимита;
 - encrypted members;
-- symbolic-link members;
-- unsupported ZIP compression methods;
-- absolute, traversal, backslash, NUL or drive-like member paths;
-- duplicate and case-colliding member names;
-- packages without root `doc.kml`.
+- symbolic links;
+- unsupported ZIP compression;
+- absolute/traversal/backslash/NUL/drive-like paths;
+- duplicate/case-colliding names;
+- отсутствие root `doc.kml`.
 
-Only root `doc.kml` is read. Images, overlays and other KMZ resources participate in package-size/path validation but are not resolved or rendered.
+Читается только root `doc.kml`. Images/overlays/другие resources проверяются по package limits, но не разрешаются и не render'ятся.
 
-The production defaults are derived from the existing structured-data budget rather than adding another operator configuration surface:
+Default bounds выводятся из structured-data budget:
 
-- compressed KMZ bytes = `ARGUS_STRUCTURED_DATA_MAX_BYTES`;
-- member count = bounded by `ARGUS_STRUCTURED_DATA_MAX_RECORDS`, capped at 1000;
-- total uncompressed bytes = up to 4x structured byte budget, capped at 20 MiB;
-- per-member bytes = up to 2x structured byte budget, capped at 10 MiB;
-- `doc.kml` bytes = structured byte budget.
+```text
+compressed KMZ <= ARGUS_STRUCTURED_DATA_MAX_BYTES
+members <= min(records limit, 1000)
+total uncompressed <= min(4x byte budget, 20 MiB)
+member <= min(2x byte budget, 10 MiB)
+doc.kml <= structured byte budget
+```
 
-## KMZ provenance
+## Provenance
 
-KMZ dataset and Point facts record:
+KMZ dataset и Point facts сохраняют package SHA-256/size, member count, total uncompressed declaration, `root_kml=doc.kml`, SHA-256/size `doc.kml`, extractor version, `resources_resolved=false`, `network_links_followed=false`.
 
-- package SHA-256 and byte length;
-- member count;
-- declared total uncompressed bytes;
-- `root_kml=doc.kml`;
-- `doc.kml` SHA-256 and byte length;
-- KMZ extractor version;
-- `resources_resolved=false`;
-- `network_links_followed=false`.
+## Не входит в текущий слой
 
-This keeps the package, the parsed KML and each normalized Point auditable without treating unused archive resources as factual observations.
-
-## Non-goals
-
-This layer does not:
-
-- render maps;
-- download KMZ resources;
-- execute KML tours or overlays;
-- follow NetworkLink;
-- calculate Polygon/LineString centroids;
-- infer missing coordinates;
-- make Kraken-, Janus- or other consumer-specific conclusions.
+ARGUS не render'ит карту, не скачивает resources из KMZ, не исполняет KML tours/overlays, не следует NetworkLink, не вычисляет centroids и не принимает consumer-specific решения.

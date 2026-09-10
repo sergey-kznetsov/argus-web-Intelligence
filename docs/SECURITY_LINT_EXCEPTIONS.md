@@ -1,70 +1,77 @@
-# Security lint exceptions
+# Исключения security lint
 
-This file documents the narrow Ruff `S`-rule exceptions used by ARGUS. The CI command `ruff check src --select S` remains mandatory; exceptions are per-file and must not be broadened without a new security review.
+Этот файл фиксирует узкие исключения Ruff `S` rules. CI-команда `ruff check src --select S` остаётся обязательной; exceptions задаются per-file и не должны расширяться без security review.
 
-Verified: 2026-08-25.
+Проверено: 10 сентября 2026 года.
 
 ## Dynamic SQL: S608
 
-Affected files:
+Files:
 
-- `src/argus/result_delivery.py`
-- `src/argus/storage/fenced_postgres.py`
-- `src/argus/storage/postgres.py`
-- `src/argus/storage/postgres_migrations.py`
-- `src/argus/storage/postgres_operations.py`
-- `src/argus/storage/postgres_storage_stats.py`
-- `src/argus/storage/sqlite.py`
+```text
+src/argus/result_delivery.py
+src/argus/storage/fenced_postgres.py
+src/argus/storage/postgres.py
+src/argus/storage/postgres_migrations.py
+src/argus/storage/postgres_operations.py
+src/argus/storage/postgres_storage_stats.py
+src/argus/storage/sqlite.py
+```
 
-Reason: SQL values continue to use query parameters. The interpolated identifiers are schema/table/id-column names selected only from internal fixed allowlists or constants such as `observations`, `evidence`, `observation_id`, `evidence_id` and the constant `argus` schema. No request, URL, consumer, analysis or source text is permitted to become an SQL identifier.
+SQL values передаются параметрами. Интерполируются только schema/table/id-column identifiers из internal fixed allowlists/constants (`observations`, `evidence`, `observation_id`, `evidence_id`, schema `argus`). Request/URL/consumer/analysis/source text не может стать SQL identifier.
 
-This exception does not permit interpolating user-controlled SQL fragments. Any new dynamic identifier must have an explicit fixed allowlist before it may use this exception.
+Исключение не разрешает user-controlled SQL fragments. Новый dynamic identifier должен сначала получить explicit fixed allowlist.
 
 ## PostgreSQL backup process: S603
 
-Affected file:
+File:
 
-- `src/argus/storage/postgres_backup.py`
+```text
+src/argus/storage/postgres_backup.py
+```
 
-Reason: `subprocess.run` executes an argv list directly with `shell=False`; commands are the fixed PostgreSQL tools used by the backup/restore helper. Database passwords are provided through the process environment and not concatenated into a shell command.
+`subprocess.run` запускает argv list с `shell=False`; executable — фиксированные PostgreSQL tools. Password передаётся через environment, не shell command.
 
-This exception does not permit `shell=True` or arbitrary user-supplied executable names.
+Исключение не разрешает `shell=True` или arbitrary executable names.
 
 ## Secret posture status string: S105
 
-Affected file:
+File:
 
-- `src/argus/security/runtime_posture.py`
+```text
+src/argus/security/runtime_posture.py
+```
 
-Reason: `token_file_status = "pending_creation"` is a diagnostic state label, not a password/token/secret value.
+`token_file_status = "pending_creation"` — diagnostic state label, а не secret value.
 
-## Internal type/control-flow invariants: S101
+## Internal invariants: S101
 
-Affected files:
+Files:
 
-- `src/argus/history/timeline.py`
-- `src/argus/sources/document_web.py`
-- `src/argus/sources/json_feed.py`
+```text
+src/argus/history/timeline.py
+src/argus/sources/document_web.py
+src/argus/sources/json_feed.py
+```
 
-Reason: these assertions follow explicit branch/schema validation and express internal impossible-state/type invariants; they are not authentication, authorization or input validation controls. Product correctness must not depend on an assertion being executed.
+Assertions стоят после explicit validation и выражают internal impossible-state/type invariants. Authentication/authorization/input validation не должны зависеть от assert execution.
 
-They remain candidates for ordinary explicit invariant exceptions during code cleanup. The exception exists so the security gate does not mistake them for security controls.
+## Fallback transitions: S110/S112
 
-## Deliberate fallback transitions: S110/S112
+Files:
 
-Affected files:
+```text
+src/argus/sources/generic_web.py
+src/argus/sources/recipe_web.py
+src/argus/storage/postgres_migrations.py
+```
 
-- `src/argus/sources/generic_web.py`
-- `src/argus/sources/recipe_web.py`
-- `src/argus/storage/postgres_migrations.py`
+Generic/SiteRecipe web path может намеренно перейти к следующей retrieval strategy при failure candidate recipe/replay URL. `UnsafeUrlError` не должен swallowing'иться.
 
-Reasons:
+Migration advisory-unlock cleanup может быть best-effort в `finally`, потому что закрытие PostgreSQL connection освобождает session advisory lock.
 
-- Generic/SiteRecipe web code deliberately proceeds to the next retrieval strategy when a candidate recipe/replay URL fails. `UnsafeUrlError` is always re-raised and is never swallowed.
-- The migration advisory-unlock cleanup is best-effort in `finally`; closing the PostgreSQL connection releases the session-level advisory lock even when explicit unlock fails.
-
-These exceptions do not permit silent swallowing of SSRF/security errors or factual extraction/storage failures.
+Исключения не разрешают молча поглощать SSRF/security/factual/storage failures.
 
 ## Review rule
 
-Whenever a security exception file is materially changed, the exception must be reviewed against the new code. If its original rationale no longer applies, remove or narrow the exception before merging.
+При материальном изменении файла с security exception нужно заново проверить применимость rationale. Если исходная причина исчезла, исключение удаляется или сужается до merge.

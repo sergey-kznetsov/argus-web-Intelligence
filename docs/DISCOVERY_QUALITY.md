@@ -1,72 +1,80 @@
-# Discovery quality and duplicate-content policy
+# Качество discovery и политика дубликатов
 
-ARGUS discovery is navigation, not evidence. Search providers, provider ranks, snippets, canonical URL cleanup, locality matches and navigation scores only decide which public destination should be fetched first. A destination becomes factual material only after ARGUS fetches it and produces Observation + Evidence.
+ARGUS рассматривает discovery как навигацию, а не как доказательство. Search providers, provider rank, snippets, canonical URL cleanup, locality match и navigation score определяют только порядок получения публичных destination. Фактом destination становится после fetch и формирования Observation + Evidence.
 
-## Query planning
+## Планирование запросов
 
-Research planning is bounded by `discovery_max_queries`. The heuristic planner allocates its budget round-robin across requested intents so one intent cannot consume the whole query budget before later intents are represented. Queries are normalized, deduplicated and length-bounded. Ollama planner output is subject to the same query-count and query-length limits; invalid or empty output falls back to the deterministic heuristic planner.
+Количество discovery queries ограничено `discovery_max_queries`; текущее значение по умолчанию — `12`. Heuristic planner распределяет бюджет round-robin между requested intents, чтобы один intent не съел весь query budget. Запросы нормализуются, дедуплицируются и ограничиваются по длине.
+
+Старое упоминание Ollama planner как активного runtime больше не актуально: текущий `build_services()` не подключает LLM/AGENT. Если LLM planner будет возвращён, его output должен проходить те же count/length limits и deterministic fallback.
 
 ## Canonical navigation identity
 
-Ordinary HTTP(S) navigation tasks use `discovery-url-identity/1`. Canonicalization is deliberately conservative:
+Для обычных HTTP(S) navigation tasks используется `discovery-url-identity/1`.
 
-- fragments are removed;
-- host names are normalized, including IDNA;
-- default ports are removed;
-- known tracking query parameters such as UTM identifiers are removed;
-- remaining query parameters and path semantics are preserved.
+Нормализация консервативная:
 
-The fetched URL is still recorded as the factual source URL. A source-declared canonical URL or ARGUS navigation identity never rewrites the URL from which Evidence was actually obtained.
+- удаляется fragment;
+- hostname нормализуется, включая IDNA;
+- default ports удаляются;
+- известные tracking parameters (`utm_*` и аналогичные) удаляются;
+- остальные query parameters и path semantics сохраняются.
+
+Factual source URL остаётся реально fetched URL. Source-declared canonical URL или ARGUS navigation identity не заменяют URL, из которого получен Evidence.
 
 ## Discovery ranking
 
-`discovery-ranking/1` orders valid destinations deterministically by:
+`discovery-ranking/1` сортирует destinations детерминированно:
 
-1. explicit `allowed_domains` priority;
+1. priority из `allowed_domains`;
 2. provider rank;
-3. locality-token matches from the requested city/address;
-4. HTTPS as a tie-break;
-5. canonical URL as the final stable tie-break.
+3. совпадения locality tokens из city/address;
+4. HTTPS как tie-break;
+5. canonical URL как стабильный последний tie-break.
 
-ARGUS also emits an explainable `discovery_navigation_score` from those components. This score is a crawl-order/navigation score only. It is not source reliability, factual confidence or Evidence quality.
+`discovery_navigation_score` — только crawl-order score. Это не source reliability, factual confidence или Evidence quality.
 
-The navigation metadata is copied into factual provenance after the destination is fetched with:
+Navigation metadata может попасть в factual provenance только с явной маркировкой:
 
-- `navigation_only=true`;
-- `is_evidence=false`.
+```text
+navigation_only=true
+is_evidence=false
+```
 
-## Stop conditions and budgets
+## Stop conditions и budgets
 
-Discovery uses `first_provider_with_valid_destinations`: later providers are not called once an earlier provider yields valid public destinations. This limits search traffic and avoids unnecessary anti-bot load.
+Обычный discovery использует `first_provider_with_valid_destinations`: после первого provider, который дал валидные публичные destinations, следующие fallback providers для этого discovery call не вызываются.
 
-The complete set of tasks emitted by one discovery call is bounded by `CollectionRequest.constraints.max_pages`. Historical Wayback companion tasks share this same budget with live destination tasks; they do not double it. If only one slot remains, ARGUS prioritizes the live factual fetch and records that an archive companion was skipped by budget.
+Tasks одного discovery call ограничены `CollectionRequest.constraints.max_pages`. Wayback companion tasks делят тот же budget с live destination tasks и не удваивают его. Если остаётся одно место, приоритет получает live factual fetch.
 
-`DiscoveryOutcome` exposes counters and a stop reason such as:
+`DiscoveryOutcome` может содержать stop reason:
 
-- `no_queries`;
-- `first_provider_with_valid_destinations`;
-- `task_budget_reached`;
-- `blocked_without_destinations`;
-- `no_valid_destinations`;
-- `providers_exhausted`.
+```text
+no_queries
+first_provider_with_valid_destinations
+task_budget_reached
+blocked_without_destinations
+no_valid_destinations
+providers_exhausted
+```
 
-These values are operational/navigation telemetry, not Evidence.
+Это operational/navigation telemetry, не Evidence.
+
+Для Kraken `urban_signals` поверх общего discovery действует отдельный обязательный `mandatory-coverage/5`: source contours и public-map lanes выполняются независимо от seed intent coverage, поэтому этот special planner policy нельзя описывать как обычный one-provider discovery flow.
 
 ## Exact duplicate-content suppression
 
-ARGUS performs collection-scoped exact content deduplication only after content has been fetched and normalized. The identity is `committed-content-hash/1`.
+После фактического fetch и normalization ARGUS выполняет collection-scoped exact content deduplication по `committed-content-hash/1`.
 
-Production PostgreSQL schema migration 8 adds an expression index over collection, `content_hash` and `source_kind` so duplicate lookup does not scan all observations. Embedded SQLite uses the same Repository contract for development/testing.
+Дубликаты ищутся по committed storage, а не process-local cache. Поэтому task с неуспешным atomic commit не может отравить duplicate state; recovery worker безопасно повторяет его.
 
-Duplicate lookup uses committed storage rather than a process-local cache. Therefore a source task whose atomic commit fails cannot poison duplicate state; a replacement worker can replay it safely after restart.
+Политика намеренно консервативна:
 
-The duplicate policy is intentionally conservative:
+- участвуют primary document representations: `web_page`, `pdf_document`, `structured_data`, `office_document`, `office_spreadsheet`, `office_document_file`;
+- nested JSON-LD/Microdata/GeoJSON/KML child facts не используются для suppression всей страницы;
+- для HTML `web_page` нужно минимум 256 normalized text chars;
+- duplicate Observation и его Evidence сохраняются;
+- подавляются только новые navigation tasks и historical branching из точного duplicate;
+- provenance сохраняет `duplicate_of` с original committed Observation/URL.
 
-- only primary document representations participate: `web_page`, `pdf_document`, `structured_data`, `office_document`, `office_spreadsheet`, `office_document_file`;
-- embedded JSON-LD, Microdata, GeoJSON/KML child entities and other nested facts are not used to suppress an entire page;
-- HTML `web_page` content must contain at least 256 normalized text characters before exact-hash suppression is eligible, reducing false suppression from small shared templates;
-- the duplicate Observation and its Evidence are still stored;
-- only newly discovered navigation tasks and historical branching from the duplicate are suppressed;
-- provenance records the original committed Observation and URL through `duplicate_of` metadata.
-
-ARGUS does not currently perform fuzzy, semantic or near-duplicate classification. It also does not deduplicate content across different collections. Those behaviours are intentionally excluded because they could merge genuinely distinct evidence without a sufficiently strong deterministic identity.
+ARGUS сейчас не делает fuzzy/semantic/near-duplicate classification и не дедуплицирует контент между разными collections. Это исключено намеренно, чтобы не объединять разные evidence без достаточно сильной deterministic identity.

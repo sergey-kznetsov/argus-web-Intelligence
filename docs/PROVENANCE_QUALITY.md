@@ -1,74 +1,74 @@
-# Provenance and evidence quality
+# Provenance и качество Evidence
 
-ARGUS attaches a uniform provenance envelope to every Observation immediately before the source task is atomically committed. The same commit also enriches linked Evidence metadata.
+ARGUS добавляет единый provenance envelope к каждому Observation непосредственно перед atomic commit source task. В той же транзакции обогащается metadata связанного Evidence.
 
-This layer describes how a fact was obtained. It does not decide whether the fact is semantically true and does not assign an arbitrary confidence score.
+Этот слой описывает, **как** факт получен. Он не решает, истинно ли утверждение источника, и не создаёт произвольный confidence score.
 
 ## Observation provenance
 
-`Observation.provenance.argus` contains a bounded, versioned envelope with:
+`Observation.provenance.argus` содержит bounded versioned envelope:
 
-- source adapter ID and source kind;
+- source adapter ID и source kind;
 - source URL;
-- collection, analysis and consumer identifiers;
+- collection, analysis и consumer identifiers;
 - collection timestamp;
 - Observation content hash;
-- research goals/intents when present;
-- runtime used to obtain the source;
-- extractor version when available;
+- research goals/intents;
+- runtime получения;
+- extractor version;
 - Snapshot ID;
-- bounded Snapshot metadata when the Snapshot is part of the current atomic task commit;
-- bounded discovery/navigation metadata when the URL came from discovery.
+- bounded Snapshot metadata, если Snapshot входит в текущий atomic commit;
+- bounded discovery/navigation metadata, если URL пришёл из discovery.
 
-The current envelope version is `argus-provenance/1`.
+Текущая version: `argus-provenance/1`.
 
-An Observation may reference a Snapshot that already existed before the current task. In that case `snapshot_id` remains present, while the current commit does not duplicate the Snapshot payload.
+Observation может ссылаться на Snapshot, который существовал до текущего task. Тогда `snapshot_id` сохраняется, но payload Snapshot повторно не дублируется.
 
 ## Evidence provenance
 
-Every Evidence item linked to an Observation receives `metadata.argus_provenance` with:
+Каждый Evidence, связанный с Observation, получает `metadata.argus_provenance`:
 
-- Observation ID and Observation content hash;
-- source adapter/source kind/source URL;
+- Observation ID/content hash;
+- source adapter/kind/URL;
 - Evidence collection timestamp;
 - Snapshot ID;
-- extractor/runtime information;
+- extractor/runtime;
 - research goals;
 - bounded discovery metadata;
-- SHA-256 of the exact Evidence text stored by ARGUS;
+- SHA-256 exact Evidence text;
 - `truth_confidence_assigned=false`.
 
-The Evidence text hash protects the identity of the stored excerpt independently of the larger source-document content hash.
+Evidence text hash идентифицирует сохранённый excerpt независимо от document content hash.
 
-## Evidence quality facts
+## Evidence quality
 
-`Observation.quality.evidence_quality` is a technical quality record, not a truth score. It reports:
+`Observation.quality.evidence_quality` — техническая запись качества, а не truth score. Она показывает:
 
-- whether linked Evidence exists;
-- linked Evidence count;
-- whether a Snapshot is referenced;
-- whether that Snapshot is present in the current task commit;
-- whether an Observation content hash exists;
-- whether the representation is machine-readable;
-- whether extraction is partial/truncated;
-- whether the document is known duplicate content;
-- whether linked Evidence source URLs match the Observation URL;
+- есть ли linked Evidence;
+- число Evidence items;
+- указан ли Snapshot;
+- присутствует ли этот Snapshot в current task commit;
+- есть ли Observation content hash;
+- является ли representation machine-readable;
+- partial/truncated extraction;
+- exact duplicate state;
+- совпадают ли Evidence source URLs с Observation URL;
 - `truth_confidence_assigned=false`.
 
-The current quality version is `evidence-quality/1`.
+Текущая version: `evidence-quality/1`.
 
-ARGUS intentionally does not expose a synthetic numeric confidence score at this layer. A downstream analytical consumer may apply its own evidence-weighting policy, but it must do so from explicit source/evidence properties rather than treating an ARGUS crawler heuristic as factual confidence.
+ARGUS намеренно не создаёт synthetic numeric confidence. Consumer может применять собственную evidence-weighting policy по явным source/evidence properties.
 
 ## Atomicity
 
-Normalization happens after source extraction/normalization and immediately before `commit_task_success`. Provenance/quality changes are therefore persisted in the same transaction as Observation, Evidence, Snapshot and collection checkpoint state.
+Normalization provenance/quality происходит после source extraction/normalization и непосредственно перед `commit_task_success`. Observation, Evidence, Snapshot и checkpoint публикуются одной транзакцией.
 
-If the atomic task commit fails or the worker loses its lease, the enriched rows are not partially published. Recovery re-runs the task from the last committed checkpoint.
+При failure commit или lease loss частично enriched rows не публикуются; recovery повторяет task от последнего durable checkpoint.
 
 ## Discovery boundary
 
-Discovery metadata may appear inside provenance only to explain how ARGUS reached a source. Discovery results remain navigation and are explicitly not Evidence.
+Discovery metadata может присутствовать в provenance только как объяснение navigation path. Discovery results не становятся Evidence.
 
 ## Consumer boundary
 
-The envelope contains the calling consumer identity for traceability, but ARGUS does not branch provenance logic by Kraken, Janus or any future consumer. All consumers receive the same source/evidence contract.
+Consumer identity сохраняется для traceability, но provenance logic универсальна. Kraken/Janus/будущие modules получают один и тот же evidence contract.

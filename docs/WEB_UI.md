@@ -1,26 +1,26 @@
-# Standalone Web UI
+# Standalone Web UI ARGUS
 
-ARGUS remains a headless AI web-intelligence backend. The optional web interface is a separate operator gateway, not a second crawler or a second orchestration path.
-
-Architecture:
+ARGUS остаётся headless web-intelligence backend. Необязательный Web UI — отдельный operator gateway, а не второй crawler/orchestrator.
 
 ```text
 Browser
-  -> ARGUS Web UI gateway (argus-web, separate port)
+  -> ARGUS Web UI gateway (argus-web)
   -> local ARGUS API (/v1/collections)
-  -> Research Planner
-  -> FAST -> BROWSER -> AGENT
-  -> Source adapters / Evidence / Snapshots / Storage
+  -> Research Planner / SourceRegistry
+  -> FAST -> BROWSER
+  -> Evidence / Snapshots / Storage
 
 Geo Analyzer modules
-  -> the same local ARGUS API
+  -> тот же local ARGUS API
 ```
 
-The gateway therefore cannot bypass the normal CollectionRequest contract, Research Planner, source registry, budgets, security policy, provenance or persistence rules.
+AGENT в текущем service graph не подключён, поэтому старое описание `FAST -> BROWSER -> AGENT` для UI больше не соответствует runtime.
 
-## Start
+Gateway не может обходить CollectionRequest, planners, source registry, budgets, security, provenance или persistence rules.
 
-First start the normal ARGUS API. For a standalone SQLite installation this can run in embedded mode:
+## Запуск
+
+Сначала запускается normal ARGUS API. Для standalone SQLite:
 
 ```bash
 ARGUS_EXECUTION_ROLE=embedded \
@@ -30,7 +30,7 @@ ARGUS_PORT=8787 \
 argus serve
 ```
 
-Then start the web gateway:
+Затем gateway:
 
 ```bash
 ARGUS_WEB_API_URL=http://127.0.0.1:8787 \
@@ -40,35 +40,34 @@ ARGUS_WEB_PORT=8790 \
 argus-web
 ```
 
-Open `http://127.0.0.1:8790/`.
+Открыть `http://127.0.0.1:8790/`.
 
-For an ARGUS installation managed beside Geo Analyzer, point `ARGUS_WEB_API_URL` at the localhost ARGUS API port assigned to that installation. The web gateway does not need a new database and does not replace the module/API process.
+В server deployment Web UI указывает на standalone localhost ARGUS API и не получает отдельную DB.
 
 ## Authentication
 
-The browser never receives the internal ARGUS bearer token. `argus-web` reads that token from `ARGUS_WEB_API_TOKEN_FILE` and adds it only to server-side requests to the local ARGUS API.
+Browser не получает internal Bearer token. `argus-web` читает его из `ARGUS_WEB_API_TOKEN_FILE` и добавляет только к server-side requests.
 
-The web interface itself is protected with HTTP Basic authentication. Username defaults to `argus`. On first start a random password is generated in `.argus/web-password` (configurable with `ARGUS_WEB_PASSWORD_FILE`). The password is not printed to logs.
+Сам Web UI защищён HTTP Basic. Username по умолчанию `argus`. При первом запуске random password создаётся в `.argus/web-password` либо path из `ARGUS_WEB_PASSWORD_FILE`. Password не логируется.
 
-Do not expose the UI directly over plain HTTP on a public network. For remote access, keep the process on localhost and publish it through an HTTPS reverse proxy with appropriate network access controls.
+Нельзя публиковать UI напрямую по plain HTTP в public network. Для remote access process должен остаться loopback, а внешний доступ — через HTTPS reverse proxy с отдельной network/access policy.
 
 ## Security boundary
 
-The gateway is intentionally not a generic reverse proxy. It only exposes a fixed list of ARGUS operations required by the UI:
+Gateway не является generic reverse proxy. Он exposes только фиксированный набор нужных UI operations:
 
-- health and capabilities;
+- health/capabilities;
 - source list;
 - submit collection;
 - collection status;
-- cancel collection;
+- cancel;
 - result summary;
-- paged observations;
-- paged evidence.
+- paged observations/evidence.
 
-`ARGUS_WEB_API_URL` is restricted to loopback hosts (`127.0.0.1`, `localhost`, `::1`) to prevent the operator UI from becoming an SSRF primitive.
+`ARGUS_WEB_API_URL` разрешает только loopback hosts (`127.0.0.1`, `localhost`, `::1`), чтобы UI не стал SSRF primitive.
 
-The UI returns a restrictive Content-Security-Policy, disables framing, uses `no-store`, and renders result payloads as text rather than injecting returned HTML.
+UI отдаёт restrictive CSP, запрещает framing, использует `no-store` и выводит returned payload как text, не инжектя fetched HTML.
 
 ## Product boundary
 
-The web UI is an additional consumer of ARGUS. It must not contain source-specific scraping logic, research heuristics, module business logic or independent storage. Any capability needed by both the UI and Geo Analyzer consumers belongs in the core ARGUS API/orchestrator instead.
+Web UI — ещё один consumer ARGUS API. Source-specific scraping, research heuristics, business logic и storage не должны переноситься в gateway. Общая возможность реализуется в core API/orchestrator.

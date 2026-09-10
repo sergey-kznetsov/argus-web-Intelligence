@@ -1,73 +1,75 @@
-# RSS and Atom factual feed extraction
+# Извлечение фактов из RSS и Atom
 
-ARGUS treats RSS 2.x and Atom feeds as factual publication sources. Feed discovery is navigation only; an entry becomes an Observation only after ARGUS fetches and safely parses the feed document itself.
+ARGUS рассматривает RSS 2.x и Atom как factual publication sources. Feed discovery остаётся навигацией; entry становится Observation только после получения и безопасного разбора самого feed document.
 
 ## Security boundary
 
-Feed XML is untrusted input.
+Feed XML считается недоверенным input.
 
-Before ARGUS builds the semantic XML tree, it performs a streaming `defusedxml.iterparse` preflight with explicit node and depth budgets. Parsed elements are cleared during preflight. Only a feed that passes this preflight is parsed again for RSS/Atom semantics.
+Перед semantic parsing выполняется streaming preflight через `defusedxml.iterparse` с явными node/depth budgets. Elements очищаются во время preflight. Только feed, прошедший эту проверку, разбирается повторно по RSS/Atom semantics.
 
-This provides two independent properties:
+Это даёт две независимые защиты:
 
-- entity/DTD attacks are rejected by `defusedxml`;
-- deeply or broadly nested XML is rejected before ARGUS constructs the full semantic tree.
+- entity/DTD attacks отклоняет `defusedxml`;
+- чрезмерно глубокая или широкая XML-структура отклоняется до построения полного semantic tree.
 
-Failures are normalized as:
+Ошибки нормализуются:
 
-- `FEED_XML_INVALID` for malformed or unsafe XML;
-- `FEED_XML_LIMIT_EXCEEDED` when node/depth budgets are exceeded.
+```text
+FEED_XML_INVALID
+FEED_XML_LIMIT_EXCEEDED
+```
 
-No XML external entities, schemas, XInclude or remote resources are resolved.
+External entities, schemas, XInclude и remote resources не разрешаются.
 
 ## Runtime limits
 
-RSS/Atom reuses the existing structured-data budget instead of defining a second configuration surface.
+RSS/Atom переиспользует structured-data budget:
 
-At bootstrap:
+```text
+max_items = min(ARGUS_STRUCTURED_DATA_MAX_RECORDS, 100)
+XML nodes = ARGUS_STRUCTURED_DATA_MAX_JSON_NODES
+XML depth = ARGUS_STRUCTURED_DATA_MAX_JSON_DEPTH
+title/identifier limits <- ARGUS_STRUCTURED_DATA_MAX_CELL_CHARS
+entry body <= 100000 chars и дополнительно ограничен cell budget
+```
 
-- `max_items = min(ARGUS_STRUCTURED_DATA_MAX_RECORDS, 100)`;
-- XML node budget = `ARGUS_STRUCTURED_DATA_MAX_JSON_NODES`;
-- XML depth budget = `ARGUS_STRUCTURED_DATA_MAX_JSON_DEPTH`;
-- title and identifier limits derive from `ARGUS_STRUCTURED_DATA_MAX_CELL_CHARS`;
-- entry body text is derived from the same cell limit and capped at 100,000 characters.
-
-If an item or field limit is reached, ARGUS returns the bounded entries with `partial=true` and `FEED_EXTRACTION_TRUNCATED`. Truncation is also recorded on the affected Observation and Evidence metadata.
+При достижении лимита возвращаются bounded entries с `partial=true` и `FEED_EXTRACTION_TRUNCATED`. Truncation фиксируется также в Observation/Evidence metadata.
 
 ## Atom links
 
-For Atom entries ARGUS prefers an entry link whose `rel` is `alternate` or omitted. RFC 4287 defines an omitted `rel` as `alternate`. A non-alternate link such as `self` is only a fallback when no alternate link is present.
+Для Atom entry ARGUS предпочитает link с `rel=alternate` либо без `rel`; по RFC 4287 отсутствие `rel` означает `alternate`. `self` и другие links используются только как fallback, если alternate отсутствует.
 
-Only HTTP/HTTPS entry URLs without embedded credentials are accepted. Unsafe or invalid entry URLs fall back to the fetched feed URL instead of being used as factual destinations.
+Принимаются только HTTP/HTTPS entry URL без embedded credentials. Unsafe/invalid URL не используется как factual destination; adapter сохраняет fetched feed URL.
 
 ## Source-declared geography
 
-ARGUS supports two point forms when the feed entry itself declares them:
+Поддерживаются две формы source-declared point:
 
 - GeoRSS Simple `georss:point`;
 - GeoRSS GML `georss:where/gml:Point/gml:pos`.
 
-Coordinates are interpreted in the GeoRSS order `latitude longitude` and are accepted only when both values are finite and inside WGS84 latitude/longitude ranges. ARGUS does not geocode or guess a replacement when a declared point is malformed.
+Порядок GeoRSS: `latitude longitude`. Координаты принимаются только как finite WGS84 values. ARGUS не геокодирует и не угадывает замену malformed point.
 
-A valid point is copied to `Observation.geo`. Provenance records the GeoRSS representation and `geocoding_used=false`. An invalid but explicitly declared point remains visible through `data.geospatial` and `quality.geospatial_valid=false` while `Observation.geo` stays empty.
+Валидный point попадает в `Observation.geo`; provenance сохраняет representation и `geocoding_used=false`. Невалидный явно объявленный point остаётся в `data.geospatial`, `quality.geospatial_valid=false`, а `Observation.geo` остаётся пустым.
 
-Only points are normalized in the current contract. GeoRSS lines, boxes and polygons are deliberately not flattened into a point because the current Observation contract exposes a `Point`, not a general geometry.
+Текущий contract нормализует только points. Line/box/polygon не преобразуются в point.
 
-## Evidence and provenance
+## Evidence и provenance
 
-Each bounded feed entry produces:
+Каждый bounded feed entry создаёт:
 
-- one `Observation` with `source_kind=feed_entry` and `entity_type=publication`;
-- one `Evidence` item sourced from the fetched feed URL;
-- the shared feed Snapshot ID;
-- feed format (`rss` or `atom`);
-- entry index and total feed-entry count;
+- `Observation` с `source_kind=feed_entry`, `entity_type=publication`;
+- один `Evidence` из fetched feed URL;
+- общий feed Snapshot ID;
+- feed format (`rss`/`atom`);
+- entry index и total entries;
 - XML node/depth statistics;
-- explicit truncation flags;
-- source-declared GeoRSS point metadata when present.
+- truncation flags;
+- GeoRSS metadata, если они source-declared.
 
-The feed Snapshot is captured from the fetched source document before semantic normalization, preserving the evidence needed to audit the extracted entry later.
+Snapshot создаётся из fetched source document до semantic normalization.
 
-## Deliberate limitations
+## Ограничения
 
-ARGUS does not execute embedded HTML/JavaScript from feed fields. It does not dereference feed entry URLs during feed normalization; those are separate web retrieval tasks when the research plan requires them. It also does not infer publication dates from prose: only source-declared RSS/Atom date elements are parsed.
+ARGUS не исполняет HTML/JavaScript из feed fields, не dereference'ит entry URLs во время feed normalization и не выводит publication dates из текста. Используются только source-declared RSS/Atom date elements.

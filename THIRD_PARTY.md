@@ -1,24 +1,30 @@
-# Third-party foundation
+# Сторонние компоненты
 
-ARGUS intentionally reuses maintained open-source components instead of reimplementing crawler and database infrastructure.
+ARGUS использует поддерживаемые open-source компоненты и публичные интерфейсы вместо повторной реализации crawler-, browser- и database-инфраструктуры.
 
-- Crawlee for Python: queue/request management, retries, sessions, concurrency and Playwright crawler runtime. Apache-2.0.
-- Playwright: browser automation runtime used by BROWSER and deterministic SiteRecipe verification. Apache-2.0.
-- FastAPI: internal HTTP API. MIT.
-- Psycopg 3 + psycopg_pool: PostgreSQL driver and native asyncio connection pool used by the product/server repository backend. LGPL-3.0-only. ARGUS uses the published package API and does not modify or vendor Psycopg code.
-- defusedxml: hardened parsing for untrusted RSS/Atom and Sitemap XML, including entity/external-reference protections. Python Software Foundation License (PSFL).
-- pypdf: local PDF metadata/text extraction. BSD-3-Clause. ARGUS requires `pypdf>=6.16.1,<7`, does not use a remote PDF service, and executes untrusted PDF parsing in a short-lived bounded child process. Raw document bytes remain subject to the normal HTTP response-size limit before parsing.
-- Ollama: optional local-model HTTP service used for research planning, exact-excerpt semantic classification and the native `ollama-recipe` navigation planner. ARGUS does not require an Ollama Python SDK and does not treat model output as Evidence.
-- Browser Use: retained only as dormant compatibility/security-harness code. It is not an operational or installable ARGUS backend while Browser Use 0.13.x pins `pypdf==6.14.2`, which conflicts with ARGUS's patched `pypdf>=6.16.1` security baseline. ARGUS will not downgrade pypdf to enable it.
-- Stagehand through Crawlee: optional future/experimental backend boundary. It is not operational until local-LLM integration and the exact transitive package/license set are validated.
-- SearXNG: optional separate/self-hosted discovery service accessed only through its HTTP API. AGPL-3.0-or-later. ARGUS does not vendor, link to, import or copy SearXNG code. If SearXNG is deployed, its own license and source-offer obligations must be handled for that separate service.
-- DuckDuckGo HTML: optional low-volume public browser discovery fallback. ARGUS does not ship DuckDuckGo code or use a private API; search-result pages only provide candidate destination URLs and are never factual Evidence.
-- OpenStreetMap/Overpass: optional map data provider accessed through a separately configured Overpass interpreter. OpenStreetMap data is licensed under ODbL and requires attribution. ARGUS normalizes each place with `© OpenStreetMap contributors`, the ODbL marker and a direct `openstreetmap.org` source URL. No public Overpass endpoint is enabled by default.
-- Nominatim: optional address-to-coordinate provider accessed only through a separately configured HTTP endpoint. ARGUS does not enable the donated public OSMF Nominatim service by default. Geocoding candidates retain OpenStreetMap attribution/ODbL provenance and are used only to resolve map-search centers when coordinates were not supplied.
-- Wayback CDX: optional exact-URL historical capture discovery through a separately configured CDX HTTP endpoint. ARGUS uses documented public CDX fields only and does not vendor Wayback code. A CDX row is evidence that an archive capture exists; page content is fetched separately from the concrete capture URL before it is treated as page Evidence. Archived page content retains the rights and access restrictions of the underlying source; ARGUS does not bypass archive access controls.
+- **Crawlee for Python** — управление запросами, retries, sessions и concurrency. Apache-2.0.
+- **Playwright** — BROWSER runtime и deterministic SiteRecipe replay. Apache-2.0.
+- **FastAPI** — внутренний HTTP API. MIT.
+- **Psycopg 3 + psycopg_pool** — PostgreSQL driver и asyncio pool. LGPL-3.0-only.
+- **defusedxml** — безопасный разбор недоверенного XML. PSFL.
+- **pypdf** — локальный разбор PDF. BSD-3-Clause. Текущая зависимость: `pypdf>=6.16.1,<7`.
+- **SearXNG** — необязательный отдельный discovery service через HTTP API. AGPL-3.0-or-later.
+- **OpenStreetMap/Overpass** — публичные геоданные ODbL с атрибуцией `© OpenStreetMap contributors`.
+- **Nominatim** — необязательный HTTP geocoder, включается через `ARGUS_NOMINATIM_URL`.
+- **Wayback CDX** — необязательный discovery исторических captures; содержимое найденной capture должно быть получено отдельно, прежде чем стать Evidence.
 
-`robots.txt` and Sitemap support use the public protocol documents and site-published files directly; no third-party crawler code is copied for this feature.
+## AGENT и LLM
 
-Embedded JSON-LD support follows the W3C JSON-LD data model and `application/ld+json` media type. ARGUS parses only the JSON already embedded in a fetched page and never dereferences remote `@context` values.
+В репозитории сохранён код интеграции с Ollama, Browser Use и Stagehand, но текущий `build_services()` не подключает AGENT/LLM к рабочему crawler graph: создаются `agent=None` и `llm_health=None`. Legacy Ollama settings остаются читаемыми для совместимости старых environment-файлов.
 
-No code is copied from these projects; ARGUS consumes published packages, documented HTTP interfaces or public browser pages.
+Следовательно, Ollama, Browser Use и Stagehand сейчас нельзя описывать как активную часть production research pipeline. Их повторное включение требует явного подключения в service graph и отдельной проверки зависимостей, лицензий и тестов.
+
+## Discovery
+
+При `ARGUS_BROWSER_SERP_ENABLED=true` текущий bootstrap использует бесплатные discovery providers `duckduckgo_fast`, `mojeek_fast` и `bing_rss`. Search results служат только навигацией и не являются Evidence.
+
+## Overpass
+
+В `embedded` режиме Overpass остаётся opt-in. В server roles `api`/`worker`, если `ARGUS_OVERPASS_URL` не задан, ARGUS автоматически включает bounded контур с `https://overpass-api.de/api/interpreter` и fallback `https://overpass.private.coffee/api/interpreter`. Явная операторская конфигурация не перезаписывается.
+
+ARGUS не вендорит код перечисленных проектов: используются published packages, документированные HTTP interfaces и публичные web-страницы.

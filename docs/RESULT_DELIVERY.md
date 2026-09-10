@@ -1,57 +1,71 @@
-# ARGUS result delivery
+# Выдача результатов ARGUS
 
-ARGUS keeps the original `GET /v1/collections/{collection_id}/result` response for small collections, but never loads an arbitrarily large result into the API process.
+`GET /v1/collections/{collection_id}/result` сохраняется для небольших collections, но API не загружает произвольно большой result в память.
 
 ## Full-result gate
 
-A full result is returned only while both configured limits are satisfied:
+Полный result возвращается только если одновременно соблюдены:
 
-- `ARGUS_API_FULL_RESULT_MAX_ITEMS=100` — observations plus evidence;
-- `ARGUS_API_FULL_RESULT_MAX_BYTES=4194304` — stored JSON bytes for observations plus evidence.
+```text
+ARGUS_API_FULL_RESULT_MAX_ITEMS=100
+ARGUS_API_FULL_RESULT_MAX_BYTES=4194304
+```
 
-The API checks counts/bytes in storage before loading result rows. If either limit is exceeded, the endpoint returns HTTP `409` with `detail.code=RESULT_REQUIRES_PAGINATION` and the URLs of the summary, observation-page and evidence-page endpoints. Data is not silently truncated.
+Items считаются как observations + evidence; byte limit основан на stored JSON bytes этих rows.
 
-`GET /v1/collections/{collection_id}/result/summary` returns collection status, observation/evidence counts, stored byte count, coverage/errors and the current delivery limits. Consumers can use `full_result_available` to decide whether the legacy full-result path is safe.
+Перед загрузкой API проверяет counts/bytes в storage. При превышении любого лимита endpoint возвращает HTTP `409`, `detail.code=RESULT_REQUIRES_PAGINATION` и ссылки на summary/observation/evidence page endpoints. Silent truncation отсутствует.
+
+`GET /v1/collections/{collection_id}/result/summary` возвращает status, counts, stored bytes, coverage/errors, delivery limits и `full_result_available`.
 
 ## Paged delivery
 
-Large terminal results are read through:
+Для больших terminal results:
 
-- `GET /v1/collections/{collection_id}/result/observations`;
-- `GET /v1/collections/{collection_id}/result/evidence`.
+```text
+GET /v1/collections/{collection_id}/result/observations
+GET /v1/collections/{collection_id}/result/evidence
+```
 
 Defaults:
 
-- `ARGUS_API_RESULT_PAGE_DEFAULT_SIZE=50`;
-- `ARGUS_API_RESULT_PAGE_MAX_SIZE=100`;
-- `ARGUS_API_RESULT_PAGE_MAX_BYTES=2097152`.
+```text
+ARGUS_API_RESULT_PAGE_DEFAULT_SIZE=50
+ARGUS_API_RESULT_PAGE_MAX_SIZE=100
+ARGUS_API_RESULT_PAGE_MAX_BYTES=2097152
+```
 
-Every page is bounded by both item count and stored JSON bytes. One first item is allowed even when that individual row exceeds the byte target; otherwise a single valid large item could permanently block cursor progress. The response reports `page_stored_bytes` so consumers can observe the actual page payload basis.
+Page ограничивается и item count, и stored JSON bytes. Первый item разрешается вернуть даже если один он превышает byte target, иначе cursor progression мог бы навсегда заблокироваться. Response содержит `page_stored_bytes`.
 
-Paged delivery is exposed only for terminal collection states (`completed`, `partial`, `blocked`, `failed`, `cancelled`). A `queued` or `running` collection returns `409 RESULT_NOT_FINAL`. This keeps the keyset traversal stable rather than allowing new result rows to appear between pages.
+Paged delivery доступна только для terminal states:
 
-## Cursor properties
+```text
+completed
+partial
+blocked
+failed
+cancelled
+```
 
-Result cursors are opaque URL-safe values. Consumers must not parse or construct them. They return the cursor received from the previous page unchanged.
+Для `queued`/`running` возвращается `409 RESULT_NOT_FINAL`.
 
-Each cursor is bound to:
+## Cursors
 
-- the collection id;
-- the result kind (`observation` or `evidence`);
-- the last delivered item id.
+Cursor — opaque URL-safe value. Consumer не должен его разбирать или строить самостоятельно.
 
-A cursor from another collection or from the other result kind is rejected with HTTP `400`. This prevents accidental cross-stream traversal.
+Cursor связан с:
 
-Storage keyset order is stable by `observation_id ASC` or `evidence_id ASC`. PostgreSQL uses composite `(collection_id, item_id)` indexes; SQLite uses the equivalent indexed primary-id traversal.
+- collection id;
+- result kind (`observation`/`evidence`);
+- last delivered item id.
+
+Cursor другого collection/result kind отклоняется `400`.
+
+Storage order стабилен по `observation_id ASC` / `evidence_id ASC`.
 
 ## PostgreSQL consistency
 
-The server read side uses its own small Psycopg async pool and does not reuse worker write transactions. Result summary/full/page reads run in `REPEATABLE READ READ ONLY` transactions.
-
-This matters for retention: if a terminal collection becomes old enough for cleanup while an API response is being assembled, one response sees one consistent database snapshot instead of a collection row from before cleanup and child rows from after cleanup.
+Read side использует отдельный небольшой Psycopg async pool. Summary/full/page reads выполняются в `REPEATABLE READ READ ONLY`, поэтому retention не должен дать mixed response из состояния до/после cleanup.
 
 ## Compatibility
 
-The Protocol `1.0.0` `CollectionResult` model is unchanged. Existing Kraken/Janus clients that receive small results can continue to use `/result` exactly as before.
-
-Clients must handle `409 RESULT_REQUIRES_PAGINATION` for larger collections and then consume the documented paged endpoints. The server never substitutes a partial/truncated `CollectionResult` while claiming success.
+Protocol `1.0.0` `CollectionResult` для малых collections сохраняется. Consumer обязан обрабатывать `409 RESULT_REQUIRES_PAGINATION` для больших results и переходить к paged endpoints. Сервер не маскирует silent partial result под успешный полный ответ.

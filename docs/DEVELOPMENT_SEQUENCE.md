@@ -1,153 +1,115 @@
-# Development sequence
+# Порядок развития ARGUS и consumer-модулей
 
-This file fixes the agreed implementation order for ARGUS and the Geo Analyzer
-consumer modules.
+## Принцип
 
-## Principle
-
-Do not attempt to finish a hypothetical universal ARGUS before real consumers
-exist. Keep the ARGUS core universal and grow consumer-specific research
-profiles from working module contracts.
-
-ARGUS core responsibilities remain:
+Не нужно заранее строить абстрактный «универсальный ARGUS на все случаи». Универсальное ядро расширяется от реальных contracts модулей.
 
 ```text
-find -> obtain -> prove -> store
+ARGUS  = find -> obtain -> prove -> store
+Module = interpret -> calculate -> conclude
 ```
 
-Consumer module responsibilities remain:
+## Этап 1 — базовый consumer contract
 
-```text
-interpret -> calculate -> conclude
-```
+Статус: реализован в текущем репозитории.
 
-## Stage 1 — ARGUS contract foundation
+Есть:
 
-Status: current stage.
-
-Required before switching back to Kraken:
-
-- stable module ID in `CollectionRequest.consumer`;
+- stable `consumer`;
 - `ConsumerProfileRegistry`;
-- versioned `capability`;
+- versioned capability/profile contract;
 - bounded `requested_facts`;
-- compatibility path for old unregistered requests during migration;
-- first Kraken profile skeleton;
-- tests and contract documentation.
+- legacy compatibility для незарегистрированных старых requests;
+- Kraken profile v1;
+- Tool Pack routing/isolation;
+- contract tests.
 
-Do not finish Kraken-specific extraction here. The exact input shape must come
-from the rebuilt Kraken pipeline.
+## Этап 2 — Kraken как первый реальный consumer
 
-## Stage 2 — rebuild Kraken as the first real consumer
+Статус: активная разработка и интеграционная доводка.
 
-Use the original SOIKA repository as the algorithmic reference:
-
-`https://github.com/Mvin8/SOIKA.git`
-
-Use Urbanomy/Urbanomy-data only as an additional spatial research reference,
-not as a claimed direct SOIKA dependency.
-
-Kraken must first work correctly on a prepared message dataset without ARGUS.
-
-Target domain pipeline:
+Алгоритмический reference Kraken — SOIKA: `https://github.com/Mvin8/SOIKA.git`. ARGUS не переносит в себя NLP/events/risk Kraken.
 
 ```text
-Geo Analyzer territory context
-    -> source messages
-    -> preprocessing / NLP
-    -> urbanonym and geospatial resolution
-    -> territorial filtering
-    -> events
-    -> semantic/spatial connections
-    -> activity / risk
-    -> Geo Analyzer module result
+Geo Analyzer territory
+  -> Kraken
+  -> ARGUS factual messages/signals
+  -> Kraken preprocessing / NLP
+  -> urbanonyms / geospatial resolution
+  -> territorial filtering
+  -> events / connections
+  -> activity / risk
+  -> Geo Analyzer Module Result
 ```
 
-At this stage define exactly:
+На стороне ARGUS уже существует `kraken.development.uds` / `urban_signals`, mandatory research lanes, street-radius scope, `research_lane_coverage` и consumer delivery filtering. Это не заменяет реальный E2E через установленный Kraken.
 
-1. what Kraken receives from Geo Analyzer;
-2. what Kraken requests from ARGUS;
-3. the minimum required fields of every source message;
-4. what Kraken calculates itself;
-5. what Kraken returns into the Geo Analyzer report.
+## Этап 3 — Kraken <-> ARGUS E2E
 
-## Stage 3 — Kraken <-> ARGUS end-to-end
-
-After Kraken's input contract is stable:
-
-- update the Kraken profile in ARGUS;
-- add Kraken-oriented discovery priorities;
-- add Kraken consumer-facing normalization;
-- keep raw document/metadata/structured observations as internal
-  Evidence/Provenance where useful;
-- return message-like factual entities needed by Kraken;
-- validate territory relevance and inherited page/entity provenance;
-- add deduplication around factual identity, not URL alone;
-- tune research sufficiency and time budgets.
-
-TEST acceptance path:
+Нужно считать завершённым только после реального цикла:
 
 ```text
-Geo Analyzer
-    -> Kraken
-    -> ARGUS
-    -> public internet
-    -> ARGUS factual messages + Evidence
-    -> Kraken analysis
-    -> Geo Analyzer report
+Geo Analyzer TEST
+  -> Kraken
+  -> ARGUS
+  -> public sources
+  -> Observation/Evidence/Provenance/Coverage
+  -> Kraken analytics
+  -> Geo Analyzer report/export
 ```
 
-Production is not touched until the TEST lifecycle passes.
+При доводке:
 
-## Stage 4 — Janus
+- не выдавать page metadata/технические сущности за сообщения людей;
+- сохранять territory relevance и source provenance;
+- дедуплицировать factual identity, а не только URL;
+- проверять полноту mandatory research lanes;
+- ограничивать время/pages после обязательного контура;
+- проверять install/reinstall/restart E2E.
 
-Only after the Kraken vertical works:
+## Этап 4 — Janus
 
-- finalize the real Janus input contract;
-- register the Janus module ID and profile;
-- implement its requested building/demographic facts in ARGUS;
-- integrate and run Janus <-> ARGUS <-> Geo Analyzer E2E.
+После стабильного Kraken vertical:
 
-Do not reuse Kraken extraction semantics for Janus.
+- зафиксировать реальный Janus factual contract;
+- зарегистрировать Janus consumer profile;
+- выделить отдельный Tool Pack;
+- подключить residential facts, включая residents и residential premises;
+- проверить Janus -> ARGUS -> Geo Analyzer E2E.
 
-## Stage 5 — Historical
+Kraken semantics нельзя переиспользовать как Janus semantics.
 
-Then:
+## Этап 5 — Historical
 
-- finalize Historical inputs;
-- register its profile;
-- connect archive/time-oriented ARGUS capabilities;
-- run Historical <-> ARGUS <-> Geo Analyzer E2E.
+После фиксации реального Historical module contract:
 
-## Stage 6 — future consumers
+- зарегистрировать profile/tool pack;
+- подключить archive/time-oriented capabilities;
+- проверить Historical -> ARGUS -> Geo Analyzer E2E.
 
-Add new capabilities only from a real consumer requirement. Examples include
-competitive/developer-site intelligence.
+## Этап 6 — будущие consumers
 
-A new consumer should normally require:
+Новая capability появляется из реальной задачи модуля. Обычно нужны:
 
 ```text
 profile registration
-+ capability/fact contract
-+ only the extractors/SiteRecipes actually needed
++ factual contract
++ минимально необходимые adapters/extractors/SiteRecipes
 + E2E acceptance
 ```
 
-It should not require a fork or copy of ARGUS.
+Fork ARGUS под каждый модуль не допускается.
 
-## Test/deployment rule
+## TEST -> PROD
 
-For every consumer integration:
+Любая consumer-интеграция проходит:
 
 ```text
 unit/contract tests
 -> ARGUS CI
 -> module CI
--> Geo Analyzer TEST install
--> health
--> analysis
--> reinstall
--> analysis
--> delete/reinstall lifecycle where applicable
--> only then production
+-> Geo Analyzer TEST
+-> install/health/analysis/result
+-> restart/reinstall/analysis
+-> только затем production
 ```

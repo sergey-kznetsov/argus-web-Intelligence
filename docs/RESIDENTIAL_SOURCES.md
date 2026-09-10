@@ -1,97 +1,72 @@
-# Residential building facts
+# Данные жилых домов
 
-ARGUS treats residential building counts as source-scoped factual intents rather than generic semantic web questions.
+ARGUS поддерживает source-scoped factual intents для жилого фонда:
 
-Current intents:
+```text
+residential_population
+residential_premises_count
+```
 
-- `residential_population` — source-declared resident count;
-- `residential_premises_count` — source-declared apartment/residential-premises count.
+Первый означает число жителей, прямо опубликованное источником; второй — число квартир/жилых помещений, прямо опубликованное источником.
 
-## Mandatory source
+## Источник
 
-The current factual source is the public web interface of `dom.mingkh.ru`, represented by SourceAdapter `mingkh_residential`.
+Текущий dedicated adapter — `mingkh_residential` для публичного web-интерфейса `dom.mingkh.ru`.
 
-This is an intent-to-source policy, not a consumer-specific branch. ARGUS does not check whether the caller is Janus, Kraken or another module. Any consumer requesting these intents receives the same source contract.
+Для этих intents ARGUS не должен молча подменять источник другим housing-сайтом и не должен выводить число жителей из числа квартир, площади или среднего размера домохозяйства.
 
-For every residential request with a non-empty building address, the curated planner starts source-owned navigation at `https://dom.mingkh.ru/robots.txt`. ARGUS reads the sitemap declarations published by the source, traverses same-host sitemap indexes within bounded depth/page limits, ranks candidate URLs against the requested territory (including deterministic Cyrillic-to-Latin aliases for navigation), and routes selected pages to `mingkh_residential` for factual extraction. The sitemap is navigation only and cannot itself satisfy an intent.
+## Navigation contract
 
-The planner intentionally does not use the site's `/search` route because the current public `robots.txt` disallows `/search`. ARGUS does not use BROWSER or AGENT to evade that directive. If the source changes its published crawl policy later, the normal runtime will observe the new policy on subsequent requests.
+При наличии building address curated planner использует source-owned navigation через `robots.txt`/Sitemap и может дополнительно использовать discovery для поиска публичной detail page. Sitemap/search results остаются навигацией, а не Evidence.
 
-A residential request without a building address fails closed at planning: ARGUS does not run a city-wide house search and does not select an arbitrary building. Residential discovery is also fail-closed to `dom.mingkh.ru`. Search providers may additionally be used to locate a corresponding public house detail page, but search results are navigation only and never Evidence. ARGUS does not fall back to unrelated housing sites for these two intents.
+Planner не должен использовать запрещённый source `robots.txt` путь `/search` для обхода published crawl policy.
 
-Mixed collections preserve normal ARGUS research for their other intents. Generic semantic classification is explicitly prevented from proving the source-scoped residential intents, so an alternative web page cannot accidentally satisfy their factual coverage.
+Запрос без building address не превращается в произвольный city-wide выбор дома.
 
-The `site_discovery` adapter is always registered because it can be an explicitly planned part of a source contract. `sitemap_discovery_enabled=false` disables only opportunistic sitemap expansion initiated by Generic Web; it does not make an explicitly planned residential source path unexecutable.
+`site_discovery` может использоваться как явно запланированная часть source contract даже если opportunistic sitemap expansion для Generic Web выключен.
 
 ## Evidence contract
 
-A residential fact is emitted only when all of the following are true:
+Residential fact создаётся только когда:
 
-1. the final fetched URL remains inside `dom.mingkh.ru`;
-2. the page passes deterministic territory/address relevance for the requested house;
-3. the value is explicitly published next to a recognized source label;
-4. the value is an unambiguous non-negative integer;
-5. the source snapshot and exact label/value Evidence are preserved.
+1. final fetched URL остаётся на `dom.mingkh.ru`;
+2. страница проходит deterministic territory/address relevance;
+3. значение опубликовано рядом с распознаваемой source label;
+4. значение однозначно разбирается как non-negative integer;
+5. сохраняются Snapshot и label/value Evidence.
 
-Supported premises labels currently include:
+Поддерживаемые labels для помещений включают:
 
-- `Количество квартир`;
-- `Количество жилых помещений`;
-- `Жилых помещений`.
+```text
+Количество квартир
+Количество жилых помещений
+Жилых помещений
+```
 
-Supported population labels currently include:
+Для жителей:
 
-- `Количество жителей`;
-- `Численность жителей`;
-- `Число жителей`.
+```text
+Количество жителей
+Численность жителей
+Число жителей
+```
 
-If multiple different values are exposed for one intent on the same page, ARGUS returns `MINGKH_RESIDENTIAL_VALUE_CONFLICT` instead of choosing one.
+Разные значения одного показателя на странице дают `MINGKH_RESIDENTIAL_VALUE_CONFLICT`, а не произвольный выбор.
 
-## Sitemap navigation contract
+## Текущее ограничение guided navigation
 
-Robots/sitemap traversal is performed by the shared `site_discovery` adapter and has no factual extraction capability. It accepts a validated internal `site_discovery_target_source_id`, preserves the requested research goals and territory-derived navigation inputs, and emits bounded same-host page tasks to the target adapter. Invalid, recursive or unsafe target identifiers fall back to `generic_web` rather than becoming arbitrary dispatch targets.
+В коде есть контракт SiteRecipe/AGENT-guided navigation для сложного интерфейса `dom.mingkh.ru`, но текущий production `build_services()` создаёт `AtomicContentWebAdapter` с `agent=None`. Следовательно, фактический runtime сейчас опирается на доступные deterministic/public navigation paths и BROWSER, а не на OllamaRecipeAgent.
 
-Sitemap indexes may be nested, but traversal is hard-capped and additionally bounded by the collection's `max_depth`. Child sitemap URLs and final page URLs are ranked by territory tokens before truncation. URL matching uses complete path/query tokens; a house number such as `27` is not allowed to match a substring inside an unrelated numeric identifier. Deterministic Latin aliases are used for URL ranking only and never become source Evidence.
+Эту возможность нельзя считать рабочей, пока AGENT снова не подключён и не подтверждён E2E.
 
-The source's robots/sitemap documents, their URLs, search-engine snippets and the request's address are all navigation context. None can create `residential_population` or `residential_premises_count`; only a fetched page processed by `mingkh_residential` can do that.
+## CAPTCHA и access challenges
 
-## Public interface navigation
-
-`dom.mingkh.ru` is not treated as a static HTML-only source. When an already accessible public page exposes search, address, filter, tab or expandable controls and the requested fact is still not evidenced, `mingkh_residential` may request one bounded navigation round from the shared ARGUS web runtime.
-
-The interaction path is the existing `OllamaRecipeAgent -> deterministic SiteRecipe -> Playwright replay` pipeline. The model never receives direct browser control. It can select only controls already extracted from the fetched DOM, form values are restricted to bounded research inputs derived from the requested territory, GET/search/filter actions remain same-domain, and the resulting path is browser-replayed before factual extraction.
-
-Search-provider queries and snippets are never form values. When a discovered `dom.mingkh.ru` URL is routed to `mingkh_residential`, ARGUS replaces generic discovery input metadata with a bounded `territory_context` input scope derived only from the current `CollectionRequest` city/address. Sitemap-routed source tasks preserve the same bounded input scope. The adapter repeats the rebasing immediately before guided navigation, so inherited or stale discovery strings cannot reach the model as allowed form input.
-
-Persisted SiteRecipes containing literal `fill` values are also request-scoped at replay time. Such a recipe may run only when every stored fill value is present in the current task's allowed territory-derived research inputs. A mismatch suppresses replay without counting the recipe as broken. Recipes without literal fills remain reusable across requests.
-
-A same-domain deterministic house link is preferred before AGENT navigation. A page that explicitly contains residential values for another house is treated as a factual territory mismatch, not as an interface from which the model may navigate away.
-
-A newly generated SiteRecipe remains a candidate until deterministic residential extraction produces Evidence for the recipe goal from the replayed page. Only then may the shared recipe lifecycle promote it. A replay that reveals no supporting fact is not sufficient to persist the route.
-
-This makes interface learning reusable without allowing model output to become data: the model chooses a navigation path, while only the final source page can establish the fact.
-
-## No population inference
-
-ARGUS never derives resident count from apartment count, residential area, average household size or an LLM estimate. If the public source declares the number of apartments but does not declare resident count, only `residential_premises_count` is evidenced and `residential_population` remains uncovered.
-
-This is consistent with the global ARGUS evidence-first rule: a missing fact is preferable to a fabricated or model-derived value.
-
-## Access challenges
-
-CAPTCHA and anti-bot verification are access-control boundaries, not research tasks. The adapter recognizes both runtime blocking and common English/Russian challenge text, including the current class of `не робот` / `решите пример` pages.
-
-When a challenge is present, ARGUS returns `MINGKH_ACCESS_CHALLENGE` with `blocked=true`. It does not solve the challenge, submit an answer, use an LLM to bypass it, or silently replace the mandatory source with a different factual provider.
-
-Interface navigation is attempted only from an accessible fetched page. A blocked page is never passed to the guided-navigation contract, so the AGENT/recipe layer cannot be used as a fallback around an access challenge.
+`не робот`, captcha, access-denied и аналогичные страницы считаются блокировкой. ARGUS возвращает `MINGKH_ACCESS_CHALLENGE`/blocked state и не решает challenge автоматически.
 
 ## Provenance
 
-Successful values are stored as `residential_building_fact` Observation/Evidence pairs. The factual payload includes:
+Успешные значения сохраняются как `residential_building_fact` с intent, integer value, source label и `estimated=false`. Publication/collection/source metadata и Snapshot сохраняются в provenance.
 
-- intent;
-- integer value;
-- source label;
-- `estimated=false`.
+## Consumer boundary
 
-Provenance includes the temporal Snapshot id, extractor version and territory-relevance basis. When a fact was revealed by verified SiteRecipe replay, provenance also retains the recipe id/version and records that the AGENT output was navigation only, not Evidence. Observation/Evidence ids are deterministic within the collection, preserving replay safety after worker recovery.
+Наличие `mingkh_residential` в общем ARGUS registry не означает, что он разрешён каждому consumer. Текущий Kraken `urban_signals` Tool Pack этот adapter не включает. Janus должен получить собственный profile/tool pack после фиксации его реального contract.

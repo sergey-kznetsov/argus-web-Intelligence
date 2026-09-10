@@ -1,62 +1,58 @@
-# Source-declared HTML metadata
+# Source-declared metadata HTML-страниц
 
-ARGUS extracts a bounded set of machine-readable metadata declared directly by public HTML pages. The layer complements visible page text and JSON-LD; it does not replace either one.
+ARGUS извлекает bounded набор machine-readable metadata, явно объявленных публичной HTML-страницей. Этот layer дополняет visible text и JSON-LD, но не заменяет их.
 
-The initial vocabulary is intentionally limited to broadly deployed standards:
+Текущий vocabulary ограничен распространёнными стандартами:
 
 - Open Graph core properties;
-- Open Graph `article:*` properties;
-- Dublin Core / DCMI title, creator, date and description terms;
+- Open Graph `article:*`;
+- Dublin Core / DCMI title, creator, date, description;
 - HTML `rel=canonical`;
-- ordinary HTML description/author metadata.
+- обычные HTML description/author metadata.
 
-No date, author or canonical identity is guessed from body text, URL patterns or CSS classes.
+Дата, автор или canonical identity не угадываются из body text, URL или CSS classes.
 
 ## Extraction boundary
 
-The extractor is local and network-free. It scans at most the configured internal hard limit of the beginning of the HTML document (500,000 characters by default), bounds individual metadata values, and bounds repeated arrays such as authors and tags.
+Extractor локальный и не выполняет сетевых запросов. Он сканирует только bounded начало HTML (внутренний hard limit 500 000 chars по умолчанию), ограничивает individual values и repeated arrays.
 
-Only HTTP(S) canonical/`og:url` syntax without URL userinfo is retained. These source-declared URLs are not fetched by the extractor. If a URL later becomes a crawl task it still passes the normal ARGUS SSRF/redirect guard.
+Сохраняются только HTTP(S) canonical/`og:url` без URL userinfo. Такие URLs не fetch'ятся самим extractor. Если позже URL становится crawl task, он проходит обычный SSRF/redirect guard.
 
-Open Graph conflict handling follows source order: for singleton properties the first declared value wins. Repeated `article:author` and `article:tag` values are retained as bounded arrays.
+При конфликте singleton Open Graph properties используется первое объявленное source-order value. Повторные `article:author`/`article:tag` сохраняются bounded arrays.
 
-## Date semantics
+## Семантика дат
 
-ARGUS distinguishes declaration from interpretation.
+ARGUS различает source declaration и interpretation.
 
-`article:published_time` has explicit publication semantics and may populate `Observation.published_at` when it is valid ISO-style datetime data.
+`article:published_time` имеет явную publication semantics и может заполнить `Observation.published_at`, если значение корректно разбирается как ISO-style datetime.
 
-Dublin Core `date` is broader: DCMI defines it as a point or period associated with an event in the resource lifecycle. ARGUS therefore stores `dc_date` / `dcterms_date` exactly as declared but does not relabel those values as publication time.
+Dublin Core `date` шире publication time, поэтому `dc_date`/`dcterms_date` сохраняется как объявлено, но не автоматически становится `published_at`. `dcterms.created` аналогично остаётся source-declared creation metadata.
 
-Likewise `dcterms.created` is retained as source-declared creation metadata rather than silently converted to publication time.
+## Observation и Evidence
 
-## Observation and Evidence
+При наличии хотя бы одного поддерживаемого поля Generic Web создаёт дополнительный Observation:
 
-When at least one supported metadata field exists, Generic Web emits an additional Observation:
+- `source_kind=page_metadata`;
+- `entity_type=document_metadata`;
+- URL = реально fetched final URL;
+- entity identity может использовать безопасно объявленный canonical URL;
+- data = normalized source fields;
+- provenance связан с тем же raw page Snapshot;
+- quality содержит `evidence_backed`, `machine_readable`, `source_declared`.
 
-- `source_kind = page_metadata`;
-- `entity_type = document_metadata`;
-- URL remains the actually fetched final URL;
-- entity identity may use a safely declared canonical URL;
-- data contains the normalized source-declared fields;
-- provenance links to the same raw page Snapshot as the visible page Observation;
-- quality records `evidence_backed`, `machine_readable` and `source_declared`.
+Отдельный `page_metadata` Evidence хранит canonical JSON extracted fields и source URL фактически fetched страницы. Canonical declaration не заменяет proof location.
 
-A separate `page_metadata` Evidence row contains canonical JSON of the extracted fields and references the actually fetched source URL. This prevents a canonical declaration from replacing the proof location.
-
-Pages without supported metadata continue to emit only the ordinary Generic Web Observation/Evidence, preserving the previous simple path.
+Страницы без поддерживаемой metadata продолжают давать обычный Generic Web Observation/Evidence.
 
 ## Scope
 
-This layer is useful for local media, official websites, public portals and other pages that expose stable machine-readable metadata while frequently changing their visible DOM.
+Layer полезен для local media, official sites, public portals и страниц со стабильной machine-readable metadata.
 
-It does not:
+Он не:
 
-- infer article status from layout;
-- treat all dates as publication dates;
-- use metadata to rank domains yet;
-- deduplicate URLs by canonical declaration yet;
-- execute remote metadata contexts;
-- make consumer-specific business conclusions.
-
-Canonical ranking/deduplication belongs to the later discovery-quality stage. This extractor only makes the source declaration available as evidence-backed fact.
+- выводит article status из layout;
+- считает любую дату publication date;
+- ранжирует domain по metadata;
+- дедуплицирует URL по canonical declaration сам по себе;
+- выполняет remote metadata contexts;
+- делает consumer-specific выводы.

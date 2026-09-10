@@ -1,108 +1,92 @@
-# Schema.org factual normalization
+# Нормализация factual types Schema.org
 
-ARGUS extracts source-declared structured entities from embedded JSON-LD and HTML Microdata. The raw structured payload remains Evidence; schema.org normalization adds conservative factual categories and selected source-declared fields to the Observation envelope.
+ARGUS извлекает source-declared structured entities из embedded JSON-LD и HTML Microdata. Raw structured payload остаётся Evidence, а schema.org normalization добавляет консервативные factual categories и selected source-declared fields в Observation.
 
 ## Boundary
 
-ARGUS does not resolve remote vocabularies, load schema.org definitions at runtime, or infer business meaning from consumers such as Kraken or Janus.
+ARGUS не загружает schema.org definitions в runtime, не разрешает remote vocabularies и не добавляет consumer-specific meaning.
 
-Normalization uses only:
+Нормализация использует только:
 
-- explicit schema.org type URLs such as `https://schema.org/Review`;
-- simple JSON-LD type tokens such as `Review` only when the source explicitly declares a schema.org `@context` / `@vocab` hint.
+- explicit schema.org type URLs, например `https://schema.org/Review`;
+- simple type token вроде `Review` только если source явно объявляет schema.org `@context`/`@vocab`.
 
-Unknown vocabularies remain `structured_entity` and do not receive schema-specific field normalization.
+Unknown vocabulary остаётся `structured_entity`.
 
-## Supported factual categories
+## Текущие factual categories
 
-Current mappings are intentionally small and stable:
+```text
+Schema.org Review family      -> review
+Article/NewsArticle/reporting -> publication
+Comment                       -> comment
+Dataset/DataCatalog           -> dataset
+Event/*Event                  -> event
+Organization/*Organization    -> organization
+Person                        -> person
+Place                         -> place
+Product                       -> product
+Service                       -> service
+```
 
-- Schema.org Review family -> `review`;
-- Article / NewsArticle / posting/report family -> `publication`;
-- Comment -> `comment`;
-- Dataset / DataCatalog -> `dataset`;
-- Event and `*Event` schema.org types -> `event`;
-- Organization and `*Organization` schema.org types -> `organization`;
-- Person -> `person`;
-- Place -> `place`;
-- Product -> `product`;
-- Service -> `service`.
+Recognized schema.org type без mapping остаётся `structured_entity`. ARGUS не fetch'ит live schema hierarchy для subclass discovery.
 
-A recognized schema.org type with no mapping remains `structured_entity`. For example, `GeoCoordinates` is recognized as schema.org but remains a structured entity because the current ARGUS category set has no separate coordinate-entity class.
+## JSON-LD context
 
-ARGUS does not fetch the live schema.org hierarchy to discover subclasses.
+`EmbeddedJsonLdExtractor` сохраняет bounded context hints:
 
-## JSON-LD context handling
+- string `@context`;
+- string values в context array;
+- explicit `@vocab` из bounded context object.
 
-Embedded JSON-LD remains network-free. `EmbeddedJsonLdExtractor` retains only bounded context hints:
+Для `@graph` child entities наследуют root context hint, если не объявили свой. Context URL не dereference'ится.
 
-- a string `@context`;
-- string entries of a context array;
-- explicit `@vocab` strings from bounded context objects.
+Original JSON-LD остаётся в Observation data. Provenance содержит recognized schema types, normalized entity type, context hints и `remote_vocabularies_resolved=false`.
 
-For `@graph`, child entities inherit the root context hint unless they declare their own context. No context URL is dereferenced.
+## Text и publication date
 
-The original JSON-LD data remains unchanged in Observation data. Provenance records:
+Для recognized schema.org entity ARGUS может заполнить Observation text только из source-declared fields:
 
-- recognized schema.org local types;
-- normalized ARGUS entity type;
-- bounded context hints;
-- `remote_vocabularies_resolved=false`.
+```text
+Review      reviewBody -> description
+publication articleBody -> text -> description
+Comment     text -> description
+other mapped categories -> description
+```
 
-## Source-declared text and publication date
+`datePublished` может заполнить `Observation.published_at` только как valid ISO-style date/datetime. Даты не выводятся из prose, event start time не подставляется как publication time.
 
-For recognized schema.org entities ARGUS may expose a bounded source-declared text field through `Observation.text`:
+Provenance/Evidence metadata фиксирует source field.
 
-- Review: `reviewBody`, then `description`;
-- publication: `articleBody`, then `text`, then `description`;
-- Comment: `text`, then `description`;
-- other mapped factual categories: `description`.
+## Coordinates
 
-`datePublished` is parsed as `Observation.published_at` only when it is a valid ISO-style date/datetime string. ARGUS does not infer dates from prose or substitute event start times for publication times.
-
-Provenance and Evidence metadata record exactly which source field was used.
-
-## Source-declared coordinates
-
-Schema.org defines `latitude` and `longitude` for `GeoCoordinates` and `Place`, and commonly embeds `GeoCoordinates` through the `geo` property.
-
-ARGUS supports:
+Поддерживаются source-declared:
 
 - JSON-LD `Place.geo.latitude/longitude`;
-- JSON-LD direct `latitude/longitude` on recognized schema.org entities;
-- Microdata `GeoCoordinates` or recognized schema.org entities with explicit `latitude/longitude` properties.
+- direct `latitude/longitude` у recognized schema.org entity;
+- Microdata GeoCoordinates/recognized entity с explicit coordinates.
 
-Values may be numeric or numeric text. Both coordinates must be finite and inside WGS84 ranges:
+Values могут быть numeric или numeric text. Оба значения должны быть finite в WGS84 ranges. ARGUS не меняет оси, не geocode'ит missing location и не чинит malformed values.
 
-- latitude: -90..90;
-- longitude: -180..180.
-
-ARGUS never swaps coordinates, geocodes an address, or repairs malformed values. Invalid declared coordinates remain visible in raw Evidence and are marked `geospatial_valid=false`; `Observation.geo` remains empty.
-
-Provenance records `geocoding_used=false`.
+Invalid declared coordinates остаются raw Evidence с `geospatial_valid=false`; `Observation.geo` остаётся empty. Provenance: `geocoding_used=false`.
 
 ## Microdata
 
-Microdata normalization uses explicit `itemtype` values. Because HTML Microdata item types are source-declared URLs, ARGUS recognizes only schema.org URLs and does not apply a hidden default vocabulary.
-
-The original `item_types` and properties remain unchanged in Observation data.
+Для Microdata schema recognition применяется только к explicit schema.org `itemtype` URLs; hidden default vocabulary нет.
 
 ## Stable identity
 
-`entity_type` participates in deterministic Observation identity. When schema.org normalization changes an entity from `structured_entity` to a more specific factual type, ARGUS recomputes the Observation ID and the linked Evidence ID so persisted identity matches the normalized factual model.
+`entity_type` участвует в deterministic Observation identity. Если schema normalization меняет `structured_entity` на более specific factual type, Observation ID и linked Evidence ID пересчитываются под normalized model.
 
-Changing display text, publication date or source-declared coordinates does not create a second identity because the content hash already represents the canonical raw structured payload from which those fields were derived.
+Display text, publication date или coordinates отдельно не создают вторую identity, потому что raw structured payload уже представлен content hash.
 
-## Non-goals
+## Не входит в этот слой
 
-This layer does not:
+Он не:
 
-- score or judge a review;
-- decide whether a publication is important;
-- infer organization categories for business analytics;
-- expand arbitrary JSON-LD contexts;
-- perform ontology reasoning;
-- geocode missing coordinates;
-- make consumer-specific conclusions.
-
-Those responsibilities remain outside ARGUS factual collection.
+- оценивает/сентиментит review;
+- решает важность publication;
+- выводит organization categories для business analytics;
+- расширяет arbitrary JSON-LD contexts;
+- выполняет ontology reasoning;
+- geocode'ит missing coordinates;
+- принимает consumer-specific решения.

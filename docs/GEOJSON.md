@@ -1,97 +1,96 @@
-# GeoJSON Point factual normalization
+# Нормализация GeoJSON Point
 
-ARGUS parses GeoJSON through the existing bounded JSON document path and then adds a conservative geospatial normalization layer. The original JSON dataset remains the primary structured Evidence; Point features are additional factual Observations derived from that already bounded payload.
+ARGUS разбирает GeoJSON через существующий bounded JSON path и затем добавляет консервативную geospatial normalization. Исходный JSON dataset остаётся primary structured Evidence, а Point features создаются как дополнительные factual Observations.
 
-## Standards boundary
+## Стандарт
 
-ARGUS follows RFC 7946:
+ARGUS следует RFC 7946:
 
-- a Feature has a `geometry` member that is either a Geometry object or JSON `null`;
-- a FeatureCollection contains a JSON array of Feature objects;
-- a Feature `id`, when present, is a JSON string or number;
-- Point positions use `[longitude, latitude]` order;
-- an optional third number may represent height;
-- GeoJSON uses WGS 84 / OGC CRS84 longitude/latitude coordinates.
+- Feature содержит `geometry` либо JSON `null`;
+- FeatureCollection содержит array Feature;
+- Feature `id`, если есть, должен быть JSON string или number;
+- Point position использует `[longitude, latitude]`;
+- необязательное третье число может быть altitude;
+- CRS — WGS 84 / OGC CRS84 longitude/latitude.
 
-ARGUS does not swap coordinate axes heuristically.
+ARGUS не меняет оси эвристически.
 
-## Parsing and limits
+## Parsing и limits
 
-There is no second GeoJSON JSON parser. `.geojson`, `application/geo+json`, explicit GeoJSON objects served as ordinary JSON, and bounded `.geojson.gz` all pass through the existing `BoundedStructuredDataExtractor` first.
+Отдельного GeoJSON parser нет. `.geojson`, `application/geo+json`, явные GeoJSON objects в JSON и bounded `.geojson.gz` сначала проходят `BoundedStructuredDataExtractor`.
 
-The existing structured-data limits therefore apply before GeoJSON normalization:
+До geospatial normalization применяются обычные limits:
 
 - source bytes;
 - JSON node count;
-- JSON depth;
-- maximum array length / records;
-- maximum object properties / columns;
-- maximum string length.
+- depth;
+- max array length/records;
+- max object properties/columns;
+- max string length.
 
-A JSON document rejected by that parser never reaches the GeoJSON feature normalizer.
+JSON, отклонённый bounded parser, не попадает в GeoJSON normalizer.
 
-## Normalized features
+## Нормализованные features
 
-The current factual layer normalizes only GeoJSON `Point` Features.
+Текущий factual layer нормализует только `Point` Features.
 
-For every valid Point Feature ARGUS creates:
+Для каждого валидного Point создаются:
 
 - `source_kind=geojson_point`;
 - `entity_type=geospatial_feature`;
-- `Observation.geo` from the first two numeric coordinates;
-- source-declared Feature properties in `data.properties`;
-- source-declared Feature `id` as `entity_id` when it is a JSON string or number;
-- otherwise a deterministic collection-local fallback based on source URL and feature index;
-- separate canonical Feature Evidence linked to the same dataset Snapshot.
+- `Observation.geo` из первых двух coordinates;
+- source-declared properties в `data.properties`;
+- source-declared Feature `id` как `entity_id`, если это string/number;
+- иначе deterministic collection-local identity из source URL + feature index;
+- отдельный canonical Feature Evidence, связанный с тем же dataset Snapshot.
 
-`name` or `title` property may be exposed as Observation title; `description` may be exposed as Observation text. These values remain copied source data, not generated interpretation.
+`name`/`title` может стать Observation title, `description` — text. Это source data, не generated interpretation.
 
 ## Position validation
 
-ARGUS accepts Point positions with exactly two or three numeric finite values:
+Принимаются ровно 2 или 3 finite numeric values:
 
 ```text
 [longitude, latitude]
 [longitude, latitude, altitude]
 ```
 
-The altitude value is retained in raw `data.coordinates` but is not interpreted because the current `Point` contract is two-dimensional.
+Altitude сохраняется в raw `data.coordinates`, но текущий `Point` contract остаётся двумерным.
 
-The following positions are not normalized into `Observation.geo`:
+Не нормализуются в `Observation.geo`:
 
-- string coordinates such as `["37.6", "55.7"]`;
+- string coordinates;
 - booleans;
-- NaN or infinity;
-- longitude outside -180..180;
-- latitude outside -90..90;
-- fewer than two values;
-- more than three values.
+- NaN/Infinity;
+- longitude вне -180..180;
+- latitude вне -90..90;
+- меньше двух или больше трёх values.
 
-Over-dimensional positions remain present in the original dataset Evidence; ARGUS does not silently flatten them.
+Исходный dataset Evidence при этом сохраняется.
 
-## Unsupported geometry types
+## Неподдерживаемые geometry types
 
-LineString, MultiPoint, MultiLineString, Polygon, MultiPolygon and GeometryCollection are intentionally not converted into points. ARGUS also does not create centroids or representative points.
+`LineString`, `MultiPoint`, `MultiLineString`, `Polygon`, `MultiPolygon`, `GeometryCollection` не преобразуются в points. Centroid/representative point не вычисляется.
 
-They remain available in the original structured dataset. `geojson_summary` records how many non-Point geometries, unlocated Features, invalid Features and invalid Points were skipped by the Point normalizer.
-
-A future general geometry contract can add those geometries without changing the meaning of the current Point Observations.
+`geojson_summary` отражает число skipped non-Point geometries, unlocated/invalid features и invalid points.
 
 ## Compressed GeoJSON
 
-`.geojson.gz` uses the same single-member bounded gzip path as other compressed structured documents. The dataset keeps the compressed-source SHA-256 identity and compression provenance; GeoJSON Point Observations reuse the dataset Snapshot and reference its Observation ID.
+`.geojson.gz` проходит single-member bounded gzip path. Dataset сохраняет compressed-source SHA-256 и compression provenance; Point Observations переиспользуют dataset Snapshot.
 
-## Evidence and provenance
+## Provenance
 
-Each Point Observation records:
+Каждый Point Observation фиксирует:
 
-- source URL;
-- parent dataset Observation ID;
-- shared Snapshot ID;
-- Feature index;
-- extractor version `geojson-point/1`;
-- axis order `longitude_latitude`;
-- CRS marker `WGS84_CRS84`;
-- `source_declared=true`.
+```text
+source URL
+parent dataset Observation ID
+Snapshot ID
+Feature index
+extractor version = geojson-point/1
+axis order = longitude_latitude
+CRS = WGS84_CRS84
+source_declared=true
+```
 
-No geocoding, reverse geocoding, geometry repair, CRS transformation or business interpretation is performed by this layer.
+Этот слой не выполняет geocoding, reverse geocoding, geometry repair, CRS transformation или business interpretation.

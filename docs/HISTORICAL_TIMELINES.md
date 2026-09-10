@@ -1,85 +1,95 @@
-# Historical timelines and change observations
+# Исторические временные линии и изменения
 
-ARGUS historical mode combines exact Wayback capture discovery with normal factual extraction. Historical conclusions are limited to deterministic comparisons between two evidence-backed captures of the same original URL.
+Historical layer ARGUS сочетает exact Wayback capture discovery с обычным factual extraction. Derived historical conclusions ограничены deterministic comparison двух evidence-backed captures одного original URL.
 
-## Capture ordering
+## Порядок captures
 
-Wayback CDX results are converted into archived-page tasks in ascending capture timestamp order. This gives the collection a deterministic `oldest -> newest` execution sequence regardless of provider response ordering.
+Wayback CDX results преобразуются в archived-page tasks по возрастанию capture timestamp. Collection получает deterministic порядок `oldest -> newest` независимо от исходной сортировки provider.
 
-Each archived-page task carries:
+Каждый task содержит:
 
 - original public URL;
 - Wayback capture URL;
 - 14-digit capture timestamp;
-- archive provider and discovery rank.
+- archive provider и discovery rank.
 
 ## Archive factual boundary
 
-Archived pages are parsed by the same Generic Web factual stack as live pages. Extracted Observations/Evidence receive archive provenance containing the original URL and capture timestamp.
+Archived page разбирается тем же Generic Web factual stack, что и live page. Observation/Evidence получают archive provenance с original URL и capture timestamp.
 
-ARGUS does not recursively follow ordinary links extracted from Wayback captures. Archived links are frequently rewritten by the archive and can cause uncontrolled historical crawling. Additional historical research is instead created by the bounded `HistoricalBranchPlanner` from source-declared factual entity labels.
+ARGUS не следует обычным links из Wayback captures рекурсивно: archive часто переписывает ссылки, что может создать неконтролируемый crawl. Дополнительный historical research создаёт bounded `HistoricalBranchPlanner` из source-declared entity labels.
 
-Derived historical comparison Observations never seed new historical queries, preventing a feedback loop where ARGUS researches its own generated timeline rows.
+Derived comparison Observations не порождают новые historical queries.
 
 ## Recovery-safe comparison
 
-The historical adapter compares a capture only against an earlier capture already committed in repository storage. It never uses process-local or uncommitted state as the previous version.
+Capture сравнивается только с более ранним capture, уже committed в Repository. Process-local/uncommitted state не используется как previous truth.
 
-If a worker crashes after extraction but before atomic commit, a recovery worker will not treat that abandoned extraction as historical truth. The next comparison is derived only from committed Observation rows.
+Если worker падает до atomic commit, abandoned extraction не участвует в следующем comparison.
 
 ## Page versions
 
-For each archived page ARGUS emits `historical_page_version`.
+Для каждого archived page создаётся `historical_page_version`.
 
-The first observed capture is explicitly classified as:
+Первый observed capture имеет классификацию:
 
-`first_observed_capture`
+```text
+first_observed_capture
+```
 
-ARGUS does not call this an appearance event because no earlier capture has been observed.
+Это не называется appearance event, потому что более ранний capture не наблюдался.
 
-When a committed previous capture exists, the page version is classified as either:
+При наличии committed previous capture используется:
 
-- `page_content_changed`; or
-- `page_content_unchanged`.
+```text
+page_content_changed
+page_content_unchanged
+```
 
-A changed page records current/previous content hashes, capture timestamps, Observation IDs and a bounded unified text diff. The default diff limit is 20,000 characters.
+Changed page сохраняет current/previous hashes, timestamps, Observation IDs и bounded unified text diff. Default diff limit — 20 000 chars.
 
 ## Entity changes
 
-Structured entities are matched across adjacent committed captures using a stable source-declared `entity_id` when available. If no stable ID exists, ARGUS falls back to normalized entity type plus source-declared name/title.
+Structured entities между соседними committed captures связываются по stable source-declared `entity_id`, а при его отсутствии — по normalized entity type + source-declared name/title.
 
-Between two observed captures ARGUS can emit `historical_entity_change` with:
+`historical_entity_change` может иметь:
 
-- `appeared_between_captures`;
-- `disappeared_between_captures`;
-- `fields_changed`.
+```text
+appeared_between_captures
+disappeared_between_captures
+fields_changed
+```
 
-The current deterministic field comparison covers:
+Текущий field comparison:
 
-- title;
-- name;
-- operator;
-- brand;
-- former_name;
-- old_name.
+```text
+title
+name
+operator
+brand
+former_name
+old_name
+```
 
-Field changes preserve explicit `from` and `to` values. ARGUS does not infer why a change occurred, whether an operator legally changed, whether an entity was created/destroyed, or what happened outside the interval between the two observed captures.
+Field changes сохраняют explicit `from`/`to`. ARGUS не выводит причину изменения, юридическую смену operator, создание/уничтожение entity или события вне интервала между observed captures.
 
 ## Evidence
 
-Every derived page/entity change has its own `historical_comparison` Evidence item containing the exact bounded comparison facts and links back to the previous/current source Observation IDs.
+Каждый derived change получает `historical_comparison` Evidence с bounded comparison facts и links на previous/current source Observation IDs.
 
-Derived rows are marked:
+Derived rows отмечаются:
 
-- `derived_from_evidence=true`;
-- `semantic_inference=false`.
+```text
+derived_from_evidence=true
+semantic_inference=false
+```
 
-They also pass through the common ARGUS provenance/evidence-quality layer before atomic persistence.
+После этого применяется общий provenance/evidence-quality layer.
 
 ## Budgets
 
-Historical entity comparison is bounded. The default maximum is 100 emitted entity changes per archived page transition. If more changes are observed, the source result becomes partial and ARGUS emits `HISTORICAL_CHANGE_BUDGET_EXHAUSTED` rather than silently dropping the fact that extraction was truncated.
+Default max — 100 emitted entity changes на один переход archived page. При превышении source result становится partial и возвращается `HISTORICAL_CHANGE_BUDGET_EXHAUSTED`.
 
 ## Consumer boundary
 
-The historical layer produces source-backed timelines and diffs only. Kraken, Janus or another analytical consumer decides how those changes should be interpreted. ARGUS contains no consumer-specific historical branches.
+Historical layer создаёт source-backed timelines/diffs. Consumer module решает, как их интерпретировать. ARGUS не содержит consumer-specific historical analytics.

@@ -1,130 +1,87 @@
-# Semantic HTML table extraction
+# Извлечение семантических HTML-таблиц
 
-ARGUS can normalize simple public HTML data tables into evidence-backed `Observation` records without introducing site-specific parsers.
-
-The implementation follows the same boundary as the rest of ARGUS:
+ARGUS может превращать простые публичные HTML data tables в evidence-backed `Observation` без site-specific parser.
 
 ```text
 public page
-    -> fetched HTML
-    -> page Snapshot
-    -> bounded semantic table extractor
-    -> Observation(source_kind=html_table)
-    -> Evidence(type=html_table)
+  -> fetched HTML
+  -> page Snapshot
+  -> bounded semantic table extractor
+  -> Observation(source_kind=html_table)
+  -> Evidence(type=html_table)
 ```
 
-The table layer does not replace the ordinary `web_page` Observation. It adds a structured factual representation alongside the source page and points to the same page Snapshot.
+Table layer не заменяет обычный `web_page` Observation, а добавляет структурированное представление рядом с ним.
 
-## What counts as a data table
+## Что считается data table
 
-ARGUS only considers a table when the source page exposes explicit data-table semantics, for example:
+Таблица рассматривается как данные только при явной semantic markup, например:
 
-- a direct `<caption>`;
+- direct `<caption>`;
 - `<thead>`;
-- `<th>` cells;
-- `role="table"`, `role="grid"` or `role="treegrid"`;
-- `aria-label` or `aria-labelledby`.
+- `<th>`;
+- `role="table"`, `role="grid"`, `role="treegrid"`;
+- `aria-label`/`aria-labelledby`.
 
-Tables with `role="presentation"` or `role="none"` are treated as layout and skipped.
+`role="presentation"` и `role="none"` означают layout и пропускаются.
 
-This is intentionally conservative. A plain `<table><td>...</td></table>` without semantic indicators is not converted into a factual dataset.
+Обычный `<table><td>...</td></table>` без semantic indicators не превращается в factual dataset.
 
 ## Complex spans
 
-Version 1 only normalizes a rectangular table where every cell has effective:
+Версия 1 нормализует только rectangular tables, где effective `rowspan=1` и `colspan=1` для всех cells.
 
-```text
-rowspan = 1
-colspan = 1
-```
-
-Any table containing another span value, an invalid span value, or a merged grid is reported as `complex_skipped` and is not normalized.
-
-ARGUS deliberately does not duplicate or guess merged-cell values. The original HTML page remains available through the ordinary page Observation and Snapshot.
+Merged grid, invalid span или другое значение помечаются как `complex_skipped`. ARGUS не дублирует и не угадывает merged-cell values; исходный HTML остаётся в page Observation/Snapshot.
 
 ## Nested tables
 
-Rows belong only to their nearest owning table. Text from a nested table is not copied into the parent cell value.
-
-A nested table can still be extracted independently when it has its own semantic data-table markers.
+Rows принадлежат ближайшей owning table. Text nested table не копируется в parent cell. Вложенная table может извлекаться отдельно, если у неё есть собственная data-table semantics.
 
 ## Bounds
 
-No additional environment configuration is introduced. Semantic table extraction reuses the structured-data budget configured for ARGUS.
-
-Runtime wiring uses:
-
-- scan characters: `min(structured_data_max_bytes, 1_000_000)`;
-- rows per table: `min(structured_data_max_records, 200)`;
-- total extracted rows: `structured_data_max_records`;
-- columns: `structured_data_max_columns`;
-- cell/caption characters: `structured_data_max_cell_chars`;
-- tables scanned: hard upper bound of 20.
-
-Any clipped scan, table count, row count, column count, cell or caption sets `truncated=true`. Silent truncation is not allowed.
-
-## Observation model
-
-Each normalized table becomes:
+Используется существующий structured-data budget:
 
 ```text
-source       = generic_web
-source_kind  = html_table
-entity_type  = dataset
-url          = the actually fetched page URL
-title        = source caption/aria-label when present
+scan chars = min(structured_data_max_bytes, 1000000)
+rows/table = min(structured_data_max_records, 200)
+total rows = structured_data_max_records
+columns = structured_data_max_columns
+cell/caption chars = structured_data_max_cell_chars
+tables scanned <= 20
 ```
 
-`data` contains:
+Clipping по scan/table/row/column/cell/caption отражается как `truncated=true`.
 
-```json
-{
-  "caption": "...",
-  "headers": ["..."],
-  "rows": [["..."]],
-  "column_count": 2,
-  "truncated": false
-}
+## Observation
+
+```text
+source      = generic_web
+source_kind = html_table
+entity_type = dataset
+url         = реально fetched page URL
+title       = source caption/aria-label при наличии
 ```
 
-The stable factual hash is calculated from canonical JSON of this normalized table.
+`data` содержит `caption`, `headers`, `rows`, `column_count`, `truncated`. Stable factual hash вычисляется из canonical JSON normalized table.
 
 ## Provenance
 
-Table provenance includes:
-
-- the parent page `snapshot_id`;
-- the actually fetched `page_url`;
-- table index within the scanned page;
-- extractor version;
-- research goals;
-- extraction/table truncation state;
-- counts of layout and complex tables skipped.
-
-`quality.lossless` is `true` only when that table was not clipped by a configured bound.
+Сохраняются parent `snapshot_id`, fetched page URL, table index, extractor version, goals, truncation state, число skipped layout/complex tables. `quality.lossless=true` только если таблица не была clipped.
 
 ## Evidence
 
-Each table has separate `Evidence(type=html_table)` tied to the actually fetched page URL.
+Отдельный `Evidence(type=html_table)` связан с реально fetched page URL. Evidence text — bounded до 10 000 символов excerpt canonical normalized JSON. Полная таблица остаётся в Observation, исходная страница — Snapshot.
 
-Evidence text is an excerpt of canonical normalized JSON, bounded to 10,000 characters. The complete table remains in the Observation and the source HTML remains in the Snapshot. Evidence metadata therefore includes:
+Metadata содержит `canonical_sha256`, `evidence_excerpt_truncated`, `snapshot_id`, `table_index`, extractor version.
 
-- `canonical_sha256`;
-- `evidence_excerpt_truncated`;
-- `snapshot_id`;
-- `table_index`;
-- extractor version.
+## Не входит в текущую реализацию
 
-## Non-goals
+Extractor не:
 
-The current extractor does not:
-
-- infer a table from CSS layout;
-- execute JavaScript specifically to reconstruct a table;
-- guess multi-row/merged headers;
-- expand `rowspan`/`colspan` grids;
-- interpret numbers, currencies or dates;
-- calculate aggregates;
-- make Kraken/Janus business conclusions.
-
-Those rules preserve the ARGUS boundary: find, obtain, prove and normalize factual source data without silently adding interpretation.
+- выводит таблицу из CSS layout;
+- специально исполняет JavaScript для реконструкции table;
+- угадывает multi-row/merged headers;
+- разворачивает rowspan/colspan;
+- интерпретирует numbers/currencies/dates;
+- считает aggregates;
+- формирует выводы consumer module.

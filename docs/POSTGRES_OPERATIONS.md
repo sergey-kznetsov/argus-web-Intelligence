@@ -1,64 +1,69 @@
-# PostgreSQL operations
+# Операции PostgreSQL ARGUS
 
-ARGUS is a standalone infrastructure service and owns its PostgreSQL database lifecycle independently from Geo Analyzer TEST and PROD. The canonical server deployment uses the PostgreSQL instance reachable by ARGUS, but the service database and login are dedicated to ARGUS:
+ARGUS — standalone infrastructure service с отдельным database lifecycle от Geo Analyzer TEST/PROD.
 
-- database: `argus`;
-- service role: `argus`;
-- application schema: `argus`;
-- DSN secret: `C:\ProgramData\ARGUS\secrets\database-dsn.txt`.
+Канонический server deployment использует:
 
-Geo Analyzer databases and environment files are consumer concerns and must never be used as the ARGUS database configuration source. In particular, the ARGUS deployment must not read or copy `GEOANALYZER_DATABASE_DSN`, `GEOANALYZER_DATABASE_DSN_FILE`, PROD `saas.env`, or TEST `saas.env`.
+```text
+database:     argus
+service role: argus
+schema:       argus
+DSN secret:   C:\ProgramData\ARGUS\secrets\database-dsn.txt
+```
 
-The PostgreSQL server itself may be shared operational infrastructure, but database ownership, credentials, backup/restore and lifecycle remain isolated. ARGUS database procedures must never drop, dump or restore unrelated Geo Analyzer databases or schemas.
+Физический PostgreSQL server может быть общим инфраструктурным сервером, но database, login, backup/restore и lifecycle ARGUS изолированы.
+
+Geo Analyzer databases и environment files не являются источником ARGUS DB config. Deploy не должен читать или копировать `GEOANALYZER_DATABASE_DSN`, TEST/PROD `saas.env`.
 
 ## Deployment rule
 
-ARGUS has one canonical standalone deployment. Geo Analyzer TEST and PROD are consumers of the same ARGUS service and do not create separate ARGUS instances.
+`deploy/windows/deploy-server.ps1` требует существующий ARGUS-owned DSN file и проверяет:
 
-`deploy/windows/deploy-server.ps1` requires an existing ARGUS-owned DSN file. It validates that the DSN targets `database=argus` with service role `user=argus` and refuses deployment otherwise. The deployment script never provisions the PostgreSQL administrator account and never derives the ARGUS DSN from a Geo Analyzer environment file.
+```text
+database=argus
+user=argus
+```
 
-The GitHub credential used for deployment is also ARGUS-owned. When authentication is required, provide either process-local `ARGUS_GITHUB_TOKEN` or `C:\ProgramData\ARGUS\secrets\github-token.txt`. Do not reuse Geo Analyzer environment files as a deployment dependency.
+При другом database/user deployment прекращается. Скрипт не создаёт PostgreSQL administrator и не выводит credentials.
 
-Database-changing procedures are validated through the isolated ARGUS storage contract before consumer E2E testing. Consumer changes are validated in Geo Analyzer TEST before being connected or promoted in PROD.
+GitHub auth при необходимости берётся из process-local `ARGUS_GITHUB_TOKEN` или `C:\ProgramData\ARGUS\secrets\github-token.txt`.
 
-The expected schema version is defined by `argus.storage.postgres_migrations.EXPECTED_SCHEMA_VERSION`. API and worker startup reject a database that has not been migrated to that version.
+Expected schema version задаёт `argus.storage.postgres_migrations.EXPECTED_SCHEMA_VERSION`. API/worker отказываются от readiness при несовпадающей схеме.
 
 ## Migrations
-
-Apply and verify migrations with:
 
 ```bash
 python -m argus.storage.cli migrate
 python -m argus.storage.cli check
 ```
 
-Migrations are versioned, checksum-protected and run under a PostgreSQL advisory lock. Each version executes inside one transaction. A failed migration must therefore leave neither its schema changes nor its migration record committed.
+Migrations versioned, checksum-protected и выполняются под PostgreSQL advisory lock. Каждая version применяется одной transaction.
 
-Existing migration versions are immutable. Changing the name or SQL of an already recorded version changes its checksum and causes startup/migration verification to fail instead of silently trusting an unknown schema.
+Уже записанные migration versions считаются immutable. Изменение name/SQL меняет checksum и вызывает verification failure вместо тихого принятия неизвестного состояния.
 
 ## Backup
 
-ARGUS backup is schema-scoped inside the dedicated `argus` database and uses PostgreSQL custom archive format:
+ARGUS backup ограничен schema `argus` внутри dedicated database и использует PostgreSQL custom archive format:
 
 ```bash
 python -m argus.storage.cli backup --output /secure/path/argus.dump
 ```
 
-Existing archives are not overwritten unless the operator explicitly adds `--force`.
+Existing archive не перезаписывается без `--force`.
 
-The backup command:
+Backup command:
 
-- refuses to dump an ARGUS schema whose version does not match the running ARGUS version;
-- invokes `pg_dump --format=custom --schema=argus`;
-- does not include ownership or privilege restoration;
-- writes to a temporary file in the destination directory and atomically renames it after success;
-- writes a sidecar `<archive>.argus-backup.json` manifest;
-- records archive SHA-256, size, ARGUS version and schema version;
-- removes the PostgreSQL password from process arguments and supplies it only through the child-process environment.
+- проверяет текущую schema version;
+- вызывает `pg_dump --format=custom --schema=argus`;
+- исключает ownership/privilege restoration;
+- пишет temporary file и atomically rename после success;
+- создаёт sidecar `<archive>.argus-backup.json`;
+- фиксирует SHA-256, size, ARGUS version, schema version;
+- передаёт PostgreSQL password через child-process environment, а не command line.
 
-The manifest is an integrity check, not a cryptographic authenticity signature. Only backups created and stored through a trusted ARGUS operational path should be restored. PostgreSQL dumps can contain executable SQL objects; never restore an untrusted dump.
+Manifest — integrity check, не cryptographic signature. Нельзя восстанавливать недоверенный dump.
 
-Verify an archive before moving or restoring it:
+Проверка:
 
 ```bash
 python -m argus.storage.cli verify-backup --input /secure/path/argus.dump
@@ -66,7 +71,7 @@ python -m argus.storage.cli verify-backup --input /secure/path/argus.dump
 
 ## Restore
 
-Restore is destructive for the existing `argus` schema and requires an explicit flag:
+Restore разрушителен для existing schema `argus` и требует явного flag:
 
 ```bash
 python -m argus.storage.cli restore \
@@ -74,86 +79,97 @@ python -m argus.storage.cli restore \
   --replace-existing-argus
 ```
 
-The restore path:
+Последовательность:
 
-1. verifies the manifest, archive size and SHA-256;
-2. requires the archive schema version to match the running ARGUS schema version exactly;
-3. calls `pg_restore` with `--single-transaction --clean --if-exists --schema=argus`;
-4. restores without ownership/privilege commands;
-5. runs normal migration verification after restore;
-6. verifies the resulting schema version.
+1. verify manifest/size/SHA-256;
+2. потребовать exact match archive schema version и running ARGUS schema version;
+3. выполнить `pg_restore --single-transaction --clean --if-exists --schema=argus`;
+4. не восстанавливать ownership/privileges;
+5. выполнить normal migration verification;
+6. проверить final schema version.
 
-Exact schema-version matching is intentional. A custom archive from an older schema does not know about objects introduced by newer migrations; selectively cleaning such an archive over a newer live schema can leave dependency conflicts or mixed-version objects. To restore an older backup, run the matching ARGUS version, restore and verify it there, then update ARGUS through the normal migration/update path.
+Для older backup нужен matching ARGUS version: восстановить/проверить в нём, затем обновлять обычными migrations. Нельзя накладывать old archive на newer schema и получать mixed state.
 
-`--single-transaction` is intentional: PostgreSQL must either apply the whole restore or leave the database unchanged by that restore attempt.
+Перед restore canonical server database нужно остановить `ARGUS-API` и `ARGUS-Worker`, чтобы не было collection writes. По возможности сначала восстановить в isolated recovery database и провести check + API readiness + consumer collection.
 
-Before restoring the canonical server database, stop the standalone `ARGUS-API` and `ARGUS-Worker` scheduled tasks so no collection writes occur while the schema is being replaced. Restore and verify into an isolated recovery database first whenever practical, then run `check`, API readiness and at least one end-to-end consumer collection before considering the recovery complete.
+## Connection pool
 
-## Connection-pool saturation
+Defaults:
 
-ARGUS bounds both pool size and the number of requests allowed to wait for a connection:
-
-```bash
+```text
 ARGUS_POSTGRES_POOL_MIN_SIZE=1
 ARGUS_POSTGRES_POOL_MAX_SIZE=8
 ARGUS_POSTGRES_POOL_TIMEOUT_SECONDS=30
 ARGUS_POSTGRES_POOL_MAX_WAITING=32
 ```
 
-`max_waiting` prevents an overloaded process from accumulating an unbounded coroutine queue behind a saturated PostgreSQL pool. When the waiting limit is reached, Psycopg raises a controlled pool error instead of accepting additional waiters.
+`max_waiting` ограничивает число coroutines в ожидании connection. При saturation Psycopg возвращает controlled pool error, а не бесконечно накапливает очередь.
 
-Repository health and `python -m argus.storage.cli operations` expose bounded pool statistics including pool size/availability, waiting requests, queue/error counters and cumulative wait time. Tune pool size only after load testing; increasing connections blindly can move saturation from ARGUS into PostgreSQL.
+Repository health и `python -m argus.storage.cli operations` показывают pool size/availability, waiting, queue/error counters и cumulative wait time. Увеличивать pool нужно только после load testing.
 
 ## Result-read retention grace
 
-Retention never deletes `queued` or `running` collections. Terminal collections are also protected while a consumer is actively retrieving a result.
+Retention никогда не удаляет active `queued`/`running` collections. Terminal collection также временно защищена, пока consumer читает result.
 
-Every PostgreSQL result read (`summary`, bounded full result, Observation page or Evidence page) updates `argus.collection_result_access.last_accessed_at`. Retention skips a terminal collection whose latest result access is inside:
+Каждый PostgreSQL result read обновляет:
 
-```bash
+```text
+argus.collection_result_access.last_accessed_at
+```
+
+Default grace:
+
+```text
 ARGUS_RETENTION_RESULT_ACCESS_GRACE_SECONDS=3600
 ```
 
-Each successful page request refreshes the grace period. The marker is stored separately from `collections.updated_at`, so reading a result does not pretend that the analysis itself changed. The access row has `ON DELETE CASCADE` and disappears with its collection.
-
-The grace period is not a permanent retention exemption. A consumer that stops reading eventually allows the normal collection-retention policy to apply.
+Успешная следующая page refresh'ит grace. Marker отделён от `collections.updated_at`, поэтому чтение result не имитирует изменение анализа.
 
 ## Retention
 
-Manual pass:
+Manual:
 
 ```bash
 python -m argus.storage.cli retention
 ```
 
-Automatic passes run from workers under one PostgreSQL advisory lock. Current rules:
+Automatic workers выполняют bounded passes под одним advisory lock.
 
-- active collections are never deleted;
-- recently read terminal collections are protected by result-access grace;
-- terminal collections older than collection retention are deleted in bounded batches;
-- collection child rows follow foreign-key cleanup;
-- stale idempotency mappings and worker registrations are bounded-cleaned;
-- old snapshots are cleaned in bounded batches, while the newest snapshot for each source URL remains available as the next diff baseline.
+Правила:
 
-## JSONB and relation growth
+- active collections не удаляются;
+- recently-read terminal collections защищены grace period;
+- старые terminal collections удаляются bounded batches;
+- child rows удаляются по FK semantics;
+- stale idempotency mappings и worker registrations очищаются bounded;
+- old snapshots удаляются bounded, но newest snapshot каждого `source_url` сохраняется как diff baseline;
+- SiteRecipe records автоматически не purge'ятся обычной collection retention.
 
-Inspect actual storage growth without loading stored JSONB into ARGUS memory:
+## Storage growth
 
 ```bash
 python -m argus.storage.cli storage-stats
 ```
 
-The command uses PostgreSQL-native size functions and reports:
+Команда использует PostgreSQL-native size functions без загрузки полного JSONB в Python и показывает:
 
-- row count for each JSONB-bearing ARGUS table;
-- sum, average and maximum `pg_column_size(body)`;
-- table bytes, index bytes and total relation bytes including TOAST where PostgreSQL accounts for it;
-- the table holding the largest aggregate JSONB volume;
-- the table containing the largest individual JSONB row.
+- row count JSONB-bearing tables;
+- sum/avg/max `pg_column_size(body)`;
+- table/index/total relation bytes;
+- largest aggregate JSONB table;
+- largest individual JSONB row.
 
-The audited JSONB tables are `collections`, `observations`, `evidence`, `snapshots` and `site_recipes`. Relation sizes also include leases, worker registrations, idempotency, result-access markers and migration metadata.
+Audited JSONB tables:
 
-A large result is not automatically truncated at the database layer because doing so could silently corrupt factual Evidence. Growth is controlled first by crawler/extractor/result limits and retention, then observed with these database metrics. Unexpected increases in maximum row size or total relation bytes are investigated before raising limits.
+```text
+collections
+observations
+evidence
+snapshots
+site_recipes
+```
+
+Большой result не обрезается молча на database layer: рост контролируется extraction/result limits + retention и наблюдается этими метриками.
 
 ## Operational inspection
 
@@ -162,6 +178,4 @@ python -m argus.storage.cli operations
 python -m argus.storage.cli storage-stats
 ```
 
-`operations` reports queue/worker/lease state and PostgreSQL pool statistics. `storage-stats` reports JSONB and physical relation growth. Neither command reads complete CollectionResult payloads into Python memory.
-
-For incident recovery, preserve the failing archive, manifest, ARGUS version, schema version and relevant secret-safe logs. Do not edit a backup manifest to force a mismatched archive through verification.
+Операции ARGUS не должны drop/dump/restore unrelated Geo Analyzer databases/schemas. Для incident recovery сохраняются failing archive, manifest, ARGUS/schema versions и secret-safe logs; manifest нельзя редактировать для обхода verification.

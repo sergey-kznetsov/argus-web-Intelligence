@@ -1,103 +1,104 @@
-# Bounded gzip structured documents
+# Сжатые структурированные документы gzip
 
-ARGUS supports explicitly compressed public structured-data artifacts without using an unbounded decompression API.
+ARGUS поддерживает публичные структурированные файлы, явно опубликованные в gzip, без использования неограниченной распаковки.
 
-Supported paths are:
+Поддерживаются:
 
-- `.csv.gz`
-- `.tsv.gz`
-- `.tab.gz`
-- `.json.gz`
-- `.geojson.gz`
-- `.xml.gz`
+```text
+.csv.gz
+.tsv.gz
+.tab.gz
+.json.gz
+.geojson.gz
+.xml.gz
+```
 
-The gzip layer is a transport/container normalization step. The decompressed payload is still parsed by the existing bounded CSV/TSV/JSON/XML extractor.
+Gzip здесь — транспортный/контейнерный слой. После bounded распаковки содержимое проходит через существующий ограниченный parser CSV/TSV/JSON/XML.
 
 ```text
 public *.csv.gz / *.json.gz / *.xml.gz
-    -> bounded FAST body
-    -> single-member streaming gzip decompression
-    -> existing bounded structured-data parser
-    -> Observation + Evidence + Snapshot
+  -> bounded FAST body
+  -> single-member streaming gzip decompression
+  -> existing bounded structured-data parser
+  -> Observation + Evidence + Snapshot
 ```
 
-## Distinction from HTTP Content-Encoding
+## Отличие от HTTP Content-Encoding
 
-This feature handles an explicitly published gzip file. It does not treat ordinary HTTP `Content-Encoding: gzip` as a document format. HTTP transport decoding remains the responsibility of the HTTP client/runtime.
+Этот путь относится к явно опубликованному gzip-файлу. Обычный HTTP `Content-Encoding: gzip` не считается отдельным document format: транспортное декодирование остаётся обязанностью HTTP client/runtime.
 
-A URL must have a known structured inner suffix before `.gz`. The adapter also requires either gzip magic bytes or a gzip/octet-stream media type. A `text/html` error page returned for a `.csv.gz` URL is therefore not misclassified as a compressed dataset.
+URL должен содержать известное structured расширение перед `.gz`. Adapter также требует либо gzip magic bytes, либо соответствующий gzip/octet-stream media type. Поэтому HTML error page, возвращённая по URL `*.csv.gz`, не должна ошибочно стать dataset.
 
-## Decompression boundary
+## Граница распаковки
 
-ARGUS uses `zlib.decompressobj(16 + MAX_WBITS)` and limits every decompression call by the remaining allowed output plus one byte.
+ARGUS использует `zlib.decompressobj(16 + MAX_WBITS)` и ограничивает каждый вызов оставшимся допустимым объёмом output + один байт.
 
-It does not use unbounded `gzip.decompress()` or `zlib.decompress()` for public artifacts.
+Не используются неограниченные `gzip.decompress()` или `zlib.decompress()` для публичных artifacts.
 
-The compressed input and uncompressed output are bounded independently. By default both limits reuse `structured_data_max_bytes`, so a tiny compressed payload cannot expand into an arbitrarily large parser input.
+Compressed input и uncompressed output ограничены независимо. По умолчанию оба лимита используют `structured_data_max_bytes`, поэтому маленький архив не может распаковаться в произвольно большой payload.
 
-## Single-member policy
+## Только один gzip member
 
-Version 1 accepts exactly one gzip member.
+Версия 1 принимает ровно один gzip member.
 
-Concatenated members and any trailing bytes are rejected with `GZIP_TRAILING_DATA`. They are not silently concatenated into one dataset. This keeps one URL mapped to one deterministic structured payload and avoids hidden multi-dataset expansion.
+Concatenated members и trailing bytes отклоняются с `GZIP_TRAILING_DATA` и не объединяются молча. Один source URL должен соответствовать одному детерминированному structured payload.
 
-## Errors
+## Ошибки
 
-The gzip layer can return:
+Gzip layer может вернуть:
 
-- `GZIP_COMPRESSED_TOO_LARGE`
-- `GZIP_UNCOMPRESSED_LIMIT_EXCEEDED`
-- `GZIP_INVALID`
-- `GZIP_TRUNCATED`
-- `GZIP_TRAILING_DATA`
-- `GZIP_BINARY_UNAVAILABLE`
+```text
+GZIP_COMPRESSED_TOO_LARGE
+GZIP_UNCOMPRESSED_LIMIT_EXCEEDED
+GZIP_INVALID
+GZIP_TRUNCATED
+GZIP_TRAILING_DATA
+GZIP_BINARY_UNAVAILABLE
+```
 
-A retrieved gzip artifact that cannot be decompressed remains evidence-backed. ARGUS returns a partial structured-file result containing the hash and byte size of the compressed source plus the structured error. It does not retry the same file through Playwright.
+Если полученный gzip artifact невозможно распаковать, ARGUS сохраняет evidence факта получения файла: compressed SHA-256, размер и structured error. Такой файл не отправляется повторно через Playwright.
 
-## Source identity and provenance
+## Identity и provenance
 
-The original compressed bytes remain the source identity.
+Source identity строится по исходным compressed bytes.
 
-`Observation.content_hash`, `binary_sha256` and the stable document observation ID are based on the compressed public artifact, not on the decompressed payload.
+`Observation.content_hash`, `binary_sha256` и stable document Observation ID основаны на compressed artifact, а не на распакованном payload.
 
-Compression metadata additionally records:
+Compression metadata содержит:
 
-- compression format (`gzip`);
+- format `gzip`;
 - `single_member_required=true`;
-- compressed byte count;
-- uncompressed byte count;
+- compressed/uncompressed byte count;
 - compressed SHA-256;
-- uncompressed SHA-256 when decompression succeeded;
-- logical inner URL with `.gz` removed;
-- gzip extractor version;
-- gzip error code, when present.
+- uncompressed SHA-256 при успешной распаковке;
+- logical inner URL без `.gz`;
+- extractor version;
+- gzip error code при наличии.
 
-This metadata is copied into Observation data/provenance and Evidence metadata.
+Metadata сохраняется в Observation data/provenance и Evidence metadata.
 
-## Inner parsing
+## Внутренний parser
 
-After successful decompression ARGUS passes the bytes to the existing bounded structured-data extractor with the logical inner filename. The gzip media type is not reused as the inner content type.
+После успешной распаковки bytes передаются существующему bounded structured-data extractor с logical inner filename. Gzip media type не используется как media type внутреннего документа.
 
-As a result:
+Следовательно:
 
-- JSON still requires UTF-8 according to the current JSON policy;
-- XML keeps the hardened `defusedxml` path and XML bounds;
-- CSV/TSV retain their deterministic encoding policy and record/column/cell limits.
+- JSON сохраняет текущую UTF-8 policy;
+- XML идёт через hardened `defusedxml` path и XML limits;
+- CSV/TSV используют deterministic encoding policy и record/column/cell limits.
 
-No parser gains network access through gzip support.
+Parser не получает сетевого доступа.
 
 ## Runtime limits
 
-No new environment variables are introduced. The gzip extractor derives both compressed and uncompressed byte caps from `structured_data_max_bytes`.
+Новые environment variables не вводятся. Gzip использует `structured_data_max_bytes` как основу лимитов compressed и uncompressed bytes.
 
-This is deliberate KISS/YAGNI. A separate compressed-data configuration surface should only be introduced if production measurements demonstrate a need for a different ratio.
+## Не входит в текущий контракт
 
-## Non-goals
+Версия 1 не:
 
-Version 1 does not:
-
-- recursively unpack `.gz.gz`;
-- parse `.zip`, `.7z`, `.rar` or tar archives through this path;
-- accept concatenated gzip members;
-- infer the inner format from arbitrary compressed bytes;
-- make consumer-specific Kraken/Janus decisions.
+- распаковывает `.gz.gz` рекурсивно;
+- обрабатывает `.zip`, `.7z`, `.rar` и tar через этот path;
+- принимает concatenated gzip members;
+- угадывает inner format по произвольным compressed bytes;
+- принимает consumer-specific решения Kraken/Janus.

@@ -1,49 +1,57 @@
-# SiteRecipe lifecycle
+# Жизненный цикл SiteRecipe
 
-ARGUS stores deterministic browser recipes only after successful replay through the BROWSER runtime. Agent actions are never trusted as a persisted recipe by themselves.
+ARGUS хранит детерминированные browser recipes как operational state. Recipe сам по себе не является Evidence; фактические данные появляются только после успешного source fetch/extraction.
 
-## Lifecycle
+## Текущее состояние
 
-A `SiteRecipe` has one of three states:
+В текущем production service graph AGENT не подключён (`agent=None`). Поэтому существующие active recipes могут использоваться для deterministic BROWSER replay, но автоматическое создание новых agent-generated recipes сейчас не является рабочим production path.
 
-- `candidate` — in-memory recipe compiled from agent actions and awaiting verification;
-- `active` — verified recipe eligible for normal replay;
-- `invalidated` — expired or repeatedly failing historical version that must not be replayed.
+Ниже сохранён lifecycle contract, который действует для существующих recipes и обязателен при повторном включении AGENT.
 
-Legacy recipes created before lifecycle fields were introduced remain readable as `active` for backward compatibility.
+## Состояния
+
+`SiteRecipe` имеет:
+
+- `candidate` — in-memory candidate, ожидающий verification;
+- `active` — verified recipe, разрешённый для normal replay;
+- `invalidated` — expired/repeatedly failing version, которую нельзя replay'ить.
+
+Legacy recipes без lifecycle fields читаются как `active` для backward compatibility.
 
 ## Verified promotion
 
-The promotion path is:
+При активном AGENT допустимый путь:
 
-1. AGENT returns a bounded action sequence.
-2. `AgentRecipeCompiler` converts only the supported deterministic subset into `RecipeStep` objects.
-3. `RecipeManager.candidate()` creates a new version in memory.
-4. BROWSER replays the candidate against the public page.
-5. Only a successful, non-blocked replay may call `RecipeManager.mark_success()` and persist the recipe as `active`.
+1. AGENT возвращает bounded action sequence.
+2. `AgentRecipeCompiler` преобразует только supported deterministic subset в `RecipeStep`.
+3. `RecipeManager.candidate()` создаёт новую version в памяти.
+4. BROWSER replay'ит candidate на public page.
+5. Только successful non-blocked replay позволяет `RecipeManager.mark_success()` и persistence как `active`.
 
-`RecipeManager.save()` rejects unverified `candidate` objects. Unsupported agent actions, failed replay, unsafe URLs, CAPTCHA/access-control challenges, and blocked replay never produce an active recipe.
+`RecipeManager.save()` отклоняет unverified `candidate`. Unsupported actions, failed replay, unsafe URL, CAPTCHA/access challenge и blocked replay не создают active recipe.
 
-## Failure and invalidation
+Пока AGENT не подключён, этот путь остаётся dormant и не должен описываться как фактически выполняемый.
 
-Active recipes track cumulative successes, cumulative failures and consecutive failures. Three consecutive replay failures invalidate the current version by default. A successful replay resets only the consecutive failure counter.
+## Failure и invalidation
 
-Expired recipes are invalidated when read. The default maximum age is 30 days, measured from the latest successful verification/use when available.
+Active recipes считают cumulative successes, failures и consecutive failures. По умолчанию 3 consecutive replay failures invalidates current version. Successful replay сбрасывает только consecutive failure counter.
 
-Invalidated versions are immutable lifecycle history. Recovery creates a new candidate/version instead of reactivating an old version.
+Expired recipe invalidates при read. Default max age — 30 дней от последнего successful verification/use, если он известен.
+
+Invalidated versions сохраняются как immutable lifecycle history. Новое исследование создаёт новую candidate/version, а не reactivates старую.
 
 ## Version retention
 
-Repository cleanup keeps a bounded number of recipe versions per `(domain, goal)`. The default is 10 versions. Cleanup is supported by SQLite and PostgreSQL.
+Repository хранит bounded число versions на `(domain, goal)`, default `10`. Cleanup поддерживают SQLite/PostgreSQL.
 
-PostgreSQL recipe mutation and cleanup are protected by worker lease fencing. A stale worker that has lost the collection lease cannot save, invalidate, or prune recipe state after another worker takes ownership.
+В PostgreSQL mutation/cleanup recipe state во время worker execution защищается lease fencing: stale worker после lease loss не должен менять recipe state.
 
 ## Security boundary
 
-SiteRecipe does not bypass authentication, CAPTCHA, paywalls, rate limits or other access controls. Browser navigation remains subject to `UrlGuard`, redirect validation, browser subrequest filtering, robots rules and configured request/concurrency budgets.
+SiteRecipe не обходит authentication, CAPTCHA, paywall, rate limit или access control. BROWSER продолжает использовать `UrlGuard`, redirect checks, request limits и domain restrictions.
 
-Successful agent navigation is useful to ARGUS only after deterministic BROWSER replay. This preserves the architecture boundary: AGENT may discover a path, but the reusable operational artifact is a verified SiteRecipe.
+Если в будущем AGENT снова включён, reusable operational artifact остаётся только deterministic verified recipe, а не model output.
 
-## Provenance and telemetry
+## Provenance
 
-Recipe-backed BROWSER responses expose `recipe_id` and `recipe_version`. Lifecycle-aware fetches also include bounded lifecycle metadata such as status, verification state, success/failure counts and invalidation policy. The factual Observation keeps this runtime metadata in provenance/data without treating recipe state itself as Evidence.
+Recipe-backed BROWSER response может сохранять `recipe_id`, `recipe_version` и bounded lifecycle metadata. Эти данные входят в provenance/telemetry и не являются factual Evidence.

@@ -1,100 +1,105 @@
-# Historical sources for Russia, Russian Empire and former USSR
+# Исторические источники России, Российской империи и бывшего СССР
 
-Verified: 2026-08-25.
+Проверено: 10 сентября 2026 года.
 
-This catalogue defines priority public/free discovery targets for ARGUS `historical_context`. It does not grant permission to bypass access controls or copy restricted media. ARGUS may use a source as discovery-only when the underlying object cannot legally or technically be retrieved in the base public contour.
+Этот каталог задаёт приоритетные публичные/бесплатные discovery targets для `historical_context`. Он не разрешает обход access control или копирование ограниченных media. Если underlying object нельзя корректно получить в публичном контуре, источник может использоваться только для discovery/reference.
 
-## Priority A — directly useful for address/place research
+## Приоритет A — прямое исследование места и адреса
 
 ### PastVu
 
-- URL: https://pastvu.com/
-- Main value: geotagged historical photographs tied to map locations and dates.
-- ARGUS use: search/discover historical photos around a location; retain source page, image reference, date/caption/author/coordinates when source-declared.
-- Historical role: visual confirmation of buildings, streets, infrastructure and former place appearance.
-- Retrieval policy: public web only; no access-control bypass.
+- URL: `https://pastvu.com/`
+- Основная ценность: геопривязанные исторические фотографии с местом и датой.
+- Использование ARGUS: поиск исторических фотографий вокруг location; сохранение source page, image reference, date/caption/author/coordinates, когда они объявлены источником.
+- Роль: визуальное подтверждение зданий, улиц, инфраструктуры и прежнего вида места.
+- Политика: только публичный web, без обхода access control.
+
+В текущем коде есть dedicated `pastvu_historical` adapter.
 
 ### ЭтоМесто
 
-- URLs: https://etomesto.ru/ and https://etomesto.com/
-- Main value: old maps with geographic alignment and comparison against modern maps.
-- Coverage explicitly includes Russia and many countries/territories of the former Soviet Union.
-- Material includes imperial maps, Red Army maps, WWII aerial imagery, Soviet satellite city maps, USSR administrative/tourist/transport schemes and other historical layers.
-- ARGUS use: coordinate/place-targeted historical map discovery; retain map title/year/source URL and publicly available image/tile/reference metadata where allowed.
+- URLs: `https://etomesto.ru/`, `https://etomesto.com/`
+- Основная ценность: старые карты с геопривязкой и сравнением с современными картами.
+- Coverage включает Россию и территории бывшего СССР: imperial maps, Red Army maps, WWII aerial imagery, советские городские/административные/туристические/транспортные карты и другие исторические layers.
+- Использование ARGUS: targeted discovery по координатам/месту, сохранение title/year/source URL и доступных публичных references.
+
+Dedicated adapter в текущем runtime не зарегистрирован; используется как catalog/discovery target через общие механизмы.
 
 ### Retromap
 
-- URL: https://retromap.ru/
-- Main value: thousands of old maps, map comparison/overlay and geographic place search; also contains a historical document/image gallery.
-- ARGUS use: place-targeted map discovery and historical layer references.
+- URL: `https://retromap.ru/`
+- Основная ценность: старые карты, overlay/comparison, geographic search, исторические документы/изображения.
+- Использование: place-targeted discovery и references.
+- Dedicated adapter сейчас не зарегистрирован.
 
-### Российский государственный архив кинофотодокументов — electronic photo catalogue
+### Российский государственный архив кинофотодокументов
 
-- URL: https://photo.rgakfd.ru/
-- Search URL: https://photo.rgakfd.ru/search
-- Main value: state photo archive catalogue with search dimensions including subjects, persons, place of shooting, author and years.
-- ARGUS use: place/year/entity targeted photo discovery. Preserve archive identifier, title/annotation, shooting place, date, author and public preview/reference when available.
+- URL: `https://photo.rgakfd.ru/`
+- Search: `https://photo.rgakfd.ru/search`
+- Основная ценность: официальный каталог с subject/person/place/author/year dimensions.
+- Использование: targeted photo discovery; сохранять archive identifier, title/annotation, place/date/author и public preview/reference при наличии.
+- Dedicated adapter сейчас не зарегистрирован.
 
-## Priority B — authoritative digital collections and documents
+## Приоритет B — авторитетные цифровые коллекции и документы
 
 ### Президентская библиотека имени Б. Н. Ельцина
 
-- URL: https://www.prlib.ru/
-- Key collection: https://www.prlib.ru/collections/467000
-- Main value: archival documents, maps, plans, photographs, film chronicles, periodicals and books covering the Russian Empire, Soviet Russia and modern Russian Federation.
-- The `Территория России` collection explicitly separates materials by historical period and geography and contains `Карты и планы` and `Изобразительные материалы`.
-- ARGUS use: place/entity/date targeted discovery for maps, documents and visual material. Respect item-level access/copy restrictions.
+- URL: `https://www.prlib.ru/`
+- Collection: `https://www.prlib.ru/collections/467000`
+- Документы, карты, планы, фотографии, кинохроника, периодика и книги по Российской империи, СССР/РСФСР и современной РФ.
+- Использование: targeted discovery по place/entity/date с соблюдением item-level restrictions.
 
-### Национальная электронная библиотека (НЭБ)
+### Национальная электронная библиотека
 
-- URL: https://rusneb.ru/
-- Maps collection example: https://kp.rusneb.ru/item/thematic-groups/kartograficheskiy-obraz-mira/maps-17-19
-- Main value: digitised historical books, atlases, maps and city plans from national library holdings.
-- ARGUS use: address/city/old-name query expansion into historic atlases, plans and local descriptions.
+- URL: `https://rusneb.ru/`
+- Ценность: оцифрованные книги, атласы, карты и планы городов.
+- Использование: расширение запросов по city/address/old-name в исторические atlases/plans/descriptions.
 
-### Federal archival search systems — Росархив
+### Росархив: федеральные поисковые системы
 
-- URL: https://archives.gov.ru/search-systems-catalog.shtml
-- Main value: directory of official electronic catalogues/search systems for Russian federal archives, including photo/film catalogues and archival fonds.
-- ARGUS use: source discovery router. Follow only public catalogue/search endpoints; archive-specific adapters can be added after their public interface is verified.
+- URL: `https://archives.gov.ru/search-systems-catalog.shtml`
+- Ценность: directory официальных electronic catalogues/search systems федеральных архивов.
+- Использование: discovery router; archive-specific adapter добавляется только после проверки публичного interface.
 
 ### Runivers / Руниверс
 
-- URL: https://runivers.ru/
-- Legacy catalogue: https://old.runivers.ru/
-- Main value: digitised historical books, document collections and high-resolution atlases/maps of the Russian Empire.
-- ARGUS use: old geography, administrative structure, maps, regional descriptions, historical documents.
+- URL: `https://runivers.ru/`
+- Legacy catalogue: `https://old.runivers.ru/`
+- Ценность: historical books, document collections, atlases/maps Российской империи.
 
-### Library of Congress — Prokudin-Gorskii collection
+### Library of Congress — Prokudin-Gorskii
 
-- Russian exhibition: https://www.loc.gov/exhibits/empire/empire-ru.html
-- Main value: digitised colour photographic survey of the Russian Empire from the early 20th century, including architecture, transport, industry, settlements and daily life across a wide geography.
-- ARGUS use: historical image discovery by place/entity. Prefer the Library of Congress item/canonical URLs and source-declared identifiers.
+- Russian exhibition: `https://www.loc.gov/exhibits/empire/empire-ru.html`
+- Ценность: оцифрованная цветная фотоколлекция Российской империи начала XX века.
+- Использование: historical image discovery по place/entity с source-declared identifiers.
 
-## Priority C — contextual historical corpus
+Для перечисленных Priority B источников dedicated adapters в текущем bootstrap не зарегистрированы; каталог задаёт discovery priority, а factual material проходит общие fetch/extraction contracts.
+
+## Приоритет C — контекстный корпус
 
 ### Центр «Прожито»
 
-- URL: https://prozhito.org/
-- Main value: diaries, letters and personal historical texts, particularly useful for Soviet-era local/social context.
-- ARGUS use: secondary/contextual discovery when a place, organisation or event appears in searchable ego-documents. This source should not outrank direct archival/map/photo evidence for a location.
+- URL: `https://prozhito.org/`
+- Ценность: дневники, письма и personal historical texts, особенно советского периода.
+- Использование: secondary/contextual discovery, когда place/organization/event встречается в corpus.
+- Не должен вытеснять прямые map/photo/archive evidence для location.
 
-## Source selection rules
+## Выбор источников
 
-For `historical_context`, ARGUS should use several complementary source families rather than treating one archive as sufficient:
+Для `historical_context` нужно комбинировать несколько families:
 
-1. current factual web and map entities;
-2. Wayback captures for known URLs;
+1. current factual web/map entities;
+2. Wayback captures для известных URL;
 3. georeferenced historical maps;
-4. georeferenced/archive photographs;
-5. official archival catalogues and digitised documents;
+4. historical/archive photographs;
+5. official archive catalogues/digitized documents;
 6. historical books/periodicals;
 7. contextual personal/documentary corpora;
-8. generic web discovery for local/regional archives not in this catalogue.
+8. generic web для региональных/local archives вне каталога.
 
-## Historical query expansion
+## Query expansion
 
-Given a place such as `Ижевск, Пушкинская, 277`, targeted discovery should generate bounded variants similar to:
+Для места вроде `Ижевск, Пушкинская, 277` каталог может использовать bounded запросы:
 
 ```text
 site:pastvu.com "Пушкинская" Ижевск
@@ -106,17 +111,17 @@ site:rusneb.ru Ижевск Пушкинская
 site:runivers.ru Ижевск Пушкинская
 ```
 
-When an old entity/name is discovered, the same source families should be queried again with that historical label.
+Найденное старое название/entity может стать новым hypothesis anchor, но факт появляется только после отдельного factual fetch.
 
-## Operator-added historical source pool
+## Дополнительный operator catalogue
 
-Additional public historical domains can be added without changing Python code by setting:
+Можно добавить public historical domains без изменения Python code:
 
 ```text
 ARGUS_HISTORICAL_SOURCE_CATALOG_FILE=/path/to/historical-sources.json
 ```
 
-Accepted JSON form:
+Пример:
 
 ```json
 {
@@ -133,19 +138,17 @@ Accepted JSON form:
 }
 ```
 
-The operator catalogue is bounded to 200 entries and 512 KiB. Domains must be plain public DNS names or root HTTP(S) URLs without credentials, ports, paths, query strings or fragments. `source_id` and `kind` use bounded machine-readable identifiers; priority is `1..10000`; `visual` is boolean; `query_suffix` is optional and bounded.
+Operator catalogue ограничен 200 entries и 512 KiB. Domains должны быть public DNS/root HTTP(S) без credentials, ports, paths, query или fragments. Operator entries не заменяют code-reviewed built-in source по ID/domain.
 
-Operator entries may add candidates but cannot silently replace a code-reviewed built-in source by ID or domain. An entry is discovery metadata only: it does not grant trust, bypass URL/security policy, or become Evidence. A discovered page must still pass the normal `FAST → BROWSER → AGENT` lifecycle and factual extraction/provenance checks.
+Каталог — discovery metadata, не trust grant и не Evidence.
 
-## Image evidence requirements
+## Image evidence
 
-A historical image reference should be normalised separately from the surrounding page when possible.
-
-Minimum fields:
+Historical image reference по возможности нормализуется отдельно и сохраняет:
 
 ```text
 source_page_url
-image_url or archive item URL
+image_url или archive item URL
 caption/title
 archive/source id
 source-declared date/date range
@@ -153,20 +156,11 @@ source-declared place/coordinates
 source-declared author/collection
 related entity/address
 collected_at
-snapshot_id/content hash/provenance
+snapshot/content hash/provenance
 ```
 
-An image is evidence of what the archive/page explicitly describes. ARGUS must not infer exact address/date from visual appearance alone.
+ARGUS не выводит exact address/date из visual appearance без отдельной квалифицированной CV capability.
 
-## Implementation status
+## Статус реализации
 
-This document is a product source catalogue, not a claim that every listed source already has a dedicated adapter.
-
-Expected implementation order:
-
-1. targeted domain-aware historical discovery using the catalogue;
-2. generic factual extraction from reachable source pages;
-3. first-class historical image-reference extraction;
-4. dedicated adapters/recipes for sources whose search/navigation requires stable special handling;
-5. standalone `argus probe` acceptance runs against real Russian addresses;
-6. measure coverage gaps and add additional regional/federal archives based on real probe results.
+Этот файл — source catalogue, а не заявление о dedicated adapter для каждого сайта. Текущий код напрямую содержит PastVu и общие historical planners/Wayback paths; остальные catalog targets должны считаться discovery targets, пока отдельный adapter/recipe не подтверждён в runtime и тестах.

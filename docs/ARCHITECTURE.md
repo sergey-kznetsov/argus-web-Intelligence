@@ -1,24 +1,20 @@
-# ARGUS architecture
+# Архитектура ARGUS
 
-## Boundary
+## Граница сервиса
 
-ARGUS `0.3.0` is a standalone server-side infrastructure service for analytical consumers such as Kraken, Janus and future Geo Analyzer modules.
-
-It is **not** an installable Geo Analyzer module and must not appear in the user analysis UI or in Module Manager lifecycle.
+ARGUS `0.3.0` — отдельный серверный infrastructure service для Kraken и будущих аналитических consumers Geo Analyzer. Он не устанавливается как optional module и не должен появляться в Module Manager или форме пользовательского анализа.
 
 ```text
-User
+Пользователь
   -> Geo Analyzer
-  -> selected analytical module
+  -> выбранный аналитический модуль
   -> ARGUS
-  -> public web / open sources
+  -> публичный web / открытые источники
   -> Observation + Evidence + Provenance + Coverage
-  -> analytical module
+  -> аналитический модуль
   -> Module Result
   -> Geo Analyzer report / UI
 ```
-
-Responsibility boundary:
 
 ```text
 Geo Analyzer = orchestrate + present
@@ -26,265 +22,126 @@ ARGUS        = find + obtain + prove + store + continue researching
 Module       = normalize + interpret + calculate + conclude
 ```
 
-ARGUS never branches on consumer identity. `consumer` is identity/provenance/idempotency metadata; research behavior is described by territory, requested facts, intents and bounded constraints.
+## Consumer routing
 
-## Standalone server deployment
+ARGUS не должен содержать бизнес-веток вида `if consumer == "kraken"`. При этом consumer identity фактически влияет на разрешённый research contract через `ConsumerProfileRegistry` и `ToolPackRegistry`: profile выбирает capability, requested facts, planner/extractor/source policy. Это декларативная маршрутизация, а не предметная аналитика внутри Core.
 
-ARGUS lifecycle belongs to the server deployment, not to Geo Analyzer.
-
-Windows server layout:
+## Server topology
 
 ```text
-C:\argus\releases\<immutable-commit>        application release
-C:\ProgramData\ARGUS\argus.env             runtime configuration
-C:\ProgramData\ARGUS\secrets\argus.token  bearer token
+C:\argus\releases\<immutable-commit>
+C:\ProgramData\ARGUS\argus.env
+C:\ProgramData\ARGUS\secrets\argus.token
 C:\ProgramData\ARGUS\secrets\database-dsn.txt
-C:\ProgramData\ARGUS\logs                  service logs
-ARGUS-API                                    Scheduled Task
-ARGUS-Worker                                 Scheduled Task
+C:\ProgramData\ARGUS\logs
+ARGUS-API
+ARGUS-Worker
 ```
 
-Default internal endpoints:
+По умолчанию:
 
 ```text
-API          http://127.0.0.1:8787
-worker probe http://127.0.0.1:8788/readyz
+API          127.0.0.1:8787
+worker probe 127.0.0.1:8788
 ```
 
-The deployment contract is `deploy/windows/deploy-server.ps1`.
-
-Deployment uses an immutable 40-character Git commit SHA. It:
-
-1. downloads the pinned repository snapshot;
-2. creates an isolated Python virtual environment in the release;
-3. installs ARGUS and Chromium;
-4. creates/preserves the server-owned bearer token;
-5. reads the shared physical PostgreSQL connection from the server configuration and exposes it to ARGUS through a protected secret file;
-6. runs ARGUS migrations and schema verification before cutover;
-7. registers `ARGUS-Worker` and `ARGUS-API` as SYSTEM Scheduled Tasks;
-8. waits for worker readiness and API readiness;
-9. records the active immutable release;
-10. rolls the tasks back to the previous release if the new release fails health-check.
-
-The shared PostgreSQL instance does not make ARGUS part of Geo Analyzer storage. ARGUS owns only PostgreSQL schema `argus`; migrations and operational procedures are schema-scoped.
-
-Server roles are explicit:
+Роли:
 
 ```text
-API process     ARGUS_EXECUTION_ROLE=api
-Worker process  ARGUS_EXECUTION_ROLE=worker
-Local/dev       ARGUS_EXECUTION_ROLE=embedded
+ARGUS_EXECUTION_ROLE=api
+ARGUS_EXECUTION_ROLE=worker
+ARGUS_EXECUTION_ROLE=embedded
 ```
 
-PostgreSQL is mandatory for server `api` and `worker`. SQLite is reserved for embedded/local development and isolated fixtures.
-
-## Consumer connection contract
-
-Geo Analyzer TEST, Geo Analyzer PROD and installed analytical modules use the same server-level connector contract:
-
-```text
-ARGUS_SERVICE_BASE_URL=http://127.0.0.1:8787
-ARGUS_SERVICE_TOKEN_FILE=C:\ProgramData\ARGUS\secrets\argus.token
-```
-
-Geo Analyzer does not implement ARGUS-specific lifecycle logic. Its generic service environment is inherited by module processes. A module that requires public-web intelligence owns its `ArgusConnector` and decides when to call ARGUS.
-
-A module must not hardcode the endpoint, port or bearer token.
+Server roles требуют PostgreSQL. Текущий standalone deploy требует отдельную PostgreSQL database `argus` и service role `argus`; внутри неё ARGUS владеет schema `argus`. SQLite используется только для embedded/local mode и fixtures.
 
 ## Collection API
 
-The main authenticated consumer API is:
-
-```text
-POST /v1/collections
-GET  /v1/collections/{collection_id}
-GET  /v1/collections/{collection_id}/result
-GET  /v1/collections/{collection_id}/result/summary
-GET  /v1/collections/{collection_id}/result/observations
-GET  /v1/collections/{collection_id}/result/evidence
-POST /v1/collections/{collection_id}/cancel
-```
-
-Runtime/service endpoints:
+Health endpoints:
 
 ```text
 GET  /v1/health
 HEAD /v1/health
-GET  /v1/manifest              Bearer required
-GET  /v1/capabilities          Bearer required
-GET  /v1/operations/queue      Bearer required
-GET  /v1/operations/collections Bearer required
 ```
 
-Large results are delivered through bounded summary and opaque-keyset paginated Observation/Evidence endpoints rather than unbounded response bodies.
-
-## Server queue and recovery
-
-The API process never executes server collections itself. It persists work and returns an accepted collection ID. Workers claim queued work from PostgreSQL.
+Authenticated endpoints:
 
 ```text
-Module
-  -> POST /v1/collections
-  -> argus.collections(status=queued)
-  -> worker claim FOR UPDATE ... SKIP LOCKED
-  -> argus.collection_leases
-  -> CollectionOrchestrator.execute()
-  -> Observation + Evidence + Snapshots
+GET  /v1/manifest
+GET  /v1/capabilities
+POST /v1/collections
+GET  /v1/collections/{collection_id}
+POST /v1/collections/{collection_id}/cancel
+GET  /v1/collections/{collection_id}/result
+GET  /v1/collections/{collection_id}/result/summary
+GET  /v1/collections/{collection_id}/result/observations
+GET  /v1/collections/{collection_id}/result/evidence
+GET  /v1/operations/queue
+GET  /v1/operations/collections
+GET  /v1/operations/metrics
+GET  /v1/sources
+GET  /v1/sources/{source_id}/health
 ```
 
-`argus.worker_instances` stores worker heartbeats. `argus.collection_leases` stores exclusive collection ownership.
+`retry` endpoint в текущем API отсутствует.
 
-Important guarantees:
+## Очередь и recovery
 
-- only queued/running collections can be claimed;
-- active leases exclude other workers;
-- expired work can be recovered by another worker;
-- SQL lease fencing rejects stale-worker writes after ownership transfer;
-- persistent checkpoints prevent blind full restarts;
-- deterministic Observation/Evidence/Snapshot identities make replay converge;
-- terminal cancellation cannot be overwritten by stale workers.
+API в server mode сохраняет queued collection и не выполняет её inline. Worker получает работу через PostgreSQL claim + lease. `worker_instances` хранит heartbeat, `collection_leases` — ownership. Lease fencing блокирует запись старого worker после передачи lease.
+
+Успех `SourceTask` публикуется одной транзакцией: staged Snapshot, Observation, Evidence и checkpoint. Это обеспечивает at-least-once network execution без двойной durable публикации одного успешно зафиксированного task.
 
 ## Readiness
 
-`GET /v1/health` is readiness, not a static liveness string.
+Для role=`api` `/v1/health` считается ready только если PostgreSQL доступен и есть свежий heartbeat хотя бы одного worker. Иначе status=`degraded`.
 
-For server API role it requires:
+## Research pipeline
 
-1. PostgreSQL reachable;
-2. ARGUS schema at the expected migration version;
-3. at least one recent worker heartbeat.
-
-If the worker is unavailable, API readiness is degraded and the standalone deployment must not treat cutover as successful.
-
-The worker exposes a loopback `/readyz` probe.
-
-## Queue admission and idempotency
-
-Server submission is idempotent at the PostgreSQL boundary.
-
-`CollectionRequest` may contain `idempotency_key`. ARGUS also computes a canonical SHA-256 fingerprint of the factual request.
-
-Within the configured idempotency window:
-
-- same key + same request returns the existing collection;
-- same key + different request returns conflict;
-- omitted key uses canonical request identity;
-- new analyses naturally separate through `analysis_id`.
-
-Queue admission is bounded globally and per consumer. Existing idempotent retries are returned even if the queue later becomes full; new work can receive controlled `429`/`503` with `Retry-After`.
-
-## Main research pipeline
+Текущий runtime:
 
 ```text
-Collection Orchestrator
+CollectionOrchestrator
+  -> consumer profile / tool pack
   -> Research Planner
-  -> discovery queries
   -> DiscoveryService
-  -> destination candidates
   -> SourceRegistry
   -> FAST
-  -> BROWSER when FAST is insufficient
-  -> AGENT only when deterministic navigation is insufficient
-  -> verified SiteRecipe for reusable learned navigation
+  -> BROWSER при необходимости
+  -> extractor / normalizer
+  -> ConsumerDeliveryProjector
   -> Observation + Evidence + Provenance
   -> PostgreSQL
-  -> recursive branches / coverage-gap check
-  -> stop at bounded budget or when no meaningful branch remains
+  -> bounded follow-up / coverage checks
 ```
 
-Search snippets, Sitemap entries and discovery metadata are navigation candidates, not facts. A normal factual source must be fetched before it can become Evidence.
+AGENT-код существует, но текущий `build_services()` его не подключает. Поэтому production pipeline нельзя документировать как `FAST -> BROWSER -> AGENT` до отдельного повторного включения.
 
-AGENT output is never factual authority. Learned navigation must be converted into a candidate SiteRecipe and verified by deterministic browser replay before reuse.
+## Kraken urban_signals
 
-CAPTCHA and access controls are not bypassed. They produce blocked/partial coverage and research continues through other permitted public sources.
+Для `kraken.development.uds` profile v1 используется capability `urban_signals`. Mandatory orchestrator запускает обязательные source contours, затем публичные map lanes и только после них bounded optional research. Обязательные линии не пропускаются из-за seed coverage или recovery checkpoint.
 
-## Discovery and sources
+Публичные map lanes проходят все street anchors, попавшие в радиус, по каждому provider. Их information-only observations не выдаются Kraken как обычные subject messages; Evidence сохраняется для контекста/проверяемости. Состояние обязательных линий доступно в `research_lane_coverage`.
 
-ARGUS supports common source contracts instead of consumer-specific parsers. Source adapters implement factual acquisition and normalization; they do not contain Kraken/Janus/Historical business logic.
+## Sources
 
-Current families include generic web, RSS/Atom, Sitemap navigation, embedded JSON-LD, Wayback CDX, OpenStreetMap/Overpass and optional Nominatim, with extension points for public portals, documents, maps, archives, reviews and discussions.
+В bootstrap фактически регистрируются `generic_web`, `mingkh_residential`, `pastvu_historical`, `rss_atom`, `json_feed`, `site_discovery`, `openstreetmap_overpass` при наличии map config и `wayback_cdx` при включённом Wayback.
 
-Discovery providers are ordered fallbacks. Optional configured SearXNG can be used first; browser-based public discovery can be used as a low-volume fallback. Discovery is bounded by request budgets and persistent deduplication.
+Discovery providers: optional SearXNG и, при `browser_serp_enabled`, `duckduckgo_fast`, `mojeek_fast`, `bing_rss`.
 
-## Evidence and provenance
+В server roles Overpass автоматически получает bounded бесплатный endpoint, если оператор не задал свой. Nominatim и Wayback остаются opt-in.
 
-Every factual Observation must be traceable to Evidence/provenance. LLM prose and search snippets are not Evidence.
+## Evidence и даты
 
-The factual layer preserves, where applicable:
-
-- source and source kind;
-- source URL;
-- normalized entity identity;
-- extracted factual text/data;
-- geographic evidence;
-- publication time when source-backed;
-- collection time separately;
-- content hash;
-- extraction/provenance metadata;
-- quality/confidence and limitations.
-
-Unknown publication time remains `null`; collection time must not be substituted for publication time.
-
-## Recursive and historical research
-
-Research can branch from entities found in already fetched factual material. Branches remain hypotheses until separately fetched Evidence confirms them.
-
-Recursive work is bounded by depth, page count, query budget, deduplication and persistent checkpoints.
-
-Historical capability combines ARGUS snapshots with public archive/navigation sources and can produce evidence-backed dated observations without fabricating a single narrative when sources conflict.
+Search snippets, Sitemap rows, discovery metadata и navigation hints не являются Evidence. Publication time заполняется только из source-backed данных; неизвестная дата остаётся `null`, а `collected_at` хранится отдельно.
 
 ## Storage
 
-ARGUS owns PostgreSQL schema `argus`.
+ARGUS владеет только своими объектами. Migrations versioned/checksummed и защищены advisory lock. Backup/restore/retention работают в границах ARGUS database/schema и не должны затрагивать Geo Analyzer.
 
-Major server relations include:
+## Free contour
 
-- `collections`;
-- `collection_idempotency`;
-- `collection_leases`;
-- `worker_instances`;
-- `observations`;
-- `evidence`;
-- `snapshots`;
-- `site_recipes`;
-- schema migration and result-access metadata.
+Base runtime не должен требовать платных SERP, proxy networks, CAPTCHA solvers, browser clouds, Google/Yandex/2GIS API или cloud LLM. Допустимы public HTML/endpoints, RSS, files, open data, open-source runtimes и self-hosted/free services.
 
-Migrations are versioned/checksummed and protected by a PostgreSQL advisory lock. Backup/restore and retention are schema-scoped and must not affect Geo Analyzer schemas.
+## Критерий готовности
 
-## Free base contour
-
-ARGUS base operation must not require paid search, paid proxy networks, commercial CAPTCHA solving, paid browser clouds, mandatory paid Google/Yandex/2GIS APIs or mandatory paid LLMs.
-
-Allowed base mechanisms include public HTML, open endpoints, RSS/Atom, public files/data, open-source runtimes and self-hosted/free services.
-
-## Security
-
-Server boundaries include:
-
-- loopback-only API and worker probe by default;
-- Bearer token in protected secret file;
-- PostgreSQL DSN in protected secret file;
-- URL/redirect/SSRF validation;
-- request/response/download/browser resource limits;
-- bounded retries and recursion;
-- safe XML/JSON handling;
-- secret-safe structured logging;
-- lease fencing and cancellation consistency;
-- no CAPTCHA/access-control bypass.
-
-Application SSRF controls are defense in depth; production network egress policy remains an infrastructure responsibility.
-
-## Definition of done
-
-A capability is complete only when:
-
-1. the real service graph produces the intended result;
-2. factual output has Evidence/provenance;
-3. failure/recovery behavior is defined;
-4. budgets/resource limits are explicit;
-5. standalone verification can demonstrate the path where applicable;
-6. regression/integration tests cover the important behavior;
-7. documentation matches runtime architecture;
-8. CI is green.
-
-ARGUS must remain a replaceable server infrastructure service. Connecting a new analytical module must require only the common Collection API and deployment-owned `ARGUS_SERVICE_*` connector, not a change to ARGUS or Geo Analyzer Core keyed by the new module name.
+Функция считается реализованной, когда она проходит через реальный service graph, сохраняет Evidence/Provenance, имеет bounded resource/recovery поведение, тесты и актуальную документацию. Наличие не подключённого класса или экспериментального adapter само по себе не означает готовую production capability.
