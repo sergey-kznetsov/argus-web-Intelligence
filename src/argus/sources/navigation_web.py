@@ -4,6 +4,7 @@ from copy import copy
 from urllib.parse import urldefrag, urlparse
 
 from argus.contracts.models import CollectionRequest
+from argus.extraction.atomic_html import extract_atomic_html_blocks
 from argus.research.content_navigation import ContentItemNavigationRanker
 from argus.sources.base import SourceTask
 from argus.sources.office_web import OfficeAwareGenericWebAdapter
@@ -14,18 +15,19 @@ class ContentNavigationMixin:
 
     Search/listing URLs remain valid navigation surfaces. This mixin only changes fetch
     order so likely item destinations are reached before menu, category, search and login
-    shells consume a small serial-lane budget. URL ranking is never factual Evidence.
+    shells consume a small serial-lane budget. URL/HTML navigation classification is never
+    factual Evidence.
 
-    Mandatory source-contour entry pages use a stricter two-hop policy: an entry that is
-    already item-shaped does not fan out; an obvious listing may select one best item-like
+    Mandatory source-contour entry pages use a stricter two-hop policy. An entry that is
+    already item-shaped does not fan out. An obvious URL listing, or a semantically declared
+    HTML5 listing made of several linked ``article`` cards, may select one best item-like
     child (or one declared feed when no item link exists). The selected follow-up is terminal
     for in-page navigation. This keeps every independently discovered street/source entry
-    eligible for one factual item fetch instead of letting the first listing monopolize the
-    serial lane with menu and archive links.
+    eligible for one factual item fetch without letting one listing monopolize the lane.
     """
 
     content_navigation = ContentItemNavigationRanker()
-    serial_item_followup_version = "serial-item-followup/1"
+    serial_item_followup_version = "serial-item-followup/2"
 
     def _discovered_tasks(
         self,
@@ -74,7 +76,8 @@ class ContentNavigationMixin:
             return discovered
 
         page_url = str(fetched.final_url or task.url)
-        if not self.content_navigation.is_navigation_shell(page_url):
+        navigation_reason = self._source_contour_navigation_reason(page_url, fetched)
+        if navigation_reason is None:
             task.metadata["serial_item_followup_policy"] = self.serial_item_followup_version
             task.metadata["serial_item_followup_reason"] = "entry_is_item"
             return []
@@ -84,16 +87,24 @@ class ContentNavigationMixin:
             for child in discovered
             if child.source_id == self.source_id
             and not self.content_navigation.is_navigation_shell(child.url)
+            and int(child.metadata.get("content_navigation_score", 0) or 0) > 0
         ]
         feed_children = [
             child
             for child in discovered
             if child.source_id in {"rss_atom", "json_feed"}
         ]
-        selected = item_children[0] if item_children else feed_children[0] if feed_children else None
+        selected = (
+            item_children[0]
+            if item_children
+            else feed_children[0]
+            if feed_children
+            else None
+        )
         if selected is None:
             task.metadata["serial_item_followup_policy"] = self.serial_item_followup_version
             task.metadata["serial_item_followup_reason"] = "no_item_or_feed"
+            task.metadata["serial_item_followup_navigation_reason"] = navigation_reason
             return []
 
         selected.metadata["serial_item_followup_terminal"] = True
@@ -102,7 +113,22 @@ class ContentNavigationMixin:
         selected.metadata["serial_item_followup_kind"] = (
             "item" if selected.source_id == self.source_id else "feed"
         )
+        selected.metadata["serial_item_followup_navigation_reason"] = navigation_reason
         return [selected]
+
+    def _source_contour_navigation_reason(self, page_url: str, fetched) -> str | None:
+        if self.content_navigation.is_navigation_shell(page_url):
+            return "url_navigation_shell"
+        extraction = extract_atomic_html_blocks(
+            fetched.text,
+            content_type=fetched.content_type,
+            base_url=page_url,
+            max_items=1,
+            max_text_chars=1_000,
+        )
+        if extraction.navigation_cards_suppressed:
+            return "linked_article_listing_cards"
+        return None
 
     def _ranked_allowed_links(self, fetched, request: CollectionRequest):
         allowed = {
