@@ -72,9 +72,52 @@ def test_source_contour_listing_selects_one_terminal_item_before_feed() -> None:
         "https://example.org/news/2026/09/09/water-main-break-pushkinskaya"
     )
     assert selected.metadata["serial_item_followup_terminal"] is True
-    assert selected.metadata["serial_item_followup_policy"] == "serial-item-followup/1"
+    assert selected.metadata["serial_item_followup_policy"] == "serial-item-followup/2"
     assert selected.metadata["serial_item_followup_kind"] == "item"
     assert selected.metadata["serial_item_followup_parent_url"] == fetched.final_url
+    assert selected.metadata["serial_item_followup_navigation_reason"] == (
+        "url_navigation_shell"
+    )
+
+
+def test_semantic_article_cards_turn_opaque_city_section_into_listing() -> None:
+    adapter = object.__new__(AtomicContentWebAdapter)
+    adapter.sitemap_discovery_enabled = False
+    fetched = FetchResult(
+        url="https://example.org/izhevsk/",
+        final_url="https://example.org/izhevsk/",
+        status_code=200,
+        content_type="text/html",
+        text=(
+            "<html><body>"
+            '<article><h2><a href="/news/2026/09/09/pushkinskaya-water">'
+            "Авария на Пушкинской</a></h2><p>Краткая карточка новости.</p></article>"
+            '<article><h2><a href="/news/2026/09/08/road-repair">'
+            "Ремонт дороги</a></h2><p>Краткая карточка новости.</p></article>"
+            "</body></html>"
+        ),
+        links=[
+            "https://example.org/news/2026/09/09/pushkinskaya-water",
+            "https://example.org/news/2026/09/08/road-repair",
+            "https://example.org/weather",
+        ],
+    )
+
+    discovered = adapter._discovered_tasks(
+        _contour_task(fetched.final_url),
+        fetched,
+        _request(),
+        "collection-opaque-listing",
+    )
+
+    assert len(discovered) == 1
+    selected = discovered[0]
+    assert selected.url == "https://example.org/news/2026/09/09/pushkinskaya-water"
+    assert selected.metadata["serial_item_followup_terminal"] is True
+    assert selected.metadata["serial_item_followup_navigation_reason"] == (
+        "linked_article_listing_cards"
+    )
+    assert selected.metadata["content_navigation_score"] > 0
 
 
 def test_source_contour_item_entry_does_not_fan_out_again() -> None:
@@ -102,7 +145,7 @@ def test_source_contour_item_entry_does_not_fan_out_again() -> None:
     )
 
     assert discovered == []
-    assert task.metadata["serial_item_followup_policy"] == "serial-item-followup/1"
+    assert task.metadata["serial_item_followup_policy"] == "serial-item-followup/2"
     assert task.metadata["serial_item_followup_reason"] == "entry_is_item"
 
 
