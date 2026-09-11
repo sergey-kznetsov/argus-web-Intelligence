@@ -33,3 +33,8 @@ def test_standalone_deployment_uses_optional_fail_open_llm_profile() -> None:
     assert ".[stagehand]" in script
     assert ".[agent-browser-use]" in script
     assert '"-m", "pip", "check"' in script
+    assert '$apiReady = Invoke-WebRequest' in script
+    assert '$workerReady = Invoke-WebRequest' in script
+    assert '-Method Head' in script
+    assert '$apiReady.StatusCode -eq 200' in script
+    assert '$workerReady.StatusCode -eq 200' in script

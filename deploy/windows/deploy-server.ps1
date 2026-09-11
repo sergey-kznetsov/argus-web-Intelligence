@@ -269,9 +269,17 @@ function Wait-ArgusHealth {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         try {
+            $apiReady = Invoke-WebRequest `
+                -Uri "http://127.0.0.1:$ApiPort/v1/health" `
+                -Method Head `
+                -UseBasicParsing `
+                -TimeoutSec 5
+            $workerReady = Invoke-WebRequest `
+                -Uri "http://127.0.0.1:$WorkerProbePort/readyz" `
+                -UseBasicParsing `
+                -TimeoutSec 5
             $api = Invoke-RestMethod -Uri "http://127.0.0.1:$ApiPort/v1/health" -TimeoutSec 5
-            $worker = Invoke-RestMethod -Uri "http://127.0.0.1:$WorkerProbePort/readyz" -TimeoutSec 5
-            if ($api.status -eq "ok" -and $worker.status -eq "ok") {
+            if ($apiReady.StatusCode -eq 200 -and $workerReady.StatusCode -eq 200) {
                 Assert-ArgusListenersOwnedByRelease -Release $ExpectedRelease
                 return $api
             }
