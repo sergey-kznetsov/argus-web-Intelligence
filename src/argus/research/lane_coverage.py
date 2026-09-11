@@ -35,6 +35,30 @@ def _count(value: object) -> int:
     return 0
 
 
+def _street_inventory_rows(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes | bytearray):
+        return []
+    rows: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        rows.append(
+            {
+                "name": name,
+                "distance_meters": item.get("distance_meters"),
+                "relationship": item.get("relationship"),
+                "provider": item.get("provider"),
+                "observation_id": item.get("observation_id"),
+                "source_url": item.get("source_url"),
+                "geometry_basis": item.get("geometry_basis"),
+            }
+        )
+    return rows
+
+
 def _observation_lane(observation: Observation) -> tuple[str | None, str | None]:
     contour = _mapping(observation.provenance.get("source_contour"))
     contour_id = str(contour.get("contour_id") or "").strip() or None
@@ -301,6 +325,7 @@ def build_research_lane_coverage(
 
     street_inventory = _mapping(checkpoint.get("radius_street_inventory"))
     street_names = _strings(street_inventory.get("street_names"))
+    streets = _street_inventory_rows(street_inventory.get("streets"))
     street_count = len(street_names)
     source_contour_version = (
         str(checkpoint.get("source_contour_version") or "").strip() or None
@@ -376,6 +401,7 @@ def build_research_lane_coverage(
             or None,
             "street_count": street_count,
             "street_names": street_names,
+            "streets": streets,
             "source_contour_version": source_contour_version,
         },
         "counter_semantics": {

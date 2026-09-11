@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import asin, cos, radians, sin, sqrt
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 from argus.contracts.models import CollectionRequest, Observation
 
@@ -88,13 +88,13 @@ def _point_distance_meters(first, second) -> float:
     return 2 * 6_371_008.8 * asin(sqrt(min(1.0, haversine)))
 
 
-def nearby_radius_street_names(
+def nearby_radius_street_inventory(
     request: CollectionRequest,
     observations: Iterable[Observation],
     *,
     limit: int | None = 8,
-) -> list[str]:
-    """Return named OSM streets admitted by the request's spatial inventory.
+) -> list[dict[str, Any]]:
+    """Return evidence-backed OSM street records admitted by the radius inventory.
 
     The Overpass around query is the inclusion boundary. A returned way can intersect
     the circle while its representative centre lies outside it, so coordinates are used
@@ -113,7 +113,7 @@ def nearby_radius_street_names(
     ):
         return []
 
-    candidates: list[tuple[float, str, str]] = []
+    candidates: list[tuple[float, str, dict[str, Any]]] = []
     seen: set[str] = set()
     for observation in observations:
         if (
@@ -140,11 +140,49 @@ def nearby_radius_street_names(
             if observation.geo is not None
             else float("inf")
         )
-        candidates.append((distance, key, name))
+        candidates.append(
+            (
+                distance,
+                key,
+                {
+                    "name": name,
+                    "distance_meters": (
+                        round(distance, 3) if distance != float("inf") else None
+                    ),
+                    "relationship": "returned_by_radius_inventory",
+                    "provider": observation.source,
+                    "observation_id": observation.observation_id,
+                    "source_url": observation.url,
+                    "geometry_basis": (
+                        "representative_point_ordering_only"
+                        if observation.geo is not None
+                        else "overpass_radius_membership"
+                    ),
+                },
+            )
+        )
 
     candidates.sort(key=lambda item: (item[0], item[1]))
-    names = [name for _, _, name in candidates]
-    return names if limit is None else names[:limit]
+    rows = [row for _, _, row in candidates]
+    return rows if limit is None else rows[:limit]
+
+
+def nearby_radius_street_names(
+    request: CollectionRequest,
+    observations: Iterable[Observation],
+    *,
+    limit: int | None = 8,
+) -> list[str]:
+    """Return the stable name-only compatibility view of the street inventory."""
+
+    return [
+        str(item["name"])
+        for item in nearby_radius_street_inventory(
+            request,
+            observations,
+            limit=limit,
+        )
+    ]
 
 
 def radius_scope_text(

@@ -29,6 +29,26 @@ def _record(
         "radius_street_inventory": {
             "status": "completed",
             "street_names": ["Пушкинская улица", "Советская улица"],
+            "streets": [
+                {
+                    "name": "Пушкинская улица",
+                    "distance_meters": 12.5,
+                    "relationship": "returned_by_radius_inventory",
+                    "provider": "openstreetmap_overpass",
+                    "observation_id": "obs-street-1",
+                    "source_url": "https://www.openstreetmap.org/way/1",
+                    "geometry_basis": "representative_point_ordering_only",
+                },
+                {
+                    "name": "Советская улица",
+                    "distance_meters": None,
+                    "relationship": "returned_by_radius_inventory",
+                    "provider": "openstreetmap_overpass",
+                    "observation_id": "obs-street-2",
+                    "source_url": "https://www.openstreetmap.org/way/2",
+                    "geometry_basis": "overpass_radius_membership",
+                },
+            ],
         },
         "source_contours": {"official_government": source_state},
     }
@@ -68,6 +88,15 @@ def test_clean_legacy_lane_completion_does_not_invent_full_street_scope() -> Non
     row = _official_row(payload)
     scope = row["street_scope"]
     assert payload["version"] == "research-lane-coverage/4"
+    assert payload["territory_scope"]["streets"][0] == {
+        "name": "Пушкинская улица",
+        "distance_meters": 12.5,
+        "relationship": "returned_by_radius_inventory",
+        "provider": "openstreetmap_overpass",
+        "observation_id": "obs-street-1",
+        "source_url": "https://www.openstreetmap.org/way/1",
+        "geometry_basis": "representative_point_ordering_only",
+    }
     assert row["status"] == "partial"
     assert scope == {
         "expected": 2,

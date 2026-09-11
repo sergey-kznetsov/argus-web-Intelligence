@@ -9,7 +9,7 @@ from argus.history.snapshots import stage_snapshots
 from argus.normalization.public_map_provenance import classify_public_map_url
 from argus.orchestrator.evidence_status import EvidenceStatusAdaptiveResearchOrchestrator
 from argus.orchestrator.service import now
-from argus.research.radius_scope import nearby_radius_street_names
+from argus.research.radius_scope import nearby_radius_street_inventory
 from argus.research.source_contours import SourceContourResearchPlanner
 from argus.research_profiles import resolved_research_profile_from_request
 from argus.security.redaction import safe_error_message
@@ -199,11 +199,12 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
             self._adopt_record(record, latest)
 
         committed = await self.repository.list_observations(record.collection_id)
-        street_names = nearby_radius_street_names(
+        streets = nearby_radius_street_inventory(
             record.request,
             committed,
             limit=self.source_contour_planner.max_nearby_streets,
         )
+        street_names = [str(item["name"]) for item in streets]
         status = "completed" if lane_tasks else "unavailable"
         if lane_tasks and not street_names:
             status = "completed_without_named_streets"
@@ -214,6 +215,7 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
                 "version": self.radius_street_inventory_version,
                 "status": status,
                 "street_names": street_names,
+                "streets": streets,
                 **stats,
             },
             "pending_tasks": [self._task_dict(item) for item in deferred],
