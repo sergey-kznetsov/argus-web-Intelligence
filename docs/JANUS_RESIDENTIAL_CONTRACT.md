@@ -2,7 +2,7 @@
 
 ARGUS registers `janus.parking.potential.uds` as a bounded analytical consumer.
 
-The supported capability is `residential_facts` version 1. The only allowed fact in this capability is `residential_premises_count`.
+The supported capability is `residential_facts` version 1. This capability allows only `residential_premises_count`.
 
 The factual source remains `dom.mingkh.ru` through the existing `mingkh_residential` acquisition path. Janus cannot select arbitrary ARGUS source packs through this contract and ARGUS does not execute any parking calculations.
 
