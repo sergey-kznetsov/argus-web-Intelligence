@@ -229,7 +229,7 @@ CONSUMER_PROFILE_REGISTRY = ConsumerProfileRegistry(
             version=1,
             default_capability="residential_facts",
             capabilities=(JANUS_RESIDENTIAL_FACTS,),
-            description="Janus parking potential factual housing-data consumer.",
+            description="Janus parking potential residential-facts consumer.",
         ),
         ConsumerProfile(
             consumer_id="test",
@@ -239,39 +239,11 @@ CONSUMER_PROFILE_REGISTRY = ConsumerProfileRegistry(
                 ConsumerCapabilityProfile(
                     capability="generic_research",
                     allowed_facts=("*",),
-                    tool_pack_id="test.generic",
-                    description="CI/manual smoke profile; not a product consumer contract.",
+                    tool_pack_id="default",
+                    description="Compatibility profile for the historical test consumer.",
                 ),
             ),
-            description="Internal ARGUS CI and manual smoke consumer.",
+            description="Compatibility profile for tests and generic integration checks.",
         ),
     )
 )
-
-
-def consumer_profile_catalog() -> list[dict[str, object]]:
-    """Return a stable JSON-ready registry description for documentation/introspection."""
-
-    result: list[dict[str, object]] = []
-    for profile in CONSUMER_PROFILE_REGISTRY.all():
-        result.append(
-            {
-                "consumer_id": profile.consumer_id,
-                "version": profile.version,
-                "default_capability": profile.default_capability,
-                "description": profile.description,
-                "capabilities": [
-                    {
-                        "capability": capability.capability,
-                        "allowed_facts": list(capability.allowed_facts),
-                        "default_requested_facts": list(
-                            capability.default_requested_facts
-                        ),
-                        "tool_pack_id": capability.tool_pack_id,
-                        "description": capability.description,
-                    }
-                    for capability in profile.capabilities
-                ],
-            }
-        )
-    return result
