@@ -204,6 +204,17 @@ KRAKEN_URBAN_SIGNALS = ConsumerCapabilityProfile(
     ),
 )
 
+JANUS_RESIDENTIAL_FACTS = ConsumerCapabilityProfile(
+    capability="residential_facts",
+    allowed_facts=("residential_premises_count",),
+    tool_pack_id="janus.residential_facts",
+    default_requested_facts=("residential_premises_count",),
+    description=(
+        "Source-declared apartment/residential-premises counts used by Janus parking "
+        "potential. ARGUS acquires facts; Janus performs the downstream calculation."
+    ),
+)
+
 CONSUMER_PROFILE_REGISTRY = ConsumerProfileRegistry(
     (
         ConsumerProfile(
@@ -212,6 +223,13 @@ CONSUMER_PROFILE_REGISTRY = ConsumerProfileRegistry(
             default_capability="urban_signals",
             capabilities=(KRAKEN_URBAN_SIGNALS,),
             description="Kraken Development UDS spatial-semantic urban signal analysis.",
+        ),
+        ConsumerProfile(
+            consumer_id="janus.parking.potential.uds",
+            version=1,
+            default_capability="residential_facts",
+            capabilities=(JANUS_RESIDENTIAL_FACTS,),
+            description="Janus parking potential factual housing-data consumer.",
         ),
         ConsumerProfile(
             consumer_id="test",
