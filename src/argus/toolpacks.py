@@ -27,11 +27,7 @@ class ToolPackSourceDeniedError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ToolPack:
-    """Versioned execution policy for one consumer capability.
-
-    Tool packs select ARGUS tooling; they do not contain downstream analytical logic.
-    Shared crawler runtimes, Evidence/Provenance, storage and security remain in ARGUS Core.
-    """
+    """Versioned execution policy for one consumer capability."""
 
     tool_pack_id: str
     version: int
@@ -219,6 +215,26 @@ KRAKEN_URBAN_SIGNALS_TOOL_PACK = ToolPack(
     ),
 )
 
+JANUS_RESIDENTIAL_FACTS_TOOL_PACK = ToolPack(
+    tool_pack_id="janus.residential_facts",
+    version=1,
+    consumer_id="janus.parking.potential.uds",
+    capability="residential_facts",
+    allowed_source_ids=(
+        "mingkh_residential",
+        "site_discovery",
+        "generic_web",
+    ),
+    planner_policy="universal",
+    recipe_namespace="janus.residential_facts",
+    extractor_policy="residential_facts",
+    result_delivery_policy="intent_evidence",
+    description=(
+        "Bounded source-scoped acquisition of apartment/residential-premises counts from "
+        "dom.mingkh.ru for Janus. No parking calculations are performed by ARGUS."
+    ),
+)
+
 TEST_GENERIC_TOOL_PACK = ToolPack(
     tool_pack_id="test.generic",
     version=1,
@@ -234,9 +250,11 @@ TEST_GENERIC_TOOL_PACK = ToolPack(
 TOOL_PACK_REGISTRY = ToolPackRegistry(
     (
         KRAKEN_URBAN_SIGNALS_TOOL_PACK,
+        JANUS_RESIDENTIAL_FACTS_TOOL_PACK,
         TEST_GENERIC_TOOL_PACK,
     )
 )
+
 
 _ACTIVE_TOOL_PACK: ContextVar[ResolvedToolPack | None] = ContextVar(
     "argus_active_tool_pack",
@@ -246,8 +264,6 @@ _ACTIVE_TOOL_PACK: ContextVar[ResolvedToolPack | None] = ContextVar(
 
 @contextmanager
 def activate_tool_pack(pack: ResolvedToolPack | None) -> Iterator[None]:
-    """Activate one collection's tool pack without leaking across async tasks."""
-
     token = _ACTIVE_TOOL_PACK.set(pack)
     try:
         yield
