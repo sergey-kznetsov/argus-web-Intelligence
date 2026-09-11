@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from argus.config import Settings
 from argus.contracts.models import PROTOCOL_VERSION
 from argus.research.source_contours import SourceContourResearchPlanner
+from argus.research_profiles import research_profile_catalog
 
 OPERATIONAL_AGENT_BACKENDS: tuple[str, ...] = (
     "ollama-recipe",
@@ -95,10 +96,13 @@ def runtime_capabilities(
                 "keep_alive_seconds": settings.ollama_keep_alive_seconds,
             },
         },
+        "research_profiles": research_profile_catalog(),
         "source_contours": {
             "version": contour_planner.version,
             "policies": {
-                "urban_signals": contour_planner.catalog("urban_signals"),
+                item["profile_id"]: contour_planner.catalog(str(item["profile_id"]))
+                for item in research_profile_catalog()
+                if item["source_families"]
             },
         },
         "request_contract": {

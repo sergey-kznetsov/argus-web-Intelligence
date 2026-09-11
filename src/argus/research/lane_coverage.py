@@ -7,6 +7,7 @@ from typing import Any
 from argus.contracts.models import CollectionRecord, Evidence, Observation
 from argus.research.public_map_sources import PUBLIC_MAP_SOURCES
 from argus.research.source_contours import URBAN_SIGNAL_SOURCE_CONTOURS
+from argus.research_profiles import resolved_research_profile_from_request
 
 RESEARCH_LANE_COVERAGE_VERSION = "research-lane-coverage/4"
 SOURCE_CONTOUR_IDS = tuple(profile.contour_id for profile in URBAN_SIGNAL_SOURCE_CONTOURS)
@@ -260,7 +261,7 @@ def build_research_lane_coverage(
     observations: Sequence[Observation],
     evidence: Sequence[Evidence],
 ) -> dict[str, object]:
-    """Build deterministic 7+3 diagnostics from serial-lane checkpoint + provenance.
+    """Build deterministic profile-lane diagnostics from checkpoint + provenance.
 
     This is operational telemetry only. It does not create Evidence, change factual source
     semantics, or replace the existing per-task ``SourceCoverage`` contract.
@@ -269,8 +270,20 @@ def build_research_lane_coverage(
     checkpoint = record.checkpoint
     source_states = _mapping(checkpoint.get("source_contours"))
     map_states = _mapping(checkpoint.get("serial_public_map_lanes"))
+    research_profile = resolved_research_profile_from_request(record.request)
+    source_contour_ids = (
+        research_profile.source_family_ids
+        if research_profile is not None
+        else tuple(source_states)
+    )
+    public_map_ids = (
+        research_profile.public_map_ids
+        if research_profile is not None
+        else tuple(map_states)
+    )
     applicable = (
-        record.request.capability == "urban_signals"
+        bool(source_contour_ids)
+        or bool(public_map_ids)
         or bool(source_states)
         or bool(map_states)
     )
@@ -313,7 +326,7 @@ def build_research_lane_coverage(
             evidence_maps[provider] += 1
 
     rows: list[dict[str, object]] = []
-    for contour_id in SOURCE_CONTOUR_IDS:
+    for contour_id in source_contour_ids:
         raw_state = _mapping(source_states.get(contour_id))
         state = _source_state_with_street_scope(
             raw_state,
@@ -332,7 +345,7 @@ def build_research_lane_coverage(
         )
 
     public_map_queries = _strings(checkpoint.get("public_map_queries"))
-    for provider in PUBLIC_MAP_IDS:
+    for provider in public_map_ids:
         state = _mapping(map_states.get(provider))
         query_count = 0
         if provider == "yandex_maps_web":
@@ -354,10 +367,10 @@ def build_research_lane_coverage(
         "version": RESEARCH_LANE_COVERAGE_VERSION,
         "collection_id": record.collection_id,
         "applicable": True,
-        "expected_lanes": len(SOURCE_CONTOUR_IDS) + len(PUBLIC_MAP_IDS),
+        "expected_lanes": len(source_contour_ids) + len(public_map_ids),
         "reported_lanes": len(rows),
         "complete": complete,
-        "strict_order": [*SOURCE_CONTOUR_IDS, *PUBLIC_MAP_IDS],
+        "strict_order": [*source_contour_ids, *public_map_ids],
         "territory_scope": {
             "street_inventory_status": str(street_inventory.get("status") or "").strip()
             or None,

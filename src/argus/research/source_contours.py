@@ -9,6 +9,7 @@ from argus.research.radius_scope import (
     radius_scope_text,
     radius_street_text,
 )
+from argus.research_profiles import RESEARCH_PROFILE_REGISTRY
 
 
 _CURATED_NON_OFFICIAL_ROOTS = (
@@ -153,6 +154,10 @@ URBAN_SIGNAL_SOURCE_CONTOURS: tuple[SourceContourProfile, ...] = (
     ),
 )
 
+SOURCE_CONTOUR_REGISTRY = {
+    profile.contour_id: profile for profile in URBAN_SIGNAL_SOURCE_CONTOURS
+}
+
 
 class SourceContourResearchPlanner:
     """Build independent public-source discovery lanes for a planner policy.
@@ -179,7 +184,13 @@ class SourceContourResearchPlanner:
         max_nearby_streets: int | None = None,
     ) -> None:
         self.policy_profiles = policy_profiles or {
-            "urban_signals": URBAN_SIGNAL_SOURCE_CONTOURS,
+            profile.profile_id: tuple(
+                SOURCE_CONTOUR_REGISTRY[family_id]
+                for family_id in profile.source_family_ids
+                if family_id in SOURCE_CONTOUR_REGISTRY
+            )
+            for profile in RESEARCH_PROFILE_REGISTRY.all()
+            if profile.source_family_ids
         }
         self.max_query_chars = max(64, int(max_query_chars))
         self.max_nearby_streets = (

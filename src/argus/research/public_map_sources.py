@@ -12,7 +12,7 @@ from argus.research.radius_scope import (
     radius_street_text,
 )
 from argus.sources.base import SourceTask
-from argus.toolpacks import resolved_tool_pack_from_request
+from argus.research_profiles import resolved_research_profile_from_request
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,7 +203,11 @@ class PublicMapSourceResearchPlanner:
 
         if result:
             return result
-        territory = radius_scope_text(request) if self._is_urban_signals(request) else self._territory_text(request)
+        territory = (
+            radius_scope_text(request)
+            if self._uses_radius_scope(request)
+            else self._territory_text(request)
+        )
         return [territory] if territory else []
 
     def queries(
@@ -232,7 +236,7 @@ class PublicMapSourceResearchPlanner:
         suffix = self._suffix(
             remaining_intents,
             language,
-            public_ugc_navigation=self._is_urban_signals(request),
+            public_ugc_navigation=self._uses_public_ugc_navigation(request),
         )
 
         result: list[str] = []
@@ -297,7 +301,7 @@ class PublicMapSourceResearchPlanner:
             for intent in request.intents
             if intent in self.supported_intents
         ]
-        if self._is_urban_signals(request):
+        if self._uses_public_ugc_navigation(request):
             requested = [intent for intent in requested if intent != "reviews"]
         return list(dict.fromkeys(requested))
 
@@ -309,8 +313,8 @@ class PublicMapSourceResearchPlanner:
         values: list[str] = []
         seen: set[str] = set()
 
-        urban_signals = self._is_urban_signals(request)
-        if urban_signals:
+        radius_scope = self._uses_radius_scope(request)
+        if radius_scope:
             city = (request.territory.city or "").strip()
             street_names: list[str] = []
             trusted_street = radius_street_text(request)
@@ -331,7 +335,7 @@ class PublicMapSourceResearchPlanner:
 
         territory = (
             radius_scope_text(request)
-            if urban_signals
+            if radius_scope
             else self._territory_text(request)
         )
         if territory and territory.casefold() not in seen:
@@ -476,6 +480,11 @@ class PublicMapSourceResearchPlanner:
         )
 
     @staticmethod
-    def _is_urban_signals(request: CollectionRequest) -> bool:
-        pack = resolved_tool_pack_from_request(request)
-        return pack is not None and pack.planner_policy == "urban_signals"
+    def _uses_radius_scope(request: CollectionRequest) -> bool:
+        profile = resolved_research_profile_from_request(request)
+        return profile is not None and profile.radius_scope_queries
+
+    @staticmethod
+    def _uses_public_ugc_navigation(request: CollectionRequest) -> bool:
+        profile = resolved_research_profile_from_request(request)
+        return profile is not None and profile.public_ugc_navigation

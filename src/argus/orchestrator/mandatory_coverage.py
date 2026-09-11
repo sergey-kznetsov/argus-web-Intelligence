@@ -5,15 +5,15 @@ from argus.orchestrator.toolpack_aware import (
     ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator,
 )
 from argus.research.lane_coverage import build_research_lane_coverage
-from argus.toolpacks import resolved_tool_pack_from_request
+from argus.research_profiles import resolved_research_profile_from_request
 
 
 class MandatoryCoverageToolPackOrchestrator(
     ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator
 ):
-    """Keep mandatory urban coverage complete while bounding optional deep research.
+    """Execute each profile's mandatory lanes before bounded optional research.
 
-    Source-family and public-map lanes are mandatory for ``urban_signals`` and therefore
+    Source-family and public-map lanes are selected by a declarative profile and therefore
     cannot share the old collection-wide page/time budget. During that serial phase ARGUS
     uses only an emergency ceiling while each source lane remains independently bounded.
 
@@ -35,7 +35,7 @@ class MandatoryCoverageToolPackOrchestrator(
     async def _run(self, collection_id: str) -> None:
         record = await self.repository.get_collection(collection_id)
         if record is not None:
-            await self._apply_urban_signal_execution_guard(record)
+            await self._apply_research_profile_execution_guard(record)
         await super()._run(collection_id)
 
     async def _discover_uncovered_intents(
@@ -44,10 +44,14 @@ class MandatoryCoverageToolPackOrchestrator(
         pending,
         uncovered_intents,
     ):
-        """Run mandatory urban lanes once, then hand only bounded work to collection crawl."""
+        """Apply the active profile's generic-discovery policy after mandatory lanes."""
 
-        pack = resolved_tool_pack_from_request(record.request)
-        if pack is None or pack.planner_policy != "urban_signals":
+        profile = resolved_research_profile_from_request(record.request)
+        if (
+            profile is None
+            or not profile.completion_policy.has_mandatory_lanes
+            or not profile.completion_policy.skip_generic_discovery_after_mandatory
+        ):
             return await super()._discover_uncovered_intents(
                 record,
                 pending,
@@ -67,8 +71,8 @@ class MandatoryCoverageToolPackOrchestrator(
     async def _prepare_research(self, record, pending):
         """Run mandatory lanes even when seeds cover every intent or a plan is resumed."""
 
-        pack = resolved_tool_pack_from_request(record.request)
-        if pack is None or pack.planner_policy != "urban_signals":
+        profile = resolved_research_profile_from_request(record.request)
+        if profile is None or not profile.completion_policy.has_mandatory_lanes:
             return await super()._prepare_research(record, pending)
 
         pending = await self._run_pre_contour_street_inventory(record, pending)
@@ -127,8 +131,12 @@ class MandatoryCoverageToolPackOrchestrator(
     async def _run_serial_public_maps(self, record, pending):
         """Traverse every radius street through each mandatory public-map provider."""
 
-        pack = resolved_tool_pack_from_request(record.request)
-        if pack is None or pack.planner_policy != "urban_signals":
+        profile = resolved_research_profile_from_request(record.request)
+        if (
+            profile is None
+            or not profile.completion_policy.mandatory_public_maps
+            or not profile.public_map_street_scope
+        ):
             return await super()._run_serial_public_maps(record, pending)
 
         planner = self.public_map_source_planner
@@ -152,7 +160,12 @@ class MandatoryCoverageToolPackOrchestrator(
             await self.repository.update_collection(record)
             return pending
 
-        providers = [profile.source_id for profile in planner.sources]
+        configured_providers = set(profile.public_map_ids)
+        providers = [
+            item.source_id
+            for item in planner.sources
+            if item.source_id in configured_providers
+        ]
         states_raw = record.checkpoint.get("serial_public_map_lanes")
         states = dict(states_raw) if isinstance(states_raw, dict) else {}
         serial_state = self._serial_state(record, order=providers, kind="public_map")
@@ -312,9 +325,9 @@ class MandatoryCoverageToolPackOrchestrator(
         await self.repository.update_collection(record)
         return pending
 
-    async def _apply_urban_signal_execution_guard(self, record) -> bool:
-        pack = resolved_tool_pack_from_request(record.request)
-        if pack is None or pack.planner_policy != "urban_signals":
+    async def _apply_research_profile_execution_guard(self, record) -> bool:
+        profile = resolved_research_profile_from_request(record.request)
+        if profile is None or not profile.completion_policy.has_mandatory_lanes:
             return False
 
         existing_guard = record.checkpoint.get("mandatory_coverage")
@@ -334,42 +347,41 @@ class MandatoryCoverageToolPackOrchestrator(
                 constraints.max_duration_seconds,
             )
         )
+        completion = profile.completion_policy
         effective = constraints.model_copy(
             update={
-                "max_pages": self.emergency_max_pages,
-                "max_duration_seconds": self.emergency_max_duration_seconds,
+                "max_pages": completion.emergency_max_pages,
+                "max_duration_seconds": completion.emergency_max_duration_seconds,
             }
         )
         record.request = record.request.model_copy(update={"constraints": effective})
 
         contour_ids = [
             str(item.get("contour_id") or "").strip()
-            for item in self.source_contour_planner.catalog(pack.planner_policy)
+            for item in self.source_contour_planner.catalog(profile.profile_id)
             if str(item.get("contour_id") or "").strip()
         ]
-        map_provider_ids = (
-            [item.source_id for item in self.public_map_source_planner.sources]
-            if self.public_map_source_planner is not None
-            else []
-        )
+        map_provider_ids = list(profile.public_map_ids)
         record.checkpoint = {
             **record.checkpoint,
             "mandatory_coverage": {
                 **existing_guard,
                 "version": self.mandatory_coverage_version,
-                "policy": "all_source_contours_then_all_public_maps",
+                "research_profile_id": profile.profile_id,
+                "research_profile_version": profile.version,
+                "policy": "profile_source_families_then_public_maps",
                 "phase": "mandatory",
                 "mandatory_complete": False,
                 "collection_limits_semantics": "mandatory_emergency_optional_bounded",
                 "requested_max_pages": requested_max_pages,
                 "requested_max_duration_seconds": requested_max_duration_seconds,
-                "effective_emergency_max_pages": self.emergency_max_pages,
+                "effective_emergency_max_pages": completion.emergency_max_pages,
                 "effective_emergency_max_duration_seconds": (
-                    self.emergency_max_duration_seconds
+                    completion.emergency_max_duration_seconds
                 ),
-                "post_mandatory_optional_pages": self.post_mandatory_optional_pages,
+                "post_mandatory_optional_pages": completion.optional_pages,
                 "post_mandatory_optional_duration_seconds": (
-                    self.post_mandatory_optional_duration_seconds
+                    completion.optional_duration_seconds
                 ),
                 "source_contours": contour_ids,
                 "public_map_providers": map_provider_ids,
@@ -381,13 +393,25 @@ class MandatoryCoverageToolPackOrchestrator(
         await self.repository.update_collection(record)
         return True
 
+    async def _apply_urban_signal_execution_guard(self, record) -> bool:
+        """Compatibility alias for older integrations and regression tests."""
+
+        return await self._apply_research_profile_execution_guard(record)
+
     async def _activate_post_mandatory_budget(self, record) -> bool:
-        pack = resolved_tool_pack_from_request(record.request)
-        if pack is None or pack.planner_policy != "urban_signals":
+        profile = resolved_research_profile_from_request(record.request)
+        if profile is None or not profile.completion_policy.has_mandatory_lanes:
             return False
-        if record.checkpoint.get("source_contours_complete") is not True:
+        completion = profile.completion_policy
+        if (
+            completion.mandatory_source_families
+            and record.checkpoint.get("source_contours_complete") is not True
+        ):
             return False
-        if record.checkpoint.get("serial_public_map_complete") is not True:
+        if (
+            completion.mandatory_public_maps
+            and record.checkpoint.get("serial_public_map_complete") is not True
+        ):
             return False
 
         raw_guard = record.checkpoint.get("mandatory_coverage")
@@ -406,13 +430,13 @@ class MandatoryCoverageToolPackOrchestrator(
         visited = record.checkpoint.get("visited", [])
         visited_count = len(visited) if isinstance(visited, list) else 0
         total_page_ceiling = min(
-            self.emergency_max_pages,
-            visited_count + self.post_mandatory_optional_pages,
+            completion.emergency_max_pages,
+            visited_count + completion.optional_pages,
         )
         effective = record.request.constraints.model_copy(
             update={
                 "max_pages": max(1, total_page_ceiling),
-                "max_duration_seconds": self.post_mandatory_optional_duration_seconds,
+                "max_duration_seconds": completion.optional_duration_seconds,
             }
         )
         record.request = record.request.model_copy(update={"constraints": effective})
@@ -428,9 +452,9 @@ class MandatoryCoverageToolPackOrchestrator(
                 "mandatory_complete": True,
                 "mandatory_processed_pages": visited_count,
                 "effective_post_mandatory_max_pages": int(effective.max_pages),
-                "post_mandatory_optional_pages": self.post_mandatory_optional_pages,
+                "post_mandatory_optional_pages": completion.optional_pages,
                 "post_mandatory_optional_duration_seconds": (
-                    self.post_mandatory_optional_duration_seconds
+                    completion.optional_duration_seconds
                 ),
                 "optional_started_at": optional_started_at.isoformat(),
             },
@@ -441,12 +465,12 @@ class MandatoryCoverageToolPackOrchestrator(
 
     @classmethod
     def _execution_budget_exhausted(cls, record) -> bool:
-        pack = resolved_tool_pack_from_request(record.request)
+        profile = resolved_research_profile_from_request(record.request)
         raw_guard = record.checkpoint.get("mandatory_coverage")
         guard = raw_guard if isinstance(raw_guard, dict) else {}
         if (
-            pack is not None
-            and pack.planner_policy == "urban_signals"
+            profile is not None
+            and profile.completion_policy.has_mandatory_lanes
             and guard.get("mandatory_complete") is not True
         ):
             # Mandatory serial lanes must never be skipped because an earlier lane used a

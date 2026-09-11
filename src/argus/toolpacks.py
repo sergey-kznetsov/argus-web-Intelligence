@@ -231,10 +231,29 @@ TEST_GENERIC_TOOL_PACK = ToolPack(
     description="Internal CI/manual smoke tool pack; not a product consumer pack.",
 )
 
+TEST_PUBLIC_CONTEXT_TOOL_PACK = ToolPack(
+    tool_pack_id="test.public_context",
+    version=1,
+    consumer_id="test",
+    capability="public_context",
+    allowed_source_ids=(
+        "generic_web",
+        "rss_atom",
+        "json_feed",
+        "site_discovery",
+    ),
+    planner_policy="test_public_context",
+    recipe_namespace="test.public_context",
+    extractor_policy="generic_research",
+    result_delivery_policy="intent_evidence",
+    description="CI profile proving declarative reuse of existing source capabilities.",
+)
+
 TOOL_PACK_REGISTRY = ToolPackRegistry(
     (
         KRAKEN_URBAN_SIGNALS_TOOL_PACK,
         TEST_GENERIC_TOOL_PACK,
+        TEST_PUBLIC_CONTEXT_TOOL_PACK,
     )
 )
 

@@ -28,6 +28,27 @@ def test_bootstrap_exposes_hybrid_runtime_without_claiming_model_output_as_evide
     assert research["backend"] == "local_llm_with_deterministic_fallback"
     assert research["model_output_is_evidence"] is False
     assert research["semantic_exact_excerpt_classifier"] is True
+    profiles = {
+        item["profile_id"]: item for item in capabilities["research_profiles"]
+    }
+    assert profiles["urban_signals"]["source_families"] == [
+        "official_government",
+        "public_appeals",
+        "housing_utilities",
+        "local_forums",
+        "local_media",
+        "public_communities",
+        "general_web",
+    ]
+    assert profiles["urban_signals"]["public_maps"] == [
+        "yandex_maps_web",
+        "2gis_web",
+        "google_maps_web",
+    ]
+    assert profiles["test_public_context"]["source_families"] == [
+        "official_government",
+        "local_media",
+    ]
 
 
 def test_windows_deployment_contains_ollama_cpu_tuning_tool() -> None:

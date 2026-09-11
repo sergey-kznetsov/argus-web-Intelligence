@@ -6,7 +6,7 @@ from argus.contracts.models import CollectionRequest, Observation
 from argus.orchestrator.observed_atomic import ObservedAtomicCollectionOrchestrator
 from argus.research.entities import AreaEntityResearchPlanner
 from argus.sources.base import SourceTask
-from argus.toolpacks import resolved_tool_pack_from_request
+from argus.research_profiles import resolved_research_profile_from_request
 
 
 class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator):
@@ -68,9 +68,12 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
         if self.discovery is None or self.area_entity_planner is None:
             return
 
-        pack = resolved_tool_pack_from_request(record.request)
-        urban_signals = pack is not None and pack.planner_policy == "urban_signals"
-        if not observations and not urban_signals:
+        research_profile = resolved_research_profile_from_request(record.request)
+        streets_only = (
+            research_profile is not None
+            and research_profile.area_entity_mode == "verified_streets_only"
+        )
+        if not observations and not streets_only:
             return
 
         raw_depth = task.metadata.get("area_branch_depth", 0)
@@ -104,7 +107,7 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
                 record.request,
                 observations,
             )
-            if urban_signals:
+            if streets_only:
                 # Urban-signals research must expand across the geometry, not across every
                 # nearby business. Only source-backed street/highway observations are allowed
                 # to become additional research subjects; ordinary POIs remain context only.
@@ -160,7 +163,7 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
             branch_task.metadata["area_branch_from"] = task.url
             branch_task.metadata["area_entity_queries"] = list(queries)
             branch_task.metadata["area_spatial_mode"] = (
-                "verified_streets_only" if urban_signals else "verified_entities"
+                "verified_streets_only" if streets_only else "verified_entities"
             )
             if entity_proofs:
                 branch_task.metadata["area_entity_proofs"] = entity_proofs
@@ -170,7 +173,7 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
             **record.checkpoint,
             "area_entity_queries": sorted(seen_queries),
             "area_spatial_mode": (
-                "verified_streets_only" if urban_signals else "verified_entities"
+                "verified_streets_only" if streets_only else "verified_entities"
             ),
             "area_spatial_entity_queries": len(entity_queries),
             "execution_budget_version": self.execution_budget_version,
@@ -275,8 +278,8 @@ class AreaAwareAtomicCollectionOrchestrator(ObservedAtomicCollectionOrchestrator
     ) -> list[str]:
         if limit <= 0:
             return []
-        pack = resolved_tool_pack_from_request(request)
-        if pack is None or pack.planner_policy != "urban_signals":
+        research_profile = resolved_research_profile_from_request(request)
+        if research_profile is None or not research_profile.radius_scope_queries:
             return []
         raw_street = request.territory.metadata.get("street")
         if not isinstance(raw_street, str) or not raw_street.strip():

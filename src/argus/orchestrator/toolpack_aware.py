@@ -11,6 +11,7 @@ from argus.orchestrator.evidence_status import EvidenceStatusAdaptiveResearchOrc
 from argus.orchestrator.service import now
 from argus.research.radius_scope import nearby_radius_street_names
 from argus.research.source_contours import SourceContourResearchPlanner
+from argus.research_profiles import resolved_research_profile_from_request
 from argus.security.redaction import safe_error_message
 from argus.sources.base import SourceTask
 from argus.toolpacks import (
@@ -34,7 +35,7 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
     never branches on consumer IDs: Kraken's broad stream is one policy, while Janus,
     Historical and future consumers can keep different result policies.
 
-    For source-family policies such as ``urban_signals`` the seven public-source contours
+    For profiles with source-family capabilities, the configured public-source contours
     are executed as strict serial research lanes. One lane completes its bounded
     DISCOVER -> FETCH -> EXTRACT -> NORMALIZE -> EVIDENCE/PROVENANCE -> COMMIT cycle before
     discovery for the next lane begins. Public map providers then run in the same serial
@@ -66,6 +67,7 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
             return
 
         pack = resolved_tool_pack_from_request(record.request)
+        research_profile = resolved_research_profile_from_request(record.request)
         if pack is not None:
             record.checkpoint = {
                 **record.checkpoint,
@@ -78,6 +80,17 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
                     "tool_pack_id": pack.tool_pack_id,
                     "tool_pack_version": pack.version,
                     "planner_policy": pack.planner_policy,
+                    "research_profile": (
+                        {
+                            "profile_id": research_profile.profile_id,
+                            "version": research_profile.version,
+                            "capabilities": list(research_profile.capability_ids),
+                            "source_families": list(research_profile.source_family_ids),
+                            "public_maps": list(research_profile.public_map_ids),
+                        }
+                        if research_profile is not None
+                        else None
+                    ),
                     "recipe_namespace": pack.recipe_namespace,
                     "extractor_policy": pack.extractor_policy,
                     "result_delivery_policy": pack.result_delivery_policy,
@@ -139,9 +152,11 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
 
         territory = record.request.territory
         pack = active_tool_pack()
+        research_profile = resolved_research_profile_from_request(record.request)
         spatial_request = (
             pack is not None
-            and pack.planner_policy == "urban_signals"
+            and research_profile is not None
+            and research_profile.street_inventory
             and territory.point is not None
             and territory.radius_meters is not None
         )
@@ -386,6 +401,7 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
 
     async def _run_serial_public_maps(self, record, pending):
         planner = self.public_map_source_planner
+        research_profile = resolved_research_profile_from_request(record.request)
         if (
             planner is None
             or self.discovery is None
@@ -405,7 +421,26 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
             await self.repository.update_collection(record)
             return pending
 
-        providers = [profile.source_id for profile in planner.sources]
+        configured_providers = (
+            set(research_profile.public_map_ids)
+            if research_profile is not None
+            else None
+        )
+        providers = [
+            profile.source_id
+            for profile in planner.sources
+            if configured_providers is None or profile.source_id in configured_providers
+        ]
+        if not providers:
+            record.checkpoint = {
+                **record.checkpoint,
+                "serial_public_map_complete": True,
+                "serial_public_map_version": self.serial_public_map_lane_version,
+                "serial_public_map_lanes": {},
+            }
+            record.updated_at = now()
+            await self.repository.update_collection(record)
+            return pending
         states_raw = record.checkpoint.get("serial_public_map_lanes")
         states = dict(states_raw) if isinstance(states_raw, dict) else {}
         serial_state = self._serial_state(record, order=providers, kind="public_map")
@@ -905,7 +940,11 @@ class ToolPackAwareEvidenceStatusAdaptiveResearchOrchestrator(
             return 0
         if not any(intent in planner.supported_intents for intent in record.request.intents):
             return 0
-        return len(planner.sources)
+        research_profile = resolved_research_profile_from_request(record.request)
+        if research_profile is None:
+            return len(planner.sources)
+        configured = set(research_profile.public_map_ids)
+        return sum(1 for item in planner.sources if item.source_id in configured)
 
     @staticmethod
     def _execution_budget_exhausted(record) -> bool:

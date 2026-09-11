@@ -67,14 +67,27 @@ research plan
 
 Stagehand и Browser Use имеют несовместимые обязательные версии `websockets`, поэтому серверная установка создаёт два проверяемых `pip check` окружения: основной venv со Stagehand и изолированный venv Browser Use. Общий worker всё равно применяет единый последовательный порядок и удерживает глобальный LLM-слот во время изолированного вызова. Подробности: [`docs/LLM_AGENT_RUNTIME.md`](docs/LLM_AGENT_RUNTIME.md).
 
-## Consumer profiles и Tool Packs
+## Consumer profiles, Tool Packs и Research Profiles
 
 ARGUS остаётся единым backend, но исследовательский контракт зависит от зарегистрированного consumer profile. Выбор делается через декларативные `ConsumerProfileRegistry` и `ToolPackRegistry`, а не через бизнес-ветки вида `if consumer == "kraken"`.
+
+`ResearchProfileRegistry` составляет выполнение из повторно используемых capabilities. Профиль декларативно определяет source families, map providers, необходимость инвентаризации улиц, строгий порядок обязательных линий и bounded optional budget. Orchestrator читает эти данные и не содержит веток по имени consumer или module.
+
+Цепочка разрешения контракта:
+
+```text
+Consumer capability
+  -> Tool Pack
+  -> Research Profile
+  -> reusable capabilities
+  -> source families / public maps / adapters / completion policy
+```
 
 Сейчас зарегистрированы:
 
 - `kraken.development.uds`, profile version `1`, capability `urban_signals`;
-- `test`, profile version `1`, capability `generic_research` — только для CI/manual smoke.
+- `test`, profile version `1`, capability `generic_research` — только для CI/manual smoke;
+- `test`, capability `public_context` — искусственный contract-test профиль из существующих `official_government` и `local_media`, доказывающий подключение новой комбинации без изменения orchestrator.
 
 Для Kraken допустимые `requested_facts`:
 
@@ -90,7 +103,9 @@ incident_mention
 
 Отзывы заведений (`review`) не входят в текущий factual contract Kraken. Публичные карты могут использоваться как территориальный и навигационный контекст, но их information-only observations не передаются Kraken как обычные предметные сообщения; соответствующий Evidence сохраняется отдельно.
 
-Для `urban_signals` действует обязательный исследовательский контур: ARGUS выполняет обязательные source-contour проходы, затем обязательные публичные карты, и только после этого переходит к ограниченному optional research. На текущей версии `mandatory-coverage/5` эти обязательные линии запускаются даже если seed URL уже формально покрывает intents или коллекция восстановлена из checkpoint.
+Для `urban_signals` действует декларативный обязательный исследовательский контур: ARGUS выполняет обязательные source-contour проходы, затем обязательные публичные карты, и только после этого переходит к ограниченному optional research. На текущей версии `mandatory-coverage/5` эти обязательные линии запускаются даже если seed URL уже формально покрывает intents или коллекция восстановлена из checkpoint.
+
+Добавление нового сценария на уже существующих источниках требует зарегистрировать consumer capability/Tool Pack и собрать новый Research Profile из capabilities. Менять общий orchestrator при этом не требуется. Новый adapter нужен только при появлении нового класса источника.
 
 Для публичных карт обязательная логика проходит все улицы, попавшие в радиус территории, по каждому включённому map-provider, а не ограничивается только исходным адресом. Состояние обязательных линий публикуется как `research_lane_coverage` в result API.
 
