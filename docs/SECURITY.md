@@ -64,9 +64,11 @@ Chromium всё равно исполняет недоверенный public Ja
 
 ## AGENT boundary
 
-В текущем production service graph AGENT отключён и не передаётся в `AtomicContentWebAdapter`. Код AGENT остаётся dormant/experimental.
+AGENT подключён как необязательный третий уровень после FAST/BROWSER. Model output не Evidence. Auto fallback выполняется последовательно Recipe → Stagehand → Browser Use через единый LLM gate с параллелизмом 1.
 
-При возможном повторном включении сохраняются обязательные правила: model output не Evidence, arbitrary browser control не выдаётся напрямую, reusable route проходит deterministic SiteRecipe/BROWSER replay, CAPTCHA/login/access-control/paywall не обходятся.
+Recipe backend выбирает только controls и значения, подготовленные ARGUS. Stagehand получает инертный DOM snapshot без scripts, event handlers, meta refresh, inline external styles и внешних subrequests. Browser Use работает в отдельном venv, ограничен allowed domains, шагами, временем, историей и размером результата; файловые tools/downloads отключены. Любой путь повторно проходит deterministic SiteRecipe/BROWSER replay и `UrlGuard`.
+
+CAPTCHA/login/access-control/paywall/payment/state-changing actions не обходятся. Blocked result прекращает fallback, а не запускает другой backend.
 
 ## Secrets и errors
 
@@ -105,7 +107,7 @@ Ruff
 PostgreSQL-backed и embedded pytest
 ```
 
-Dependencies version-bounded в `pyproject.toml`. Browser Use сейчас не является operational dependency production graph.
+Dependencies version-bounded в `pyproject.toml`. Stagehand и Browser Use проверяются отдельными dependency-профилями с `pip check`, потому что их обязательные версии `websockets` несовместимы в одном venv.
 
 CI scanning не заменяет dependency review, release protections и host/image scanning.
 

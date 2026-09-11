@@ -6,14 +6,11 @@ from argus.config import Settings
 from argus.contracts.models import PROTOCOL_VERSION
 from argus.research.source_contours import SourceContourResearchPlanner
 
-OPERATIONAL_AGENT_BACKENDS: tuple[str, ...] = ()
-UNAVAILABLE_AGENT_BACKENDS = {
-    "llm-agent": {
-        "status": "disabled",
-        "reason_code": "CRAWLER_ONLY_RUNTIME",
-        "detail": "ARGUS runs without an LLM dependency; FAST and BROWSER own acquisition.",
-    }
-}
+OPERATIONAL_AGENT_BACKENDS: tuple[str, ...] = (
+    "ollama-recipe",
+    "stagehand",
+    "browser-use",
+)
 
 STRUCTURED_EXTRACTORS = (
     "json_ld",
@@ -49,29 +46,54 @@ def runtime_capabilities(
     archive_providers: Iterable[str],
     map_providers: Iterable[str],
 ) -> dict[str, object]:
-    """Return capabilities configured in the deterministic ARGUS crawler process."""
+    """Return configured capabilities without claiming current dependency health."""
 
     server_queue = settings.execution_role in {"api", "worker"}
     contour_planner = SourceContourResearchPlanner()
+    agent_operational = (
+        settings.llm_enabled
+        and settings.agent_enabled
+        and settings.agent_backend != "disabled"
+    )
+    runtimes = ["fast", "browser"]
+    if agent_operational:
+        runtimes.append("agent")
     return {
         "protocol_version": PROTOCOL_VERSION,
-        "runtimes": ["fast", "browser"],
+        "runtimes": runtimes,
         "storage": settings.storage_backend,
         "execution_role": settings.execution_role,
         "api_max_request_bytes": settings.api_max_request_bytes,
         "research_intelligence": {
-            "backend": "deterministic",
-            "llm_backend": None,
-            "model": None,
-            "planner": "heuristic_curated_sources",
-            "supervisor": "evidence_aware_heuristic",
+            "backend": "local_llm_with_deterministic_fallback"
+            if settings.llm_enabled
+            else "deterministic",
+            "llm_enabled": settings.llm_enabled,
+            "llm_required": settings.llm_required,
+            "llm_backend": "ollama" if settings.llm_enabled else None,
+            "llm_url": settings.ollama_url if settings.llm_enabled else None,
+            "model": settings.ollama_model if settings.llm_enabled else None,
+            "planner": "ollama_with_heuristic_fallback"
+            if settings.llm_enabled
+            else "heuristic_curated_sources",
+            "supervisor": "ollama_with_evidence_aware_fallback"
+            if settings.llm_enabled
+            else "evidence_aware_heuristic",
             "recursive_followups": True,
             "source_contours": True,
             "source_contour_version": contour_planner.version,
-            "semantic_exact_excerpt_classifier": False,
+            "entity_hypotheses": settings.llm_enabled,
+            "semantic_exact_excerpt_classifier": settings.llm_enabled,
             "consumer_domain_interpretation": True,
             "custom_consumer_neutral_intents": True,
             "model_output_is_evidence": False,
+            "llm_max_concurrency": settings.llm_max_concurrency,
+            "ollama_profile": {
+                "num_thread": settings.ollama_num_thread,
+                "num_ctx": settings.ollama_num_ctx,
+                "num_predict": settings.ollama_num_predict,
+                "keep_alive_seconds": settings.ollama_keep_alive_seconds,
+            },
         },
         "source_contours": {
             "version": contour_planner.version,
@@ -145,8 +167,19 @@ def runtime_capabilities(
         "geocoding_providers": list(geocoding_providers),
         "archive_providers": list(archive_providers),
         "map_providers": list(map_providers),
-        "agent_enabled": False,
-        "agent_backend": None,
-        "agent_backends": [],
-        "unavailable_agent_backends": dict(UNAVAILABLE_AGENT_BACKENDS),
+        "agent_enabled": agent_operational,
+        "agent_backend": settings.agent_backend if agent_operational else None,
+        "agent_backends": list(OPERATIONAL_AGENT_BACKENDS),
+        "unavailable_agent_backends": {},
+        "agent_fallback_order": (
+            list(OPERATIONAL_AGENT_BACKENDS)
+            if agent_operational and settings.agent_backend == "auto"
+            else []
+        ),
+        "agent_policy": {
+            "escalation": ["fast", "browser", "agent"],
+            "navigation_only": True,
+            "deterministic_recipe_replay_required": True,
+            "captcha_login_paywall_bypass": False,
+        },
     }

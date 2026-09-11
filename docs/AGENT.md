@@ -1,40 +1,43 @@
-# AGENT: контракт и текущее состояние
+# AGENT: рабочий контракт
 
-AGENT — подготовленный слой навигации для случаев, когда детерминированные FAST/BROWSER механизмы не могут получить нужное публичное представление. AGENT не является factual source, а сгенерированный моделью текст никогда не может становиться Evidence.
+AGENT — активный резервный слой навигации ARGUS для публичных страниц, когда детерминированные FAST/BROWSER-механизмы не получили достаточное представление. AGENT не является factual source: текст модели, навигационная история и выбранные действия никогда не становятся Observation или Evidence.
 
-## Текущее состояние
+## Рабочая цепочка
 
-В актуальном production service graph AGENT **не подключён**. `build_services()` создаёт `AtomicContentWebAdapter` с `agent=None`, а `llm_health=None`. В `Settings` значения по умолчанию — `agent_backend="disabled"`, `agent_enabled=false`; Ollama-параметры сохранены для совместимости старых env-файлов.
-
-Поэтому фактическая рабочая цепочка сейчас:
+Обычная эскалация выполняется последовательно:
 
 ```text
-verified SiteRecipe replay, если уже существует
+verified SiteRecipe replay
 -> FAST
--> BROWSER при необходимости
+-> BROWSER, если статического ответа недостаточно
+-> AGENT, если BROWSER завершился ошибкой либо вернул недостаточный незаблокированный DOM
+-> deterministic Playwright replay
 -> factual extraction
 ```
 
-Код `OllamaRecipeAgent`, Browser Use/Stagehand boundaries, `AgentRecipeCompiler` и семантические AGENT-механизмы остаётся в репозитории, но это dormant/experimental infrastructure. Документация и acceptance не должны выдавать её за реально выполняемый production fallback.
+CAPTCHA, login, paywall, access-control, robots/rate-limit challenge останавливают ветку. Другой AGENT backend не используется как средство обхода.
 
-## Правило возможного повторного включения
+В режиме `ARGUS_AGENT_BACKEND=auto` порядок фиксирован:
 
-Если AGENT снова подключается, сохраняются следующие обязательные границы:
+1. `ollama-recipe` выбирает только заранее извлечённые безопасные controls и подготовленные ARGUS значения публичного GET/search/filter;
+2. `stagehand` анализирует инертный snapshot уже полученной страницы и возвращает только безопасные click selectors;
+3. `browser-use` выполняет ограниченную публичную навигацию в отдельном Python-окружении.
 
-- модель выбирает только bounded набор действий/контролов, сформированный ARGUS;
-- произвольные selectors, произвольный JavaScript, filesystem actions и произвольные URL не становятся исполняемыми напрямую;
-- navigation path компилируется в deterministic `SiteRecipe`;
-- кандидат должен успешно пройти BROWSER replay;
-- только после успешного non-blocked replay возможна активация recipe;
-- factual extraction выполняется с реально полученной страницы, а не с ответа модели;
-- CAPTCHA, login, access-control, paywall и rate-limit challenges не обходятся;
-- domain/URL boundary и `UrlGuard` продолжают действовать;
-- все step/action/time/size бюджеты остаются bounded.
+Все backends используют один глобальный LLM semaphore с параллелизмом 1. Timeout, отсутствие optional dependency или недоступность Ollama дают структурированную деградацию и следующий безопасный fallback.
 
 ## SiteRecipe
 
-Существующая инфраструктура SiteRecipe продолжает быть полезна независимо от того, включён ли AGENT: ранее сохранённый активный deterministic recipe может быть replayed BROWSER runtime. Создание новых agent-generated recipes в текущем service graph не происходит, потому что AGENT туда не передан.
+Модель не получает произвольное прямое управление production Playwright. Предложенный путь:
 
-## Evidence boundary
+1. проходит allowlist действий и проверку опасных маркеров;
+2. компилируется в bounded `SiteRecipe`;
+3. повторно выполняется обычным BROWSER runtime с `UrlGuard`;
+4. становится активным только после source-backed проверки исследовательской цели.
 
-Navigation telemetry, recipe metadata и возможный AGENT output объясняют способ доступа к странице, но не являются доказательством предметного факта. Fact должен быть извлечён из fetched source и иметь Observation/Evidence/Provenance.
+Unknown actions, неоднозначные action objects, произвольные keyboard shortcuts, login/payment/upload/download/state-changing controls отклоняются.
+
+## Граница Evidence
+
+AGENT помогает получить публичную страницу, но не доказывает предметный факт. Факт извлекается только из независимо fetched source и должен иметь Observation/Evidence/Provenance. Для семантического Evidence точная цитата обязана буквально присутствовать в тексте источника.
+
+Полный ресурсный профиль, разделение окружений Stagehand/Browser Use и health-семантика описаны в [LLM_AGENT_RUNTIME.md](LLM_AGENT_RUNTIME.md).

@@ -45,20 +45,24 @@ Recursive branch остаётся гипотезой, пока отдельны�
 
 ## 5. LLM/AGENT
 
-Целевой принцип допускает локальный LLM только как navigation/research assistant, но не как factual authority. Однако **в текущем production service graph LLM/AGENT отключён**: `build_services()` не создаёт agent и LLM health service.
+Локальный Ollama включён как необязательный управляющий слой с детерминированным fallback. Он участвует в initial planning, follow-up, supervision, source-grounded entity hypotheses, семантической классификации точных цитат и AGENT-навигации. Модель может предлагать только bounded research/navigation actions; её factual output не принимается.
 
-Если AGENT будет возвращён, модель может предлагать query/navigation actions только в bounded контракте; factual output всё равно должен быть подтверждён fetched source. CAPTCHA/access-control не обходятся.
+При `ARGUS_LLM_REQUIRED=false` недоступность Ollama не останавливает API/worker и не отменяет детерминированный сбор. Все модельные компоненты одного worker используют общий последовательный LLM gate.
 
 ## 6. Retrieval
 
-Фактическая текущая эскалация:
+Фактическая эскалация:
 
 ```text
-FAST
+verified SiteRecipe replay
+  -> FAST
   -> BROWSER, если FAST недостаточен
+  -> AGENT, если BROWSER завершился ошибкой или дал недостаточный незаблокированный DOM
+  -> deterministic BROWSER replay
+  -> factual extraction
 ```
 
-Verified active SiteRecipe может быть replayed до/в рамках BROWSER path. AGENT остаётся неактивным extension point.
+В режиме auto AGENT backends пробуются строго как Recipe → Stagehand → Browser Use. CAPTCHA/login/paywall/access-control не обходятся. Recipe активируется только после replay и source-backed проверки цели.
 
 ## 7. Источники и форматы
 

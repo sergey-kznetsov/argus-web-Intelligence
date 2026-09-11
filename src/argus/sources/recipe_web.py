@@ -88,7 +88,7 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
         context_fetch: FetchResult | None = None,
     ) -> FetchResult:
         try:
-            return await self.browser.fetch(task.url)
+            result = await self.browser.fetch(task.url)
         except UnsafeUrlError:
             raise
         except Exception as browser_error:
@@ -97,6 +97,10 @@ class LifecycleRecipeWebAdapter(DuplicateAwareWebAdapter):
                 if guided is not None:
                     return guided
             raise browser_error
+        if result.blocked or self.agent is None or not self._needs_browser(result.text):
+            return result
+        guided = await self._agent_guided_fetch(task, context_fetch=result)
+        return guided if guided is not None else result
 
     async def _agent_guided_fetch(
         self,

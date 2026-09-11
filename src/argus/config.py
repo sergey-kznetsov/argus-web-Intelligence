@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     postgres_pool_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     postgres_pool_max_waiting: int = Field(default=32, ge=1, le=10_000)
 
-    worker_concurrency: int = Field(default=2, ge=1, le=32)
+    worker_concurrency: int = Field(default=1, ge=1, le=32)
     worker_poll_interval_seconds: float = Field(default=1.0, gt=0, le=60)
     worker_lease_seconds: float = Field(default=90.0, ge=15, le=3600)
     worker_heartbeat_seconds: float = Field(default=20.0, ge=1, le=300)
@@ -97,8 +97,8 @@ class Settings(BaseSettings):
     http_max_redirects: int = Field(default=10, ge=0, le=30)
     browser_timeout_seconds: float = Field(default=45.0, gt=0, le=600)
     fetch_wait_timeout_seconds: float = Field(default=180.0, gt=0, le=3600)
-    max_concurrency: int = Field(default=4, ge=1, le=64)
-    browser_max_concurrency: int = Field(default=2, ge=1, le=16)
+    max_concurrency: int = Field(default=2, ge=1, le=64)
+    browser_max_concurrency: int = Field(default=1, ge=1, le=16)
     fast_max_requests_per_minute: float = Field(default=120.0, gt=0, le=10_000)
     browser_max_requests_per_minute: float = Field(default=30.0, gt=0, le=2_000)
     per_domain_delay_seconds: float = Field(default=1.0, ge=0, le=300)
@@ -145,15 +145,34 @@ class Settings(BaseSettings):
     wayback_max_captures: int = Field(default=5, ge=1, le=20)
     wayback_min_interval_seconds: float = Field(default=2.0, ge=0, le=300)
 
-    # Legacy LLM settings remain parseable so old environment files do not break during
-    # an immutable release cutover. The crawler runtime does not construct or call Ollama.
+    # The local model is a bounded control layer. Model output can propose research and
+    # navigation, but it can never become Observation/Evidence without source verification.
+    llm_enabled: bool = True
     ollama_url: str = "http://127.0.0.1:11434"
-    ollama_model: str = "qwen3:8b"
+    ollama_model: str = "argus-qwen3:8b-cpu"
+    ollama_num_thread: int = Field(default=2, ge=1, le=64)
+    ollama_num_ctx: int = Field(default=4096, ge=1024, le=131_072)
+    ollama_num_predict: int = Field(default=512, ge=64, le=8_192)
+    ollama_keep_alive_seconds: int = Field(default=60, ge=0, le=3600)
+    # Один процесс Ollama и одна загруженная модель обслуживаются через единый
+    # последовательный шлюз. Параметр остаётся частью runtime-контракта, но
+    # увеличение параллелизма намеренно запрещено валидацией.
+    llm_max_concurrency: int = Field(default=1, ge=1, le=1)
+    llm_request_timeout_seconds: float = Field(default=20.0, gt=0, le=180)
     llm_required: bool = False
     llm_health_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     llm_health_cache_seconds: float = Field(default=10.0, ge=0, le=300)
-    agent_backend: str = "disabled"
-    agent_enabled: bool = False
+    agent_backend: Literal[
+        "auto",
+        "disabled",
+        "ollama-recipe",
+        "stagehand",
+        "browser-use",
+    ] = "auto"
+    agent_enabled: bool = True
+    agent_max_steps: int = Field(default=25, ge=1, le=50)
+    agent_timeout_seconds: float = Field(default=120.0, gt=0, le=600)
+    browser_use_python: Path | None = None
     allow_internal_targets: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     @field_validator(
@@ -228,6 +247,16 @@ class Settings(BaseSettings):
             )
         if self.browser_max_concurrency > self.max_concurrency:
             self.browser_max_concurrency = self.max_concurrency
+        if self.llm_required and not self.llm_enabled:
+            raise ValueError("llm_required cannot be true when llm_enabled is false")
+        if self.llm_enabled:
+            ollama_host = (urlsplit(self.ollama_url).hostname or "").casefold()
+            if ollama_host not in {"127.0.0.1", "::1", "localhost"}:
+                raise ValueError("ollama_url must use a loopback host")
+        if not self.llm_enabled:
+            self.agent_enabled = False
+        if self.agent_backend == "disabled":
+            self.agent_enabled = False
         if self.postgres_pool_min_size > self.postgres_pool_max_size:
             raise ValueError("postgres_pool_min_size must be <= postgres_pool_max_size")
         if self.worker_heartbeat_seconds >= self.worker_lease_seconds:

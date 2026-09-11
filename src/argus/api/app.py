@@ -130,6 +130,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         ready = database.get("status") == "ok"
         checks: dict[str, object] = {"database": database}
+        if services.llm_health is not None:
+            try:
+                llm_result = (await services.llm_health.check()).as_dict()
+            except Exception as exc:
+                llm_result = {
+                    "status": "unavailable",
+                    "ready": False,
+                    "backend": "ollama",
+                    "model": settings.ollama_model,
+                    "reason_code": "OLLAMA_HEALTH_CHECK_FAILED",
+                    "error_type": type(exc).__name__,
+                }
+            llm_result["enabled"] = settings.llm_enabled
+            llm_result["required"] = settings.llm_required
+            if services.llm_gate is not None:
+                llm_result["concurrency_gate"] = services.llm_gate.snapshot()
+            checks["llm"] = llm_result
+            if settings.llm_required:
+                ready = ready and bool(llm_result.get("ready"))
         if settings.execution_role == "api":
             active_workers = 0
             worker_status = "error"
@@ -165,10 +184,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/v1/health")
     async def health():
         ready, checks = await readiness()
+        llm = checks.get("llm")
+        optional_llm_degraded = (
+            isinstance(llm, dict)
+            and llm.get("required") is False
+            and llm.get("ready") is False
+        )
         return {
             "protocol_version": PROTOCOL_VERSION,
             "module_id": MODULE_ID,
-            "status": "ok" if ready else "degraded",
+            "status": "ok" if ready and not optional_llm_degraded else "degraded",
             "service": "argus-web-intelligence",
             "version": __version__,
             "execution_role": settings.execution_role,

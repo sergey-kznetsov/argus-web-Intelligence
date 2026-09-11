@@ -55,9 +55,11 @@ def test_server_api_readiness_requires_live_worker(tmp_path: Path):
 
         response = client.get("/v1/health")
         payload = response.json()
-        assert payload["status"] == "ok"
+        assert payload["status"] == "degraded"
         assert payload["checks"]["worker"]["status"] == "ok"
         assert payload["checks"]["worker"]["active_workers"] >= 1
+        assert payload["checks"]["llm"]["required"] is False
+        assert payload["checks"]["llm"]["ready"] is False
         assert client.head("/v1/health").status_code == 200
 
     with psycopg.connect(dsn) as conn:

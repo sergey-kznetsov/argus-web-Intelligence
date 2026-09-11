@@ -4,82 +4,62 @@ import pytest
 
 from argus.bootstrap import build_services
 from argus.config import Settings
+from argus.crawler.agent.browser_use import BrowserUseAgent
+from argus.crawler.agent.fallback import SequentialAgentBackend
+from argus.crawler.agent.ollama_recipe import OllamaRecipeAgent
+from argus.crawler.agent.stagehand import StagehandAgent
 from argus.sources.recipe_web import LifecycleRecipeWebAdapter
 
 
-@pytest.mark.asyncio
-async def test_legacy_agent_configuration_cannot_reenable_llm_runtime(tmp_path: Path):
-    settings = Settings(
-        execution_role="embedded",
-        storage_backend="sqlite",
-        db_path=tmp_path / "argus.sqlite",
-        token_file=tmp_path / "token",
-        agent_enabled=True,
-        agent_backend="ollama-recipe",
-        browser_serp_enabled=False,
-        searxng_url=None,
-        overpass_url=None,
-        nominatim_url=None,
-        wayback_cdx_url=None,
-    )
+def _settings(tmp_path: Path, **updates) -> Settings:
+    values = {
+        "execution_role": "embedded",
+        "storage_backend": "sqlite",
+        "db_path": tmp_path / "argus.sqlite",
+        "token_file": tmp_path / "token",
+        "browser_serp_enabled": False,
+        "searxng_url": None,
+        "overpass_url": None,
+        "nominatim_url": None,
+        "wayback_cdx_url": None,
+    }
+    values.update(updates)
+    return Settings(**values)
 
-    services = build_services(settings)
+
+def _agent(services):
     tracked = services.registry.get("generic_web")
     adapter = getattr(tracked, "_adapter", None)
-
     assert isinstance(adapter, LifecycleRecipeWebAdapter)
-    assert adapter.agent is None
-    assert services.llm_health is None
-    assert services.llm_required_on_start is False
-
-    health = await adapter.health()
-    assert "agent_execution" not in health
+    return adapter.agent
 
 
-@pytest.mark.asyncio
-async def test_agent_is_disabled_by_default(tmp_path: Path):
-    settings = Settings(
-        execution_role="embedded",
-        storage_backend="sqlite",
-        db_path=tmp_path / "argus.sqlite",
-        token_file=tmp_path / "token",
-        browser_serp_enabled=False,
-        searxng_url=None,
-        overpass_url=None,
-        nominatim_url=None,
-        wayback_cdx_url=None,
-    )
+def test_auto_agent_uses_stable_sequential_fallback_order(tmp_path: Path):
+    services = build_services(_settings(tmp_path))
+    agent = _agent(services)
 
-    services = build_services(settings)
-    tracked = services.registry.get("generic_web")
-    adapter = getattr(tracked, "_adapter", None)
-
-    assert isinstance(adapter, LifecycleRecipeWebAdapter)
-    assert adapter.agent is None
-    health = await adapter.health()
-    assert "agent_execution" not in health
+    assert isinstance(agent, SequentialAgentBackend)
+    assert [type(item) for item in agent.backends] == [
+        OllamaRecipeAgent,
+        StagehandAgent,
+        BrowserUseAgent,
+    ]
+    assert all(item.llm_gate is services.llm_gate for item in agent.backends)
 
 
-@pytest.mark.parametrize("legacy_backend", ["browser-use", "stagehand", "ollama-recipe"])
-def test_legacy_agent_backends_are_inert(tmp_path: Path, legacy_backend: str):
-    settings = Settings(
-        execution_role="embedded",
-        storage_backend="sqlite",
-        db_path=tmp_path / f"{legacy_backend}.sqlite",
-        token_file=tmp_path / f"{legacy_backend}.token",
-        agent_enabled=True,
-        agent_backend=legacy_backend,
-        browser_serp_enabled=False,
-        searxng_url=None,
-        overpass_url=None,
-        nominatim_url=None,
-        wayback_cdx_url=None,
-    )
+@pytest.mark.parametrize(
+    ("backend", "expected"),
+    [
+        ("ollama-recipe", OllamaRecipeAgent),
+        ("stagehand", StagehandAgent),
+        ("browser-use", BrowserUseAgent),
+    ],
+)
+def test_explicit_agent_backend_is_wired(tmp_path: Path, backend: str, expected: type):
+    services = build_services(_settings(tmp_path, agent_backend=backend))
+    assert isinstance(_agent(services), expected)
 
-    services = build_services(settings)
-    tracked = services.registry.get("generic_web")
-    adapter = getattr(tracked, "_adapter", None)
 
-    assert isinstance(adapter, LifecycleRecipeWebAdapter)
-    assert adapter.agent is None
-    assert services.llm_health is None
+def test_agent_is_removed_when_llm_is_explicitly_disabled(tmp_path: Path):
+    services = build_services(_settings(tmp_path, llm_enabled=False))
+    assert _agent(services) is None

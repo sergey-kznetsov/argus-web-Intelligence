@@ -5,23 +5,9 @@ from argus.config import Settings
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BOOTSTRAP = ROOT / "src" / "argus" / "bootstrap.py"
 
 
-def test_production_bootstrap_has_no_ollama_runtime_wiring() -> None:
-    bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
-
-    assert "Ollama" not in bootstrap
-    assert "llm_health=None" in bootstrap
-    assert "llm_required_on_start=False" in bootstrap
-    assert "agent=None" in bootstrap
-    assert "intent_evidence_classifier=None" in bootstrap
-    assert "HeuristicResearchPlanner" in bootstrap
-    assert "EvidenceAwareHeuristicFollowupResearchPlanner" in bootstrap
-    assert "HeuristicResearchSupervisor" in bootstrap
-
-
-def test_capabilities_advertise_fast_browser_crawler_without_llm() -> None:
+def test_bootstrap_exposes_hybrid_runtime_without_claiming_model_output_as_evidence() -> None:
     capabilities = runtime_capabilities(
         Settings(),
         discovery_providers=["duckduckgo_fast"],
@@ -30,19 +16,27 @@ def test_capabilities_advertise_fast_browser_crawler_without_llm() -> None:
         map_providers=[],
     )
 
-    assert capabilities["runtimes"] == ["fast", "browser"]
-    assert capabilities["agent_enabled"] is False
-    assert capabilities["agent_backend"] is None
-    assert capabilities["agent_backends"] == []
-
+    assert capabilities["runtimes"] == ["fast", "browser", "agent"]
+    assert capabilities["agent_enabled"] is True
+    assert capabilities["agent_backend"] == "auto"
+    assert capabilities["agent_fallback_order"] == [
+        "ollama-recipe",
+        "stagehand",
+        "browser-use",
+    ]
     research = capabilities["research_intelligence"]
-    assert isinstance(research, dict)
-    assert research["backend"] == "deterministic"
-    assert research["llm_backend"] is None
-    assert research["model"] is None
-    assert research["recursive_followups"] is True
-    assert research["consumer_domain_interpretation"] is True
+    assert research["backend"] == "local_llm_with_deterministic_fallback"
+    assert research["model_output_is_evidence"] is False
+    assert research["semantic_exact_excerpt_classifier"] is True
 
 
-def test_windows_deployment_has_no_ollama_tuning_tool() -> None:
-    assert not (ROOT / "deploy" / "windows" / "tune-ollama-cpu.ps1").exists()
+def test_windows_deployment_contains_ollama_cpu_tuning_tool() -> None:
+    script = ROOT / "deploy" / "windows" / "tune-ollama-cpu.ps1"
+    content = script.read_text(encoding="utf-8")
+
+    assert "OLLAMA_NUM_PARALLEL" in content
+    assert "OLLAMA_MAX_LOADED_MODELS" in content
+    assert "OLLAMA_MAX_QUEUE" in content
+    assert "BelowNormal" in content
+    assert "ProcessorAffinity" in content
+    assert "argus-qwen3:8b-cpu" in content

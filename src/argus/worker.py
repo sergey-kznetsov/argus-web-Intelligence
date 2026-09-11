@@ -435,7 +435,7 @@ class CollectionWorker:
                 pass
 
     async def _probe_llm(self) -> dict[str, object] | None:
-        if not self.settings.llm_required:
+        if not self.settings.llm_enabled:
             return None
         checker = self.services.llm_health
         if checker is None:
@@ -445,9 +445,14 @@ class CollectionWorker:
                 "backend": "ollama",
                 "model": self.settings.ollama_model,
                 "reason_code": "LLM_HEALTH_NOT_CONFIGURED",
+                "required": self.settings.llm_required,
             }
         try:
-            return (await checker.check()).as_dict()
+            result = (await checker.check()).as_dict()
+            result["required"] = self.settings.llm_required
+            if self.services.llm_gate is not None:
+                result["concurrency_gate"] = self.services.llm_gate.snapshot()
+            return result
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -458,6 +463,7 @@ class CollectionWorker:
                 "model": self.settings.ollama_model,
                 "reason_code": "LLM_HEALTH_CHECK_FAILED",
                 "error_type": type(exc).__name__,
+                "required": self.settings.llm_required,
             }
 
     async def _handle_probe(
@@ -490,11 +496,15 @@ class CollectionWorker:
                 database_ready = database.get("status") == "ok"
                 llm_ready = llm is None or bool(llm.get("ready"))
                 live = self._started and database_ready
-                ready = live and llm_ready
+                ready = live and (llm_ready or not self.settings.llm_required)
                 probe_ready = ready if path == "/readyz" else live
                 status_code = 200 if probe_ready else 503
                 payload = {
-                    "status": "ok" if probe_ready else "degraded",
+                    "status": (
+                        "ok"
+                        if probe_ready and (llm is None or llm_ready)
+                        else "degraded"
+                    ),
                     "worker_id": self.worker_id,
                     "active_collections": len(self._active),
                     "database": database,

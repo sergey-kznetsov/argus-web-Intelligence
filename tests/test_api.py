@@ -26,8 +26,11 @@ def test_health_and_auth(tmp_path: Path):
         health = health_response.json()
         assert health["protocol_version"] == "1.0.0"
         assert health["module_id"] == MODULE_ID
-        assert health["status"] == "ok"
+        assert health["status"] == "degraded"
         assert health["checks"]["database"]["backend"] == "sqlite"
+        assert health["checks"]["llm"]["enabled"] is True
+        assert health["checks"]["llm"]["required"] is False
+        assert health["checks"]["llm"]["ready"] is False
         assert client.head("/v1/health").status_code == 200
 
         assert client.get("/v1/manifest").status_code == 401
@@ -52,17 +55,19 @@ def test_health_and_auth(tmp_path: Path):
         assert payload["queue_backend"] == "embedded"
         assert payload["idempotent_submission"] is False
         assert payload["worker_required_for_readiness"] is False
-        assert payload["runtimes"] == ["fast", "browser"]
-        assert payload["agent_enabled"] is False
-        assert payload["agent_backend"] is None
-        assert payload["agent_backends"] == []
-        assert payload["research_intelligence"]["backend"] == "deterministic"
-        assert payload["research_intelligence"]["llm_backend"] is None
-        assert payload["unavailable_agent_backends"]["llm-agent"]["status"] == "disabled"
-        assert (
-            payload["unavailable_agent_backends"]["llm-agent"]["reason_code"]
-            == "CRAWLER_ONLY_RUNTIME"
+        assert payload["runtimes"] == ["fast", "browser", "agent"]
+        assert payload["agent_enabled"] is True
+        assert payload["agent_backend"] == "auto"
+        assert payload["agent_backends"] == [
+            "ollama-recipe",
+            "stagehand",
+            "browser-use",
+        ]
+        assert payload["research_intelligence"]["backend"] == (
+            "local_llm_with_deterministic_fallback"
         )
+        assert payload["research_intelligence"]["llm_backend"] == "ollama"
+        assert payload["unavailable_agent_backends"] == {}
         assert payload["result_delivery"] == {
             "full_result_max_items": 100,
             "full_result_max_bytes": 4 * 1024 * 1024,

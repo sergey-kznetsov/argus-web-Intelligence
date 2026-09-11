@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import math
 import os
 from contextlib import suppress
@@ -10,6 +11,8 @@ from urllib.parse import urlsplit
 
 from argus.config import Settings
 from argus.crawler.agent.base import AgentResult, AgentTask
+from argus.llm_health import OllamaRuntimeHealth
+from argus.llm_runtime import LlmConcurrencyGate, optional_llm_ready
 from argus.security.urls import UrlGuard
 
 
@@ -44,11 +47,21 @@ class BrowserUseAgent:
         "open_file",
     )
 
-    def __init__(self, settings: Settings, url_guard: UrlGuard) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        url_guard: UrlGuard,
+        *,
+        llm_gate: LlmConcurrencyGate | None = None,
+        llm_health: OllamaRuntimeHealth | None = None,
+    ) -> None:
         self.settings = settings
         self.url_guard = url_guard
+        self.llm_gate = llm_gate or LlmConcurrencyGate(settings.llm_max_concurrency)
+        self.llm_health = llm_health
+        self.max_steps = min(self.max_steps, int(settings.agent_max_steps))
         self.timeout_seconds = min(
-            180.0,
+            float(settings.agent_timeout_seconds),
             max(30.0, float(settings.browser_timeout_seconds) * 2.0),
             float(settings.fetch_wait_timeout_seconds),
         )
@@ -57,10 +70,22 @@ class BrowserUseAgent:
 
     async def run(self, task: AgentTask) -> AgentResult:
         await self.url_guard.validate(task.url)
+        if not await optional_llm_ready(self.llm_health):
+            return self._failure(
+                task,
+                code="AGENT_LLM_UNAVAILABLE",
+                message="local Ollama is unavailable",
+            )
         try:
             from browser_use import Agent, Browser, ChatOllama, Tools
-        except ImportError as exc:
-            raise RuntimeError("install ARGUS with [agent-browser-use] to enable Browser Use") from exc
+        except ImportError:
+            if self.settings.browser_use_python is not None:
+                return await self._run_isolated(task)
+            return self._failure(
+                task,
+                code="AGENT_DEPENDENCY_UNAVAILABLE",
+                message="install ARGUS with [agent-browser-use] or configure its isolated Python",
+            )
 
         host = (urlsplit(task.url).hostname or "").casefold().strip(".")
         allowed_domains = self._allowed_domains(task, host)
@@ -76,12 +101,28 @@ class BrowserUseAgent:
         # unrelated inherited environment value.
         os.environ["OLLAMA_HOST"] = self.settings.ollama_url
         os.environ["ANONYMIZED_TELEMETRY"] = "false"
-        llm = ChatOllama(model=self.settings.ollama_model)
-        browser = Browser(
-            allowed_domains=allowed_domains,
-            block_ip_addresses=True,
-            enable_default_extensions=False,
-        )
+        llm = self._build_llm(ChatOllama)
+        try:
+            from browser_use import BrowserProfile
+        except ImportError:
+            # Compatibility for a narrow older/test adapter. The pinned production
+            # profile exports BrowserProfile and takes the hardened branch below.
+            browser = Browser(
+                allowed_domains=allowed_domains,
+                block_ip_addresses=True,
+                enable_default_extensions=False,
+            )
+        else:
+            profile = BrowserProfile(
+                allowed_domains=allowed_domains,
+                block_ip_addresses=True,
+                enable_default_extensions=False,
+                captcha_solver=False,
+                accept_downloads=False,
+                auto_download_pdfs=False,
+                headless=True,
+            )
+            browser = Browser(browser_profile=profile)
         tools = Tools(exclude_actions=list(self.excluded_tools))
         instruction = (
             f"Open {task.url}. {task.instruction}. "
@@ -90,8 +131,9 @@ class BrowserUseAgent:
             "accept terms on behalf of a user, submit forms that create/update/delete data, "
             "make purchases, upload files, download executables, or enter personal, secret or "
             "payment information. Do not use file, javascript, chrome, about or extension URLs. "
-            "Stop when a CAPTCHA/access challenge is encountered. Return only facts visibly "
-            "available from public sources and retain source URLs."
+            "Stop when a CAPTCHA/access challenge is encountered. Return only a navigation "
+            "trace and public source URLs. Any factual output is ignored until ARGUS fetches "
+            "and verifies the source independently."
         )
         agent = Agent(
             task=instruction,
@@ -104,13 +146,17 @@ class BrowserUseAgent:
             max_history_items=self.max_history_items,
             llm_timeout=self.llm_timeout_seconds,
             step_timeout=self.step_timeout_seconds,
+            use_judge=False,
+            final_response_after_failure=False,
+            enable_signal_handler=False,
         )
         try:
             try:
-                history = await asyncio.wait_for(
-                    agent.run(max_steps=self.max_steps),
-                    timeout=self.timeout_seconds,
-                )
+                async with self.llm_gate.slot(self.name):
+                    history = await asyncio.wait_for(
+                        agent.run(max_steps=self.max_steps),
+                        timeout=self.timeout_seconds,
+                    )
             except TimeoutError:
                 return self._failure(
                     task,
@@ -120,13 +166,13 @@ class BrowserUseAgent:
                 )
 
             final_raw = history.final_result() if hasattr(history, "final_result") else None
-            success = history.is_successful() if hasattr(history, "is_successful") else bool(final_raw)
+            success = (
+                history.is_successful() if hasattr(history, "is_successful") else bool(final_raw)
+            )
             visited_raw = history.urls() if hasattr(history, "urls") else [task.url]
             raw_actions_value = history.model_actions() if hasattr(history, "model_actions") else []
             raw_actions = (
-                list(raw_actions_value)
-                if isinstance(raw_actions_value, (list, tuple))
-                else []
+                list(raw_actions_value) if isinstance(raw_actions_value, (list, tuple)) else []
             )
             history_errors = history.errors() if hasattr(history, "errors") else []
 
@@ -178,9 +224,7 @@ class BrowserUseAgent:
 
             try:
                 actions = [
-                    self._normalize_action(item)
-                    for item in raw_actions
-                    if isinstance(item, dict)
+                    self._normalize_action(item) for item in raw_actions if isinstance(item, dict)
                 ]
             except ValueError as exc:
                 return self._failure(
@@ -215,6 +259,156 @@ class BrowserUseAgent:
             if callable(close):
                 with suppress(Exception):
                     await close()
+
+    async def _run_isolated(self, task: AgentTask) -> AgentResult:
+        """Run the conflicting Browser Use dependency in its deployment-owned venv."""
+
+        configured = self.settings.browser_use_python
+        if configured is None:
+            return self._failure(
+                task,
+                code="AGENT_DEPENDENCY_UNAVAILABLE",
+                message="isolated Browser Use Python is not configured",
+            )
+        try:
+            python = configured.resolve(strict=True)
+        except OSError:
+            return self._failure(
+                task,
+                code="AGENT_DEPENDENCY_UNAVAILABLE",
+                message="isolated Browser Use Python does not exist",
+            )
+        if not python.is_file() or not python.is_absolute():
+            return self._failure(
+                task,
+                code="AGENT_DEPENDENCY_UNAVAILABLE",
+                message="isolated Browser Use Python must be an absolute file path",
+            )
+
+        request = json.dumps(
+            {
+                "url": task.url,
+                "goal": task.goal,
+                "instruction": task.instruction,
+                "context": task.context,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        environment = os.environ.copy()
+        environment["ARGUS_BROWSER_USE_PYTHON"] = ""
+        process = None
+        try:
+            async with self.llm_gate.slot(self.name):
+                process = await asyncio.create_subprocess_exec(
+                    str(python),
+                    "-m",
+                    "argus.crawler.agent.browser_use_runner",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=environment,
+                    limit=512 * 1024,
+                )
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(request),
+                    timeout=self.timeout_seconds,
+                )
+        except TimeoutError:
+            if process is not None:
+                process.kill()
+                with suppress(Exception):
+                    await process.wait()
+            return self._failure(
+                task,
+                code="AGENT_TIMEOUT",
+                message="isolated Browser Use exceeded its bounded runtime",
+            )
+        except (OSError, ValueError) as exc:
+            return self._failure(
+                task,
+                code="AGENT_RUNTIME_UNAVAILABLE",
+                message="isolated Browser Use could not be started",
+                metadata={"error_type": type(exc).__name__},
+            )
+
+        if process.returncode != 0:
+            return self._failure(
+                task,
+                code="AGENT_RUNTIME_UNAVAILABLE",
+                message="isolated Browser Use failed",
+                metadata={
+                    "subprocess_returncode": process.returncode,
+                    "subprocess_stderr_present": bool(stderr),
+                },
+            )
+        marker = "ARGUS_AGENT_RESULT="
+        lines = stdout.decode("utf-8", errors="replace").splitlines()
+        serialized = next(
+            (line[len(marker) :] for line in reversed(lines) if line.startswith(marker)), ""
+        )
+        try:
+            payload = json.loads(serialized)
+            if not isinstance(payload, dict):
+                raise ValueError("result is not an object")
+            visited_urls, visited_truncated = await self._safe_visited_urls(
+                payload.get("visited_urls", [])
+            )
+            raw_actions = payload.get("actions", [])
+            if not isinstance(raw_actions, list) or len(raw_actions) > self.max_actions:
+                raise ValueError("result actions exceed the bounded list contract")
+            actions = [
+                self._normalize_action(item) for item in raw_actions if isinstance(item, dict)
+            ]
+            return AgentResult(
+                success=payload.get("success") is True,
+                data=payload.get("data") if isinstance(payload.get("data"), dict) else {},
+                visited_urls=visited_urls,
+                actions=actions,
+                blocked=payload.get("blocked") is True,
+                error=str(payload.get("error"))[: self.max_error_chars]
+                if payload.get("error")
+                else None,
+                metadata={
+                    **(
+                        payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+                    ),
+                    "isolated_process": True,
+                    "visited_urls_truncated": visited_truncated,
+                },
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return self._failure(
+                task,
+                code="AGENT_INVALID_RESULT",
+                message="isolated Browser Use returned an invalid bounded result",
+            )
+
+    def _build_llm(self, chat_ollama_type):
+        """Use the bounded model profile while tolerating older Browser Use releases."""
+
+        full = {
+            "model": self.settings.ollama_model,
+            "host": self.settings.ollama_url,
+            "timeout": self.llm_timeout_seconds,
+            "ollama_options": {
+                "num_ctx": self.settings.ollama_num_ctx,
+                "num_predict": self.settings.ollama_num_predict,
+                "num_thread": self.settings.ollama_num_thread,
+                "temperature": 0.0,
+                "think": False,
+                "keep_alive": f"{self.settings.ollama_keep_alive_seconds}s",
+            },
+        }
+        try:
+            return chat_ollama_type(**full)
+        except (TypeError, ValueError):
+            # OLLAMA_HOST above still pins the endpoint, and the derived model contains
+            # the fixed context/output profile created by tune-ollama-cpu.ps1.
+            return chat_ollama_type(
+                model=self.settings.ollama_model,
+                host=self.settings.ollama_url,
+            )
 
     async def _safe_visited_urls(self, values: Any) -> tuple[list[str], bool]:
         source = list(values) if isinstance(values, (list, tuple)) else []
@@ -300,10 +494,7 @@ class BrowserUseAgent:
                 for key, item in value.items()
             }
         if isinstance(value, (list, tuple)):
-            return [
-                self._json_value(item, depth=depth + 1, nodes=nodes)
-                for item in value
-            ]
+            return [self._json_value(item, depth=depth + 1, nodes=nodes) for item in value]
         for method_name in ("model_dump", "to_dict"):
             method = getattr(value, method_name, None)
             if callable(method):

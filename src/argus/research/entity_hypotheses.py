@@ -8,6 +8,12 @@ import httpx
 
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest, Observation
+from argus.llm_health import OllamaRuntimeHealth
+from argus.llm_runtime import (
+    LlmConcurrencyGate,
+    ollama_generate_payload,
+    optional_llm_ready,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,15 +77,28 @@ class OllamaEntityHypothesisExtractor:
     min_excerpt_chars = 12
     max_query_hints = 4
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        llm_gate: LlmConcurrencyGate | None = None,
+        llm_health: OllamaRuntimeHealth | None = None,
+    ) -> None:
         self.settings = settings
-        self.timeout_seconds = min(20.0, float(settings.fetch_wait_timeout_seconds))
+        self.llm_gate = llm_gate or LlmConcurrencyGate(settings.llm_max_concurrency)
+        self.llm_health = llm_health
+        self.timeout_seconds = min(
+            float(settings.llm_request_timeout_seconds),
+            float(settings.fetch_wait_timeout_seconds),
+        )
 
     async def extract(
         self,
         request: CollectionRequest,
         observations: Iterable[Observation],
     ) -> list[EntityHypothesis]:
+        if not await optional_llm_ready(self.llm_health):
+            return []
         candidates = [
             item
             for item in observations
@@ -155,18 +174,17 @@ class OllamaEntityHypothesisExtractor:
             f"SOURCE TEXT:\n{text}"
         )
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
-                response = await client.post(
-                    f"{self.settings.ollama_url.rstrip('/')}/api/generate",
-                    json={
-                        "model": self.settings.ollama_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "format": "json",
-                    },
-                )
-                response.raise_for_status()
-                payload = json.loads(response.json().get("response", "{}"))
+            async with self.llm_gate.slot("entity-hypotheses"):
+                async with httpx.AsyncClient(
+                    timeout=self.timeout_seconds,
+                    trust_env=False,
+                ) as client:
+                    response = await client.post(
+                        f"{self.settings.ollama_url.rstrip('/')}/api/generate",
+                        json=ollama_generate_payload(self.settings, prompt),
+                    )
+                    response.raise_for_status()
+                    payload = json.loads(response.json().get("response", "{}"))
         except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError):
             return []
         return self._validate(payload, text, observation)

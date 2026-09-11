@@ -12,6 +12,54 @@ class AgentRecipeCompiler:
     _FILL_ACTIONS = {"input_text", "fill", "type_text"}
     _SELECT_ACTIONS = {"select", "select_option"}
     _NAVIGATE_ACTIONS = {"go_to_url", "navigate", "open_url"}
+    _DENIED_INTERACTION_MARKERS = (
+        "password",
+        "passwd",
+        "login",
+        "log in",
+        "sign in",
+        "sign up",
+        "register",
+        "captcha",
+        "checkout",
+        "payment",
+        "credit card",
+        "purchase",
+        "subscribe",
+        "delete",
+        "upload",
+        "download",
+        "send",
+        "save",
+        "confirm",
+        "войти",
+        "парол",
+        "регистрац",
+        "капч",
+        "оплат",
+        "купить",
+        "удал",
+        "загруз",
+        "скач",
+        "отправ",
+        "сохран",
+        "подтверд",
+    )
+    _SAFE_KEYS = frozenset(
+        {
+            "Enter",
+            "Escape",
+            "ArrowUp",
+            "ArrowDown",
+            "ArrowLeft",
+            "ArrowRight",
+            "PageUp",
+            "PageDown",
+            "Home",
+            "End",
+            "Tab",
+        }
+    )
 
     def compile(self, actions: list[dict[str, Any]]) -> list[RecipeStep] | None:
         steps: list[RecipeStep] = []
@@ -19,6 +67,8 @@ class AgentRecipeCompiler:
             action_name, params = self._action(raw)
             if not action_name:
                 continue
+            if self._denied_interaction(raw, action_name, params):
+                return None
             if action_name in {"done", "extract_content"}:
                 continue
             if action_name in self._NAVIGATE_ACTIONS:
@@ -50,7 +100,7 @@ class AgentRecipeCompiler:
             if action_name in {"send_keys", "press"}:
                 selector = self._selector(raw) or self._string(params, "selector")
                 keys = self._string(params, "keys", "key", "value")
-                if not selector or not keys:
+                if not selector or keys not in self._SAFE_KEYS:
                     return None
                 steps.append(RecipeStep(action="press", selector=selector, value=keys))
                 continue
@@ -68,12 +118,48 @@ class AgentRecipeCompiler:
             return None
         return steps or None
 
+    @classmethod
+    def _denied_interaction(
+        cls,
+        raw: dict[str, Any],
+        action_name: str,
+        params: dict[str, Any],
+    ) -> bool:
+        if action_name in {"done", "extract_content", "scroll", "scroll_down", "scroll_up"}:
+            return False
+        values = [action_name]
+        values.extend(cls._bounded_strings(params))
+        values.extend(cls._bounded_strings(raw.get("interacted_element")))
+        haystack = " ".join(values).casefold()[:20_000]
+        return any(marker in haystack for marker in cls._DENIED_INTERACTION_MARKERS)
+
+    @classmethod
+    def _bounded_strings(cls, value: Any, *, depth: int = 0) -> list[str]:
+        if depth > 5:
+            return []
+        if isinstance(value, str):
+            return [value[:2_000]]
+        if isinstance(value, dict):
+            result: list[str] = []
+            for key, item in list(value.items())[:100]:
+                result.append(str(key)[:256])
+                result.extend(cls._bounded_strings(item, depth=depth + 1))
+            return result
+        if isinstance(value, (list, tuple)):
+            result = []
+            for item in value[:100]:
+                result.extend(cls._bounded_strings(item, depth=depth + 1))
+            return result
+        return []
+
     @staticmethod
     def _action(raw: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
         ignored = {"interacted_element", "result"}
         names = [key for key in raw if key not in ignored]
         if not names:
             return None, {}
+        if len(names) != 1:
+            return "__invalid_multiple_actions__", {}
         name = names[0]
         params = raw.get(name)
         return name, params if isinstance(params, dict) else {}

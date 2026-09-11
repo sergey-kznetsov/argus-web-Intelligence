@@ -9,6 +9,12 @@ from bs4 import BeautifulSoup, Tag
 
 from argus.config import Settings
 from argus.crawler.agent.base import AgentResult, AgentTask
+from argus.llm_health import OllamaRuntimeHealth
+from argus.llm_runtime import (
+    LlmConcurrencyGate,
+    ollama_generate_payload,
+    optional_llm_ready,
+)
 from argus.security.urls import UrlGuard
 
 
@@ -57,6 +63,10 @@ class OllamaRecipeAgent:
         "регистрац",
         "купить",
         "оплат",
+        "payment",
+        "pay now",
+        "платеж",
+        "платёж",
         "checkout",
         "cart",
         "корзин",
@@ -126,13 +136,31 @@ class OllamaRecipeAgent:
         "период",
     )
 
-    def __init__(self, settings: Settings, url_guard: UrlGuard) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        url_guard: UrlGuard,
+        *,
+        llm_gate: LlmConcurrencyGate | None = None,
+        llm_health: OllamaRuntimeHealth | None = None,
+    ) -> None:
         self.settings = settings
         self.url_guard = url_guard
-        self.timeout_seconds = min(30.0, float(settings.fetch_wait_timeout_seconds))
+        self.llm_gate = llm_gate or LlmConcurrencyGate(settings.llm_max_concurrency)
+        self.llm_health = llm_health
+        self.timeout_seconds = min(
+            float(settings.llm_request_timeout_seconds),
+            float(settings.fetch_wait_timeout_seconds),
+        )
 
     async def run(self, task: AgentTask) -> AgentResult:
         await self.url_guard.validate(task.url)
+        if not await optional_llm_ready(self.llm_health):
+            return self._failure(
+                "AGENT_LLM_UNAVAILABLE",
+                "local Ollama recipe planner is unavailable",
+                retryable=True,
+            )
         page_html = str(task.context.get("page_html") or "")
         page_url = str(task.context.get("page_url") or task.url)
         if not page_html.strip():
@@ -157,20 +185,19 @@ class OllamaRecipeAgent:
 
         prompt = self._prompt(task, controls)
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
-                response = await client.post(
-                    f"{self.settings.ollama_url.rstrip('/')}/api/generate",
-                    json={
-                        "model": self.settings.ollama_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "format": "json",
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-                raw = payload.get("response", "{}")
-                plan = json.loads(raw)
+            async with self.llm_gate.slot(self.name):
+                async with httpx.AsyncClient(
+                    timeout=self.timeout_seconds,
+                    trust_env=False,
+                ) as client:
+                    response = await client.post(
+                        f"{self.settings.ollama_url.rstrip('/')}/api/generate",
+                        json=ollama_generate_payload(self.settings, prompt),
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    raw = payload.get("response", "{}")
+                    plan = json.loads(raw)
         except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError) as exc:
             return self._failure(
                 "AGENT_LLM_UNAVAILABLE",

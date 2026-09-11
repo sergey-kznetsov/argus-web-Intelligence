@@ -41,11 +41,11 @@ ARGUS работает как отдельный серверный инфрас
 - Bearer auth, SSRF/redirect guards, лимиты запросов/ресурсов и secret-safe logging;
 - отдельный операторский Web UI, который работает поверх того же ARGUS API.
 
-### Что в коде есть, но сейчас не включено в рабочий crawler graph
+### LLM/AGENT-контур
 
-В репозитории сохраняется код AGENT/LLM-навигации, Browser Use/Ollama и связанные lifecycle-компоненты SiteRecipe. Однако текущий `build_services()` создаёт crawler graph с `agent=None`, `llm_health=None`; legacy-параметры Ollama читаются только для совместимости старых env-файлов. Поэтому документация не считает AGENT или LLM активной частью production runtime.
+Локальный Ollama включён по умолчанию как необязательный управляющий слой. Он участвует в первичном плане, follow-up, supervision, гипотезах сущностей, семантической разметке точных цитат и AGENT-навигации. При недоступности или timeout модель не останавливает сбор: каждый компонент переходит к детерминированному fallback. Флаг `ARGUS_LLM_REQUIRED=true` предназначен только для установки, где оператор сознательно требует fail-closed при старте worker/embedded.
 
-Рабочая цепочка получения web-страниц сейчас:
+Рабочая цепочка получения страниц:
 
 ```text
 research plan
@@ -53,12 +53,19 @@ research plan
   -> source adapter
   -> FAST
   -> BROWSER при необходимости
+  -> AGENT только когда FAST/BROWSER не смогли получить нужное публичное представление
+       -> Recipe
+       -> Stagehand
+       -> Browser Use
+  -> детерминированный Playwright replay SiteRecipe
   -> extraction / normalization
   -> Observation + Evidence + Provenance
   -> storage
 ```
 
-AGENT остаётся подготовленной, но не подключённой возможностью. Его нельзя указывать как фактически используемый fallback, пока он снова явно не подключён в `build_services()` и это не подтверждено тестами.
+Все LLM-компоненты одного worker используют общий semaphore с `max_concurrency=1`. Модель предлагает только план или навигационные действия. Её текст не становится фактом; семантическая цитата принимается только после буквальной проверки в полученном источнике. CAPTCHA, login, paywall, access-control и изменяющие состояние действия не обходятся.
+
+Stagehand и Browser Use имеют несовместимые обязательные версии `websockets`, поэтому серверная установка создаёт два проверяемых `pip check` окружения: основной venv со Stagehand и изолированный venv Browser Use. Общий worker всё равно применяет единый последовательный порядок и удерживает глобальный LLM-слот во время изолированного вызова. Подробности: [`docs/LLM_AGENT_RUNTIME.md`](docs/LLM_AGENT_RUNTIME.md).
 
 ## Consumer profiles и Tool Packs
 
@@ -246,6 +253,8 @@ argus init-token
 argus serve
 ```
 
+Для рабочего Stagehand-профиля установите `pip install -e '.[stagehand,dev]'`. Browser Use устанавливается отдельно через `pip install -e '.[agent-browser-use]'`; смешивать оба extras в одном venv нельзя из-за несовместимых upstream pins. `deploy/windows/deploy-server.ps1` создаёт оба окружения автоматически.
+
 Локальный режим по умолчанию:
 
 ```text
@@ -296,6 +305,7 @@ Application-level SSRF protection — defense in depth. Сетевой egress po
 - [`docs/PUBLIC_MAP_SOURCES.md`](docs/PUBLIC_MAP_SOURCES.md) — текущая роль публичных карт;
 - [`docs/RESIDENTIAL_SOURCES.md`](docs/RESIDENTIAL_SOURCES.md) — residential facts и `dom.mingkh.ru`;
 - [`docs/SECURITY.md`](docs/SECURITY.md) — security boundary.
+- [`docs/LLM_AGENT_RUNTIME.md`](docs/LLM_AGENT_RUNTIME.md) — локальный Ollama, AGENT fallback, лимиты и деградация.
 
 ## Правило разработки
 

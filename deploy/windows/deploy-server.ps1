@@ -430,7 +430,13 @@ $venvPython = Join-Path $releaseDir ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
     throw "ARGUS virtual environment was not created"
 }
-Invoke-Checked -FilePath $venvPython -Arguments @("-m", "pip", "install", "--disable-pip-version-check", ".") -WorkingDirectory $releaseDir
+Invoke-Checked -FilePath $venvPython -Arguments @("-m", "pip", "install", "--disable-pip-version-check", ".[stagehand]") -WorkingDirectory $releaseDir
+Invoke-Checked -FilePath $venvPython -Arguments @("-m", "pip", "check") -WorkingDirectory $releaseDir
+$browserUseVenv = Join-Path $releaseDir ".venv-browser-use"
+Invoke-Checked -FilePath $venvPython -Arguments @("-m", "venv", $browserUseVenv) -WorkingDirectory $releaseDir
+$browserUsePython = Join-Path $browserUseVenv "Scripts\python.exe"
+Invoke-Checked -FilePath $browserUsePython -Arguments @("-m", "pip", "install", "--disable-pip-version-check", ".[agent-browser-use]") -WorkingDirectory $releaseDir
+Invoke-Checked -FilePath $browserUsePython -Arguments @("-m", "pip", "check") -WorkingDirectory $releaseDir
 Invoke-Checked -FilePath $venvPython -Arguments @("-m", "playwright", "install", "chromium") -WorkingDirectory $releaseDir
 
 $dbIdentityHelper = Join-Path $releaseDir "deploy\windows\read-dsn-identity.py"
@@ -470,7 +476,24 @@ $managedEnv = [ordered]@{
     ARGUS_STORAGE_BACKEND = "postgresql"
     ARGUS_DATABASE_DSN_FILE = $DatabaseDsnFile
     ARGUS_LOG_DIR = $LogsRoot
+    ARGUS_WORKER_CONCURRENCY = "1"
+    ARGUS_MAX_CONCURRENCY = "2"
+    ARGUS_BROWSER_MAX_CONCURRENCY = "1"
+    ARGUS_LLM_ENABLED = "true"
     ARGUS_LLM_REQUIRED = "false"
+    ARGUS_OLLAMA_URL = "http://127.0.0.1:11434"
+    ARGUS_OLLAMA_MODEL = "argus-qwen3:8b-cpu"
+    ARGUS_OLLAMA_NUM_THREAD = "2"
+    ARGUS_OLLAMA_NUM_CTX = "4096"
+    ARGUS_OLLAMA_NUM_PREDICT = "512"
+    ARGUS_OLLAMA_KEEP_ALIVE_SECONDS = "60"
+    ARGUS_LLM_MAX_CONCURRENCY = "1"
+    ARGUS_LLM_REQUEST_TIMEOUT_SECONDS = "20"
+    ARGUS_AGENT_ENABLED = "true"
+    ARGUS_AGENT_BACKEND = "auto"
+    ARGUS_AGENT_MAX_STEPS = "25"
+    ARGUS_AGENT_TIMEOUT_SECONDS = "120"
+    ARGUS_BROWSER_USE_PYTHON = $browserUsePython
 }
 Write-ManagedEnv -Path $ConfigFile -Values $managedEnv
 icacls.exe $ConfigFile /inheritance:r /grant:r "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" | Out-Null

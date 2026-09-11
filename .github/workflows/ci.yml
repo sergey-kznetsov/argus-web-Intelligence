@@ -61,6 +61,31 @@ jobs:
           retention-days: 3
           if-no-files-found: error
 
+  dependency-profiles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [stagehand, agent-browser-use]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[${{ matrix.profile }}]"
+      - run: pip check
+      - name: Import optional runtime
+        shell: bash
+        run: |
+          if [[ "${{ matrix.profile }}" == "stagehand" ]]; then
+            python -c "import argus, stagehand"
+          else
+            python -c "import argus, browser_use"
+          fi
+
   windows-runtime:
     runs-on: windows-2022
     timeout-minutes: 20
@@ -82,7 +107,8 @@ jobs:
           foreach ($script in @(
             "deploy/windows/deploy-server.ps1",
             "deploy/windows/run-process.ps1",
-            "deploy/windows/configure-geo-analyzer-consumer.ps1"
+            "deploy/windows/configure-geo-analyzer-consumer.ps1",
+            "deploy/windows/tune-ollama-cpu.ps1"
           )) {
             $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile(
@@ -109,6 +135,7 @@ jobs:
           $env:GEOANALYZER_DATABASE_DSN = "postgresql://postgres:root@127.0.0.1:5432/postgres"
           $env:ARGUS_TOKEN_FILE = Join-Path $env:RUNNER_TEMP "argus-token"
           $env:ARGUS_STORAGE_BACKEND = "postgresql"
+          $env:ARGUS_LLM_ENABLED = "false"
           $env:ARGUS_LLM_REQUIRED = "false"
           $env:ARGUS_WAYBACK_CDX_URL = "https://web.archive.org/cdx/search/cdx"
           $env:PYTHONUNBUFFERED = "1"
@@ -210,6 +237,7 @@ jobs:
             "ARGUS_STORAGE_BACKEND=postgresql",
             "ARGUS_DATABASE_DSN_FILE=$dsnFile",
             "ARGUS_LOG_DIR=$logs",
+            "ARGUS_LLM_ENABLED=false",
             "ARGUS_LLM_REQUIRED=false"
           ))
 

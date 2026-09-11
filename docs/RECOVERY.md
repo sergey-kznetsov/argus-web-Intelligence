@@ -62,7 +62,7 @@ Heartbeat — второй уровень защиты: неуспешное lea
 
 Replacement worker может получить collection сразу после release, не дожидаясь lease timeout.
 
-Cancellation передаётся FAST и BROWSER runtimes. Отменённый FAST request не должен запускать BROWSER fallback. В текущем production graph AGENT не подключён; dormant AGENT path также не должен запускаться из cancellation при возможном будущем включении.
+Cancellation передаётся FAST, BROWSER и активному AGENT path. Отменённый FAST request не запускает BROWSER fallback, отменённый BROWSER request — AGENT fallback. Общий LLM gate и дочерний Browser Use process освобождаются при unwind; cancellation не превращается в source failure.
 
 ## Сбой PostgreSQL во время worker execution
 
@@ -102,7 +102,7 @@ Collection-scoped Snapshot IDs детерминированы по collection/so
 
 SiteRecipe — shared operational state, а не collection factual output, поэтому recipe lifecycle не входит в task factual transaction. Active recipe может пережить interrupted collection, но сам recipe не является Observation/Evidence.
 
-В текущем service graph AGENT не создаёт новые recipes, потому что `agent=None`; deterministic active recipe replay остаётся поддерживаемым инфраструктурным path.
+Активный AGENT может создать только candidate recipe. Candidate становится active после deterministic BROWSER replay и source-backed проверки цели; interruption или blocked replay оставляет его отклонённым/неактивным. Recipe и model output не входят в factual Evidence.
 
 ## Проверяемые fault scenarios
 

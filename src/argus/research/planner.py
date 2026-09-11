@@ -8,6 +8,12 @@ import httpx
 
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest
+from argus.llm_health import OllamaRuntimeHealth
+from argus.llm_runtime import (
+    LlmConcurrencyGate,
+    ollama_generate_payload,
+    optional_llm_ready,
+)
 from argus.research.historical_sources import HistoricalSourceResearchPlanner
 from argus.research.public_map_sources import PublicMapSourceResearchPlanner
 from argus.sources.base import SourceTask
@@ -328,8 +334,17 @@ class HeuristicResearchPlanner:
 
 
 class OllamaResearchPlanner:
-    def __init__(self, settings: Settings, fallback: ResearchPlanner | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        fallback: ResearchPlanner | None = None,
+        *,
+        llm_gate: LlmConcurrencyGate | None = None,
+        llm_health: OllamaRuntimeHealth | None = None,
+    ) -> None:
         self.settings = settings
+        self.llm_gate = llm_gate or LlmConcurrencyGate(settings.llm_max_concurrency)
+        self.llm_health = llm_health
         self.max_queries = max(1, int(settings.discovery_max_queries))
         self.max_query_chars = 512
         self.historical_sources = HistoricalSourceResearchPlanner(
@@ -344,6 +359,8 @@ class OllamaResearchPlanner:
         )
 
     async def plan(self, request: CollectionRequest) -> ResearchPlan:
+        if not await optional_llm_ready(self.llm_health):
+            return await self.fallback.plan(request)
         research_input = research_semantics_payload(request)
         prompt = (
             "You are ARGUS Research Planner. Return strict JSON with keys queries (array of search strings) "
@@ -362,56 +379,55 @@ class OllamaResearchPlanner:
             f"Input: {json.dumps(research_input, ensure_ascii=False, sort_keys=True)}"
         )
         try:
-            async with httpx.AsyncClient(timeout=20.0, trust_env=False) as client:
-                response = await client.post(
-                    f"{self.settings.ollama_url.rstrip('/')}/api/generate",
-                    json={
-                        "model": self.settings.ollama_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "format": "json",
-                    },
-                )
-                response.raise_for_status()
-                raw = response.json().get("response", "{}")
-                data: dict[str, Any] = json.loads(raw)
-                queries = self._bounded_queries(data.get("queries", []))
-                if not queries:
-                    return await self.fallback.plan(request)
-                protected_count = min(
-                    len(queries),
-                    len({intent.casefold() for intent in request.intents}),
-                )
-                queries, historical_count, public_map_count = _merge_curated_sources(
-                    request,
-                    queries,
-                    max_queries=self.max_queries,
-                    max_query_chars=self.max_query_chars,
-                    protected_count=protected_count,
-                    historical_sources=self.historical_sources,
-                    public_map_sources=self.public_map_sources,
-                )
-                notes = self._bounded_notes(data.get("notes", []))
-                if historical_count:
-                    notes.append(
-                        f"curated_historical_sources={historical_count};"
-                        f"version={self.historical_sources.version}"
+            async with self.llm_gate.slot("research-planner"):
+                async with httpx.AsyncClient(
+                    timeout=self.settings.llm_request_timeout_seconds,
+                    trust_env=False,
+                ) as client:
+                    response = await client.post(
+                        f"{self.settings.ollama_url.rstrip('/')}/api/generate",
+                        json=ollama_generate_payload(self.settings, prompt),
                     )
-                if public_map_count:
-                    notes.append(
-                        f"curated_public_map_sources={public_map_count};"
-                        f"version={self.public_map_sources.version}"
-                    )
-                source_pool_tasks = _source_pool_tasks(request)
-                if source_pool_tasks:
-                    notes.append(
-                        f"supplemental_source_pool={len(source_pool_tasks)};priority=normal"
-                    )
-                return ResearchPlan(
-                    queries=queries,
-                    tasks=source_pool_tasks,
-                    notes=notes,
+                    response.raise_for_status()
+                    raw = response.json().get("response", "{}")
+                    data: dict[str, Any] = json.loads(raw)
+            queries = self._bounded_queries(data.get("queries", []))
+            if not queries:
+                return await self.fallback.plan(request)
+            protected_count = min(
+                len(queries),
+                len({intent.casefold() for intent in request.intents}),
+            )
+            queries, historical_count, public_map_count = _merge_curated_sources(
+                request,
+                queries,
+                max_queries=self.max_queries,
+                max_query_chars=self.max_query_chars,
+                protected_count=protected_count,
+                historical_sources=self.historical_sources,
+                public_map_sources=self.public_map_sources,
+            )
+            notes = self._bounded_notes(data.get("notes", []))
+            if historical_count:
+                notes.append(
+                    f"curated_historical_sources={historical_count};"
+                    f"version={self.historical_sources.version}"
                 )
+            if public_map_count:
+                notes.append(
+                    f"curated_public_map_sources={public_map_count};"
+                    f"version={self.public_map_sources.version}"
+                )
+            source_pool_tasks = _source_pool_tasks(request)
+            if source_pool_tasks:
+                notes.append(
+                    f"supplemental_source_pool={len(source_pool_tasks)};priority=normal"
+                )
+            return ResearchPlan(
+                queries=queries,
+                tasks=source_pool_tasks,
+                notes=notes,
+            )
         except (httpx.HTTPError, ValueError, json.JSONDecodeError, TypeError):
             return await self.fallback.plan(request)
 

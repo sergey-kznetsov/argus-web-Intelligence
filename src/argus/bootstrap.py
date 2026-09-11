@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from argus.config import Settings
+from argus.crawler.agent.base import AgentBackend
+from argus.crawler.agent.browser_use import BrowserUseAgent
+from argus.crawler.agent.fallback import SequentialAgentBackend
+from argus.crawler.agent.ollama_recipe import OllamaRecipeAgent
+from argus.crawler.agent.stagehand import StagehandAgent
 from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.extraction.ooxml import BoundedOoxmlExtractor
@@ -10,6 +15,8 @@ from argus.geocoding.contracts import GeocodeProvider
 from argus.geocoding.nominatim import NominatimGeocoder
 from argus.history.snapshots import SnapshotService
 from argus.history.wayback import WaybackCDXProvider
+from argus.llm_health import OllamaRuntimeHealth
+from argus.llm_runtime import LlmConcurrencyGate
 from argus.maps.overpass import OverpassMapProvider
 from argus.maps.registry import MapProviderRegistry
 from argus.observability import OperationalMetrics
@@ -23,10 +30,13 @@ from argus.research.browser_serp import (
 from argus.research.coverage import EvidenceAwareHeuristicFollowupResearchPlanner
 from argus.research.discovery import DiscoveryService
 from argus.research.entities import AreaEntityResearchPlanner
+from argus.research.entity_hypotheses import OllamaEntityHypothesisExtractor
+from argus.research.followup import OllamaFollowupResearchPlanner
 from argus.research.historical import HistoricalBranchPlanner
 from argus.research.historical_sources import HistoricalSourceResearchPlanner
 from argus.research.intent_coverage import IntentCoverageEvaluator
-from argus.research.planner import HeuristicResearchPlanner
+from argus.research.intent_evidence import OllamaIntentEvidenceClassifier
+from argus.research.planner import HeuristicResearchPlanner, OllamaResearchPlanner
 from argus.research.query_safety import QuerySafeFollowupResearchPlanner, QuerySafeResearchPlanner
 from argus.research.radius_scope import (
     RadiusAwareAreaEntityResearchPlanner,
@@ -34,12 +44,14 @@ from argus.research.radius_scope import (
     RadiusAwareResearchPlanner,
 )
 from argus.research.residential_sources import (
+    RESIDENTIAL_INTENTS,
     CuratedResidentialFollowupResearchPlanner,
     CuratedResidentialResearchPlanner,
 )
 from argus.research.searxng import SearxngDiscoveryProvider
 from argus.research.source_routing import DedicatedSourceRoutingDiscoveryService
-from argus.research.supervisor import HeuristicResearchSupervisor
+from argus.research.source_scoped_intents import SourceScopedIntentEvidenceClassifier
+from argus.research.supervisor import HeuristicResearchSupervisor, OllamaResearchSupervisor
 from argus.research.task_context import ResearchInputPlanner
 from argus.security.runtime_posture import enforce_runtime_security
 from argus.security.urls import UrlGuard
@@ -79,6 +91,44 @@ def configured_geocoding_provider_names(settings: Settings) -> list[str]:
 
 def configured_archive_provider_names(settings: Settings) -> list[str]:
     return ["wayback_cdx"] if settings.wayback_cdx_url else []
+
+
+def build_agent(
+    settings: Settings,
+    guard: UrlGuard,
+    llm_gate: LlmConcurrencyGate,
+    llm_health: OllamaRuntimeHealth | None,
+) -> AgentBackend | None:
+    if not settings.llm_enabled or not settings.agent_enabled:
+        return None
+
+    builders = {
+        "ollama-recipe": lambda: OllamaRecipeAgent(
+            settings,
+            guard,
+            llm_gate=llm_gate,
+            llm_health=llm_health,
+        ),
+        "stagehand": lambda: StagehandAgent(
+            settings,
+            guard,
+            llm_gate=llm_gate,
+            llm_health=llm_health,
+        ),
+        "browser-use": lambda: BrowserUseAgent(
+            settings,
+            guard,
+            llm_gate=llm_gate,
+            llm_health=llm_health,
+        ),
+    }
+    if settings.agent_backend == "auto":
+        return SequentialAgentBackend(
+            [builders[name]() for name in ("ollama-recipe", "stagehand", "browser-use")]
+        )
+    if settings.agent_backend == "disabled":
+        return None
+    return builders[settings.agent_backend]()
 
 
 def build_discovery(
@@ -201,13 +251,24 @@ def build_ooxml_extractor(settings: Settings) -> BoundedOoxmlExtractor:
 def _build_initial_planner(
     settings: Settings,
     historical_source_planner: HistoricalSourceResearchPlanner,
+    llm_gate: LlmConcurrencyGate,
+    llm_health: OllamaRuntimeHealth | None,
 ) -> ResearchInputPlanner:
-    primary = RadiusAwareResearchPlanner(
-        HeuristicResearchPlanner(
-            max_queries=settings.discovery_max_queries,
-            historical_sources=historical_source_planner,
-        )
+    deterministic_primary = HeuristicResearchPlanner(
+        max_queries=settings.discovery_max_queries,
+        historical_sources=historical_source_planner,
     )
+    primary_delegate = (
+        OllamaResearchPlanner(
+            settings,
+            fallback=deterministic_primary,
+            llm_gate=llm_gate,
+            llm_health=llm_health,
+        )
+        if settings.llm_enabled
+        else deterministic_primary
+    )
+    primary = RadiusAwareResearchPlanner(primary_delegate)
     fallback = RadiusAwareResearchPlanner(
         HeuristicResearchPlanner(
             max_queries=settings.discovery_max_queries,
@@ -232,11 +293,26 @@ def _build_initial_planner(
 
 
 def _build_followup_planner(
+    settings: Settings,
     coverage: IntentCoverageEvaluator,
+    llm_gate: LlmConcurrencyGate,
+    llm_health: OllamaRuntimeHealth | None,
 ) -> QuerySafeFollowupResearchPlanner:
-    primary = RadiusAwareFollowupResearchPlanner(
-        EvidenceAwareHeuristicFollowupResearchPlanner(coverage=coverage)
+    deterministic_primary = EvidenceAwareHeuristicFollowupResearchPlanner(
+        coverage=coverage
     )
+    primary_delegate = (
+        OllamaFollowupResearchPlanner(
+            settings,
+            fallback=deterministic_primary,
+            coverage=coverage,
+            llm_gate=llm_gate,
+            llm_health=llm_health,
+        )
+        if settings.llm_enabled
+        else deterministic_primary
+    )
+    primary = RadiusAwareFollowupResearchPlanner(primary_delegate)
     fallback = RadiusAwareFollowupResearchPlanner(
         EvidenceAwareHeuristicFollowupResearchPlanner(coverage=coverage)
     )
@@ -255,12 +331,7 @@ def _build_followup_planner(
 
 
 def build_services(settings: Settings) -> ServiceContainer:
-    """Build the deterministic ARGUS crawler runtime.
-
-    ARGUS deliberately performs discovery, acquisition, browser fallback, structured
-    extraction, recursive research and Evidence/Provenance/Coverage storage without an
-    LLM dependency. Domain interpretation remains the responsibility of consumer modules.
-    """
+    """Build evidence-first acquisition with an optional fail-open LLM control layer."""
 
     settings.ensure_dirs()
     enforce_runtime_security(settings)
@@ -275,6 +346,9 @@ def build_services(settings: Settings) -> ServiceContainer:
     snapshots = SnapshotService(repository)
     recipes = RecipeManager(repository)
     metrics = OperationalMetrics()
+    llm_gate = LlmConcurrencyGate(settings.llm_max_concurrency)
+    llm_health = OllamaRuntimeHealth(settings) if settings.llm_enabled else None
+    agent = build_agent(settings, guard, llm_gate, llm_health)
     discovery = build_discovery(settings, guard, fast)
     geocoder = build_geocoder(settings)
     auto_enabled_overpass = (
@@ -292,6 +366,17 @@ def build_services(settings: Settings) -> ServiceContainer:
         catalog_file=settings.historical_source_catalog_file
     )
     coverage = IntentCoverageEvaluator()
+    intent_evidence_classifier = None
+    if settings.llm_enabled:
+        intent_evidence_classifier = SourceScopedIntentEvidenceClassifier(
+            OllamaIntentEvidenceClassifier(
+                settings,
+                llm_gate=llm_gate,
+                llm_health=llm_health,
+            ),
+            source_scoped_intents=RESIDENTIAL_INTENTS,
+            llm_health=llm_health,
+        )
 
     registry = SourceRegistry(metrics=metrics)
     generic_web = AtomicContentWebAdapter(
@@ -300,8 +385,8 @@ def build_services(settings: Settings) -> ServiceContainer:
         browser=browser,
         snapshots=snapshots,
         recipes=recipes,
-        agent=None,
-        intent_evidence_classifier=None,
+        agent=agent,
+        intent_evidence_classifier=intent_evidence_classifier,
         sitemap_discovery_enabled=settings.sitemap_discovery_enabled,
         pdf_extractor=build_pdf_extractor(settings),
         structured_data_extractor=structured_extractor,
@@ -356,11 +441,33 @@ def build_services(settings: Settings) -> ServiceContainer:
     if settings.wayback_cdx_url:
         registry.register(WaybackSourceAdapter(WaybackCDXProvider(settings), snapshots))
 
-    planner = _build_initial_planner(settings, historical_source_planner)
-    followup_planner = _build_followup_planner(coverage)
-    supervisor = HeuristicResearchSupervisor(
+    planner = _build_initial_planner(
+        settings,
+        historical_source_planner,
+        llm_gate,
+        llm_health,
+    )
+    followup_planner = _build_followup_planner(
+        settings,
+        coverage,
+        llm_gate,
+        llm_health,
+    )
+    supervisor_fallback = HeuristicResearchSupervisor(
         target_sources_per_intent=2,
         coverage=coverage,
+    )
+    supervisor = (
+        OllamaResearchSupervisor(
+            settings,
+            fallback=supervisor_fallback,
+            coverage=coverage,
+            target_sources_per_intent=2,
+            llm_gate=llm_gate,
+            llm_health=llm_health,
+        )
+        if settings.llm_enabled
+        else supervisor_fallback
     )
     orchestrator = MandatoryCoverageToolPackOrchestrator(
         repository=repository,
@@ -373,7 +480,15 @@ def build_services(settings: Settings) -> ServiceContainer:
         area_entity_planner=RadiusAwareAreaEntityResearchPlanner(AreaEntityResearchPlanner()),
         followup_planner=followup_planner,
         research_supervisor=supervisor,
-        entity_hypothesis_extractor=None,
+        entity_hypothesis_extractor=(
+            OllamaEntityHypothesisExtractor(
+                settings,
+                llm_gate=llm_gate,
+                llm_health=llm_health,
+            )
+            if settings.llm_enabled
+            else None
+        ),
         intent_coverage=coverage,
         max_followup_rounds=3,
         auto_execute=settings.execution_role == "embedded",
@@ -387,6 +502,11 @@ def build_services(settings: Settings) -> ServiceContainer:
         fast=fast,
         browser=browser,
         metrics=metrics,
-        llm_health=None,
-        llm_required_on_start=False,
+        llm_health=llm_health,
+        llm_gate=llm_gate,
+        llm_required_on_start=(
+            settings.llm_enabled
+            and settings.llm_required
+            and settings.execution_role in {"embedded", "worker"}
+        ),
     )

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from argus.crawler.browser.runtime import BrowserCrawlerRuntime
 from argus.crawler.fast.runtime import FastCrawlerRuntime
 from argus.llm_health import OllamaRuntimeHealth
+from argus.llm_runtime import LlmConcurrencyGate
 from argus.maps.registry import MapProviderRegistry
 from argus.observability import OperationalMetrics
 from argus.orchestrator.service import CollectionOrchestrator
@@ -25,6 +26,7 @@ class ServiceContainer:
     browser: BrowserCrawlerRuntime
     metrics: OperationalMetrics
     llm_health: OllamaRuntimeHealth | None = None
+    llm_gate: LlmConcurrencyGate | None = None
     llm_required_on_start: bool = False
 
     async def start(self) -> None:

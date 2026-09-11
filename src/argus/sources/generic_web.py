@@ -85,44 +85,75 @@ class GenericWebAdapter:
         try:
             result = await self.fast.fetch(task.url)
             if result.blocked or self._needs_browser(result.text):
-                return await self._browser_or_agent(task)
+                return await self._browser_or_agent(task, context_fetch=result)
             return result
         except UnsafeUrlError:
             raise
         except Exception:
             return await self._browser_or_agent(task)
 
-    async def _browser_or_agent(self, task: SourceTask) -> FetchResult:
+    async def _browser_or_agent(
+        self,
+        task: SourceTask,
+        *,
+        context_fetch: FetchResult | None = None,
+    ) -> FetchResult:
         try:
-            return await self.browser.fetch(task.url)
+            result = await self.browser.fetch(task.url)
         except UnsafeUrlError:
             raise
         except Exception as browser_error:
             if self.agent is not None:
-                guided = await self._agent_guided_fetch(task)
+                guided = await self._agent_guided_fetch(task, context_fetch=context_fetch)
                 if guided is not None:
                     return guided
             raise browser_error
+        if result.blocked or self.agent is None or not self._needs_browser(result.text):
+            return result
+        guided = await self._agent_guided_fetch(task, context_fetch=result)
+        return guided if guided is not None else result
 
-    async def _agent_guided_fetch(self, task: SourceTask) -> FetchResult | None:
+    async def _agent_guided_fetch(
+        self,
+        task: SourceTask,
+        *,
+        context_fetch: FetchResult | None = None,
+    ) -> FetchResult | None:
         if self.agent is None:
             return None
         goals = self._research_goals(task)
         goal_text = ", ".join(goals)
-        agent_result = await self.agent.run(
-            AgentTask(
-                url=task.url,
-                goal=goal_text,
-                instruction=(
-                    f"Find the public page or view needed for goals '{goal_text}'. Use public site "
-                    "navigation, search, filters and expandable sections when needed."
-                ),
-                context={
-                    "allowed_domains": task.metadata.get("allowed_domains", []),
-                    "research_goals": goals,
-                },
+        context: dict[str, object] = {
+            "allowed_domains": task.metadata.get("allowed_domains", []),
+            "research_goals": goals,
+            "research_input_candidates": task.metadata.get("research_input_candidates", []),
+        }
+        if context_fetch is not None and not context_fetch.blocked:
+            context.update(
+                {
+                    "page_html": context_fetch.text,
+                    "page_url": context_fetch.final_url,
+                    "page_runtime": context_fetch.runtime,
+                }
             )
-        )
+        try:
+            agent_result = await self.agent.run(
+                AgentTask(
+                    url=task.url,
+                    goal=goal_text,
+                    instruction=(
+                        f"Find the public page or view needed for goals '{goal_text}'. Use public "
+                        "site navigation, search, filters and expandable sections when needed."
+                    ),
+                    context=context,
+                )
+            )
+        except UnsafeUrlError:
+            raise
+        except Exception as exc:
+            task.metadata["agent_error"] = "agent runtime unavailable"
+            task.metadata["agent_error_type"] = type(exc).__name__
+            return None
         if agent_result.blocked:
             return FetchResult(
                 url=task.url,

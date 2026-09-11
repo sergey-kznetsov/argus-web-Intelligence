@@ -6,6 +6,7 @@ from collections.abc import Iterable
 
 from argus.contracts.models import CollectionRequest, Observation, Point
 from argus.llm_health import OllamaRuntimeHealth
+from argus.llm_runtime import optional_llm_ready
 from argus.normalization.public_map_provenance import public_map_surface_kind
 from argus.research.intent_evidence import IntentEvidenceFinding, OllamaIntentEvidenceClassifier
 from argus.sources.base import SourceResult
@@ -452,10 +453,8 @@ class SourceScopedIntentEvidenceClassifier:
         if request.capability == "urban_signals":
             result = await self.urban_signals.annotate(scoped_request, result)
 
-        if self.llm_health is not None:
-            health = await self.llm_health.check()
-            if not health.ready:
-                return result
+        if not await optional_llm_ready(self.llm_health):
+            return result
 
         return await self.delegate.annotate(scoped_request, result)
 

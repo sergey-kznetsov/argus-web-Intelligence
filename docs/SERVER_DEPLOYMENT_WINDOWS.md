@@ -77,8 +77,8 @@ Apply:
 
 1. проверяет commit через GitHub;
 2. скачивает immutable snapshot;
-3. создаёт Python 3.11 venv;
-4. устанавливает ARGUS и Chromium;
+3. создаёт основной Python 3.11 venv со Stagehand и отдельный `.venv-browser-use`;
+4. выполняет `pip check` в обоих окружениях и устанавливает Chromium;
 5. проверяет ARGUS-owned DB identity;
 6. создаёт/preserves Bearer token;
 7. формирует managed `argus.env`;
@@ -87,6 +87,19 @@ Apply:
 10. ждёт worker/API readiness;
 11. проверяет, что listeners принадлежат новой release;
 12. при failure возвращает Scheduled Tasks на previous release.
+
+## Ollama и AGENT
+
+Перед первым запуском настройте локальный Ollama из elevated PowerShell:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File deploy\windows\tune-ollama-cpu.ps1
+```
+
+Скрипт фиксирует один параллельный запрос, одну загруженную модель, очередь 4, `keep_alive=60s`, создаёт `argus-qwen3:8b-cpu` с `num_ctx=4096` и `num_predict=512`, а процессу Ollama назначает `BelowNormal` и affinity на два CPU по умолчанию.
+
+Deployment включает LLM как optional control layer (`ARGUS_LLM_REQUIRED=false`). Основной venv содержит Stagehand; Browser Use запускается через `ARGUS_BROWSER_USE_PYTHON` из отдельного окружения. Недоступность Ollama отражается как degraded LLM check, но не останавливает deterministic collection path.
 
 ## Health
 

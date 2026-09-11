@@ -9,7 +9,14 @@ import httpx
 
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest, Observation
+from argus.llm_health import OllamaRuntimeHealth
+from argus.llm_runtime import (
+    LlmConcurrencyGate,
+    ollama_generate_payload,
+    optional_llm_ready,
+)
 from argus.research.intent_coverage import IntentCoverageEvaluator
+from argus.research.planner import research_semantics_payload
 
 
 @dataclass(slots=True)
@@ -157,8 +164,13 @@ class OllamaFollowupResearchPlanner:
         settings: Settings,
         fallback: FollowupResearchPlanner | None = None,
         coverage: IntentCoverageEvaluator | None = None,
+        *,
+        llm_gate: LlmConcurrencyGate | None = None,
+        llm_health: OllamaRuntimeHealth | None = None,
     ) -> None:
         self.settings = settings
+        self.llm_gate = llm_gate or LlmConcurrencyGate(settings.llm_max_concurrency)
+        self.llm_health = llm_health
         self.coverage = coverage or IntentCoverageEvaluator()
         self.fallback = fallback or HeuristicFollowupResearchPlanner(coverage=self.coverage)
         self.max_observations = 60
@@ -175,6 +187,13 @@ class OllamaFollowupResearchPlanner:
     ) -> FollowupPlan:
         if max_queries <= 0:
             return FollowupPlan()
+        if not await optional_llm_ready(self.llm_health):
+            return await self.fallback.plan_followups(
+                request,
+                observations,
+                seen_queries=seen_queries,
+                max_queries=max_queries,
+            )
         summary = self._summary(request, observations)
         coverage_counts = self._factual_coverage_counts(observations, request=request)
         requested_counts = {
@@ -191,45 +210,45 @@ class OllamaFollowupResearchPlanner:
             "reviews/comments/complaints/discussions, local media and historical records when "
             "requested. Do not repeat queries from seen_queries. Keep queries precise.\n"
             f"Maximum queries: {max_queries}\n"
-            f"Request: {request.model_dump_json()}\n"
+            f"Research semantics: "
+            f"{json.dumps(research_semantics_payload(request), ensure_ascii=False)}\n"
             f"Seen queries: {json.dumps(sorted(seen_queries)[-100:], ensure_ascii=False)}\n"
             f"Factual coverage counts: {json.dumps(requested_counts, ensure_ascii=False)}\n"
             f"Uncovered requested intents: {json.dumps(uncovered, ensure_ascii=False)}\n"
             f"Observation summary: {json.dumps(summary, ensure_ascii=False)}"
         )
         try:
-            async with httpx.AsyncClient(timeout=20.0, trust_env=False) as client:
-                response = await client.post(
-                    f"{self.settings.ollama_url.rstrip('/')}/api/generate",
-                    json={
-                        "model": self.settings.ollama_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "format": "json",
-                    },
-                )
-                response.raise_for_status()
-                raw = response.json().get("response", "{}")
-                data: dict[str, Any] = json.loads(raw)
-                queries = self._bounded_queries(
-                    data.get("queries", []),
+            async with self.llm_gate.slot("followup-planner"):
+                async with httpx.AsyncClient(
+                    timeout=self.settings.llm_request_timeout_seconds,
+                    trust_env=False,
+                ) as client:
+                    response = await client.post(
+                        f"{self.settings.ollama_url.rstrip('/')}/api/generate",
+                        json=ollama_generate_payload(self.settings, prompt),
+                    )
+                    response.raise_for_status()
+                    raw = response.json().get("response", "{}")
+                    data: dict[str, Any] = json.loads(raw)
+            queries = self._bounded_queries(
+                data.get("queries", []),
+                seen_queries=seen_queries,
+                max_queries=max_queries,
+            )
+            if not queries:
+                return await self.fallback.plan_followups(
+                    request,
+                    observations,
                     seen_queries=seen_queries,
                     max_queries=max_queries,
                 )
-                if not queries:
-                    return await self.fallback.plan_followups(
-                        request,
-                        observations,
-                        seen_queries=seen_queries,
-                        max_queries=max_queries,
-                    )
-                notes_raw = data.get("notes", [])
-                notes = (
-                    [str(item)[:500] for item in notes_raw[:20]]
-                    if isinstance(notes_raw, list)
-                    else []
-                )
-                return FollowupPlan(queries=queries, notes=notes)
+            notes_raw = data.get("notes", [])
+            notes = (
+                [str(item)[:500] for item in notes_raw[:20]]
+                if isinstance(notes_raw, list)
+                else []
+            )
+            return FollowupPlan(queries=queries, notes=notes)
         except (httpx.HTTPError, ValueError, json.JSONDecodeError, TypeError):
             return await self.fallback.plan_followups(
                 request,

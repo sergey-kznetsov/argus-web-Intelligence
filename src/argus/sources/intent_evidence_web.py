@@ -24,9 +24,8 @@ class IntentEvidenceAnnotator(Protocol):
 class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
     """Generic web acquisition with optional source-backed intent annotations.
 
-    The production crawler-only runtime does not attach a semantic annotator. The optional
-    protocol is retained only as a neutral extension seam for deterministic annotators and
-    backwards-compatible tests; this adapter has no LLM dependency.
+    The annotator is a control-layer extension: it may label only exact excerpts that are
+    already present in fetched source text. Its own output is never factual Evidence.
     """
 
     historical_archive_provenance_version = "historical-archive-page/1"
@@ -58,6 +57,9 @@ class IntentEvidenceWebAdapter(PublicMapProvenanceWebAdapter):
         self._attach_source_contour_provenance(task, result)
         self._attach_historical_archive_provenance(task, request, result)
         await self._finalize_recipe_goal_verification(task, request, result)
+        # PublicMapProvenanceWebAdapter invokes the annotator before it evaluates
+        # semantic coverage and again for each independently fetched guided page.
+        # Repeating it here would duplicate both the model call and Evidence rows.
         return result
 
     def _discovered_tasks(

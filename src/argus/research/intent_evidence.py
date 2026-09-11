@@ -10,6 +10,12 @@ import httpx
 
 from argus.config import Settings
 from argus.contracts.models import CollectionRequest, Evidence, EvidenceSource, Observation
+from argus.llm_health import OllamaRuntimeHealth
+from argus.llm_runtime import (
+    LlmConcurrencyGate,
+    ollama_generate_payload,
+    optional_llm_ready,
+)
 from argus.normalization.identity import stable_evidence_id
 from argus.normalization.public_map_provenance import public_map_surface_kind
 from argus.research.historical_relevance import HistoricalTerritoryRelevanceEvaluator
@@ -142,9 +148,16 @@ class OllamaIntentEvidenceClassifier:
         *,
         territory_relevance: TerritoryRelevanceEvaluator | None = None,
         historical_territory_relevance: HistoricalTerritoryRelevanceEvaluator | None = None,
+        llm_gate: LlmConcurrencyGate | None = None,
+        llm_health: OllamaRuntimeHealth | None = None,
     ) -> None:
         self.settings = settings
-        self.timeout_seconds = min(20.0, float(settings.fetch_wait_timeout_seconds))
+        self.llm_gate = llm_gate or LlmConcurrencyGate(settings.llm_max_concurrency)
+        self.llm_health = llm_health
+        self.timeout_seconds = min(
+            float(settings.llm_request_timeout_seconds),
+            float(settings.fetch_wait_timeout_seconds),
+        )
         self.territory_relevance = territory_relevance or TerritoryRelevanceEvaluator()
         self.historical_territory_relevance = (
             historical_territory_relevance
@@ -154,6 +167,8 @@ class OllamaIntentEvidenceClassifier:
     async def annotate(self, request: CollectionRequest, result: SourceResult) -> SourceResult:
         requested = self._requested_intents(request.intents)
         if not requested or result.blocked:
+            return result
+        if not await optional_llm_ready(self.llm_health):
             return result
 
         observations = [
@@ -251,20 +266,19 @@ class OllamaIntentEvidenceClassifier:
             f"SOURCE TEXT:\n{bounded_text}"
         )
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
-                response = await client.post(
-                    f"{self.settings.ollama_url.rstrip('/')}/api/generate",
-                    json={
-                        "model": self.settings.ollama_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "format": "json",
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-                raw = payload.get("response", "{}")
-                parsed = json.loads(raw)
+            async with self.llm_gate.slot("intent-evidence"):
+                async with httpx.AsyncClient(
+                    timeout=self.timeout_seconds,
+                    trust_env=False,
+                ) as client:
+                    response = await client.post(
+                        f"{self.settings.ollama_url.rstrip('/')}/api/generate",
+                        json=ollama_generate_payload(self.settings, prompt),
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    raw = payload.get("response", "{}")
+                    parsed = json.loads(raw)
         except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError):
             return []
         return self._validate_findings(parsed, bounded_text, requested)
