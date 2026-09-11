@@ -86,8 +86,19 @@ Consumer capability
 Сейчас зарегистрированы:
 
 - `kraken.development.uds`, profile version `1`, capability `urban_signals`;
-- `test`, profile version `1`, capability `generic_research` — только для CI/manual smoke;
-- `test`, capability `public_context` — искусственный contract-test профиль из существующих `official_government` и `local_media`, доказывающий подключение новой комбинации без изменения orchestrator.
+- `test`, profile version `1`, capability `generic_research` — только для CI/manual smoke.
+
+Новый модуль, для которого не нужен отдельный серверный consumer policy, может выбрать уже зарегистрированный профиль прямо в `CollectionRequest`:
+
+```json
+{
+  "consumer": "module.x",
+  "research_profile": "test_public_context",
+  "research_profile_version": 1
+}
+```
+
+ARGUS сам создаёт ограниченный profile Tool Pack из capability registry. Клиент не может передать произвольный Tool Pack или adapter allowlist. Искусственный профиль `test_public_context` состоит из существующих `official_government` и `local_media` и contract-тестом доказывает подключение Module X без изменений `ConsumerProfileRegistry`, `ToolPackRegistry` и orchestrator.
 
 Для Kraken допустимые `requested_facts`:
 
@@ -105,7 +116,7 @@ incident_mention
 
 Для `urban_signals` действует декларативный обязательный исследовательский контур: ARGUS выполняет обязательные source-contour проходы, затем обязательные публичные карты, и только после этого переходит к ограниченному optional research. На текущей версии `mandatory-coverage/5` эти обязательные линии запускаются даже если seed URL уже формально покрывает intents или коллекция восстановлена из checkpoint.
 
-Добавление нового сценария на уже существующих источниках требует зарегистрировать consumer capability/Tool Pack и собрать новый Research Profile из capabilities. Менять общий orchestrator при этом не требуется. Новый adapter нужен только при появлении нового класса источника.
+Добавление нового сценария на уже существующих источниках требует только собрать новый Research Profile из capabilities. Отдельный ConsumerProfile/Tool Pack нужен лишь когда продукту необходима собственная политика допустимых фактов или выдачи. Менять общий orchestrator не требуется. Новый adapter нужен только при появлении нового класса источника.
 
 Для публичных карт обязательная логика проходит все улицы, попавшие в радиус территории, по каждому включённому map-provider, а не ограничивается только исходным адресом. Состояние обязательных линий публикуется как `research_lane_coverage` в result API.
 

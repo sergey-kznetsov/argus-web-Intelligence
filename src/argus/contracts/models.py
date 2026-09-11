@@ -8,6 +8,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 from argus.consumer_registry import CONSUMER_PROFILE_REGISTRY
+from argus.research_profiles import RESEARCH_PROFILE_REGISTRY
 from argus.toolpacks import TOOL_PACK_REGISTRY
 
 PROTOCOL_VERSION = "1.0.0"
@@ -73,6 +74,8 @@ class CollectionRequest(BaseModel):
     consumer_profile_version: int | None = Field(default=None, ge=1)
     capability: str | None = Field(default=None, min_length=1, max_length=128)
     requested_facts: list[str] = Field(default_factory=list, max_length=50)
+    research_profile: str | None = Field(default=None, min_length=1, max_length=128)
+    research_profile_version: int | None = Field(default=None, ge=1)
     tool_pack_id: str | None = Field(default=None, min_length=1, max_length=128)
     tool_pack_version: int | None = Field(default=None, ge=1)
     analysis_id: str = Field(min_length=1, max_length=128)
@@ -106,6 +109,27 @@ class CollectionRequest(BaseModel):
         self.requested_facts = list(resolved.requested_facts)
 
         if resolved.legacy_unregistered:
+            if self.research_profile is not None:
+                if self.tool_pack_id is not None or self.tool_pack_version is not None:
+                    raise ValueError(
+                        "DYNAMIC_PROFILE_TOOL_PACK: tool pack is assigned by ARGUS"
+                    )
+                profile = RESEARCH_PROFILE_REGISTRY.require(self.research_profile)
+                if (
+                    self.research_profile_version is not None
+                    and self.research_profile_version != profile.version
+                ):
+                    raise ValueError(
+                        "UNSUPPORTED_RESEARCH_PROFILE_VERSION: research profile "
+                        f"'{profile.profile_id}' supports version {profile.version}, got "
+                        f"{self.research_profile_version}"
+                    )
+                self.research_profile = profile.profile_id
+                self.research_profile_version = profile.version
+                self.capability = profile.profile_id
+                self.tool_pack_id = f"profile.{profile.profile_id}"
+                self.tool_pack_version = profile.version
+                return self
             if self.tool_pack_id is not None or self.tool_pack_version is not None:
                 raise ValueError(
                     "UNKNOWN_CONSUMER_TOOL_PACK: unregistered consumers cannot select tool packs"
@@ -125,6 +149,24 @@ class CollectionRequest(BaseModel):
         )
         self.tool_pack_id = tool_pack.tool_pack_id
         self.tool_pack_version = tool_pack.version
+        profile = RESEARCH_PROFILE_REGISTRY.get(tool_pack.planner_policy)
+        if profile is not None:
+            if self.research_profile is not None and self.research_profile != profile.profile_id:
+                raise ValueError(
+                    "RESEARCH_PROFILE_MISMATCH: registered consumer capability maps to "
+                    f"'{profile.profile_id}', got '{self.research_profile}'"
+                )
+            if (
+                self.research_profile_version is not None
+                and self.research_profile_version != profile.version
+            ):
+                raise ValueError(
+                    "UNSUPPORTED_RESEARCH_PROFILE_VERSION: research profile "
+                    f"'{profile.profile_id}' supports version {profile.version}, got "
+                    f"{self.research_profile_version}"
+                )
+            self.research_profile = profile.profile_id
+            self.research_profile_version = profile.version
         return self
 
 

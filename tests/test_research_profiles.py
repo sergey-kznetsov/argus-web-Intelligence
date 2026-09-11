@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from argus.contracts.models import CollectionRequest, CollectionStatus
 from argus.orchestrator.mandatory_coverage import MandatoryCoverageToolPackOrchestrator
@@ -15,14 +16,14 @@ from argus.research_profiles import (
     resolved_research_profile_from_request,
 )
 from argus.sources.base import SourceTask
-from argus.toolpacks import TOOL_PACK_REGISTRY, activate_tool_pack
+from argus.toolpacks import activate_tool_pack, resolved_tool_pack_from_request
 
 
 def public_context_request() -> CollectionRequest:
     return CollectionRequest(
-        consumer="test",
-        consumer_profile_version=1,
-        capability="public_context",
+        consumer="module.x",
+        research_profile="test_public_context",
+        research_profile_version=1,
         analysis_id="profile-contract",
         territory={"city": "Ижевск"},
         intents=["local_news"],
@@ -40,7 +41,8 @@ def test_profile_resolves_reusable_capabilities_without_consumer_branching() -> 
     assert profile.public_map_ids == ()
     assert profile.street_inventory is False
     assert profile.completion_policy.mandatory_source_families is True
-    assert request.tool_pack_id == "test.public_context"
+    assert request.tool_pack_id == "profile.test_public_context"
+    assert request.capability == "test_public_context"
 
     planner = SourceContourResearchPlanner()
     assert [
@@ -73,6 +75,27 @@ def test_profile_registry_exposes_capability_to_source_resolution() -> None:
         "site_discovery",
         "openstreetmap_overpass",
     )
+
+
+def test_dynamic_profile_request_is_fail_closed() -> None:
+    with pytest.raises(ValidationError, match="not registered"):
+        CollectionRequest(
+            consumer="module.x",
+            research_profile="unknown_profile",
+            analysis_id="unknown-profile",
+            territory={"city": "Ижевск"},
+            intents=["local_news"],
+        )
+
+    with pytest.raises(ValidationError, match="assigned by ARGUS"):
+        CollectionRequest(
+            consumer="module.x",
+            research_profile="test_public_context",
+            tool_pack_id="test.generic",
+            analysis_id="forged-tool-pack",
+            territory={"city": "Ижевск"},
+            intents=["local_news"],
+        )
 
 
 class FakeRepository:
@@ -172,13 +195,8 @@ async def test_second_profile_runs_on_generic_orchestrator_without_maps() -> Non
     harness = ProfileHarness()
 
     applied = await harness._apply_research_profile_execution_guard(record)
-    pack = TOOL_PACK_REGISTRY.resolve(
-        consumer_id="test",
-        capability="public_context",
-        expected_tool_pack_id="test.public_context",
-        requested_tool_pack_id=request.tool_pack_id,
-        requested_version=request.tool_pack_version,
-    )
+    pack = resolved_tool_pack_from_request(request)
+    assert pack is not None
     with activate_tool_pack(pack):
         pending = await harness._run_serial_source_contours(record, [])
         pending = await harness._run_serial_public_maps(record, pending)

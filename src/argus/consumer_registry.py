@@ -224,15 +224,6 @@ CONSUMER_PROFILE_REGISTRY = ConsumerProfileRegistry(
                     tool_pack_id="test.generic",
                     description="CI/manual smoke profile; not a product consumer contract.",
                 ),
-                ConsumerCapabilityProfile(
-                    capability="public_context",
-                    allowed_facts=("publication", "official_notice"),
-                    default_requested_facts=("publication", "official_notice"),
-                    tool_pack_id="test.public_context",
-                    description=(
-                        "CI-only capability composed from official and local-media sources."
-                    ),
-                ),
             ),
             description="Internal ARGUS CI and manual smoke consumer.",
         ),

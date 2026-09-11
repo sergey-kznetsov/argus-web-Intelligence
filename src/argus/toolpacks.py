@@ -231,29 +231,10 @@ TEST_GENERIC_TOOL_PACK = ToolPack(
     description="Internal CI/manual smoke tool pack; not a product consumer pack.",
 )
 
-TEST_PUBLIC_CONTEXT_TOOL_PACK = ToolPack(
-    tool_pack_id="test.public_context",
-    version=1,
-    consumer_id="test",
-    capability="public_context",
-    allowed_source_ids=(
-        "generic_web",
-        "rss_atom",
-        "json_feed",
-        "site_discovery",
-    ),
-    planner_policy="test_public_context",
-    recipe_namespace="test.public_context",
-    extractor_policy="generic_research",
-    result_delivery_policy="intent_evidence",
-    description="CI profile proving declarative reuse of existing source capabilities.",
-)
-
 TOOL_PACK_REGISTRY = ToolPackRegistry(
     (
         KRAKEN_URBAN_SIGNALS_TOOL_PACK,
         TEST_GENERIC_TOOL_PACK,
-        TEST_PUBLIC_CONTEXT_TOOL_PACK,
     )
 )
 
@@ -292,9 +273,41 @@ def resolved_tool_pack_from_request(request: object) -> ResolvedToolPack | None:
         return None
     pack = TOOL_PACK_REGISTRY.get(str(tool_pack_id))
     if pack is None:
-        raise ToolPackContractError(
-            "TOOL_PACK_NOT_REGISTERED",
-            f"tool pack '{tool_pack_id}' is not registered",
+        dynamic_prefix = "profile."
+        normalized_id = str(tool_pack_id).strip().casefold()
+        if not normalized_id.startswith(dynamic_prefix):
+            raise ToolPackContractError(
+                "TOOL_PACK_NOT_REGISTERED",
+                f"tool pack '{tool_pack_id}' is not registered",
+            )
+        from argus.research_profiles import RESEARCH_PROFILE_REGISTRY
+
+        profile = RESEARCH_PROFILE_REGISTRY.require(
+            normalized_id.removeprefix(dynamic_prefix)
+        )
+        if int(tool_pack_version) != profile.version:
+            raise ToolPackContractError(
+                "UNSUPPORTED_TOOL_PACK_VERSION",
+                f"research profile '{profile.profile_id}' supports version "
+                f"{profile.version}, got {tool_pack_version}",
+            )
+        if str(capability) != profile.profile_id:
+            raise ToolPackContractError(
+                "TOOL_PACK_CONTRACT_MISMATCH",
+                f"dynamic profile tool pack requires capability '{profile.profile_id}'",
+            )
+        return ResolvedToolPack(
+            tool_pack_id=normalized_id,
+            version=profile.version,
+            consumer_id=str(consumer),
+            capability=profile.profile_id,
+            allowed_source_ids=profile.required_source_ids,
+            shared_tools=("fast", "browser", "evidence", "provenance", "snapshots"),
+            planner_policy=profile.profile_id,
+            recipe_namespace=f"profile.{profile.profile_id}",
+            extractor_policy="universal",
+            result_delivery_policy="intent_evidence",
+            result_dedup_policy="none",
         )
     return TOOL_PACK_REGISTRY.resolve(
         consumer_id=str(consumer),
