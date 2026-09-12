@@ -117,8 +117,7 @@ class ToolPackRegistry:
         pack = self._by_id.get(expected)
         if pack is None:
             raise ToolPackContractError(
-                "TOOL_PACK_NOT_REGISTERED",
-                f"tool pack '{expected}' is not registered",
+                "TOOL_PACK_NOT_REGISTERED", f"tool pack '{expected}' is not registered"
             )
 
         consumer_key = consumer_id.strip().casefold()
@@ -178,8 +177,7 @@ class ToolPackRegistry:
         normalized = value.strip().casefold().replace("-", "_")
         if not normalized:
             raise ToolPackContractError(
-                "INVALID_TOOL_PACK_CONTRACT",
-                f"{field} must not be blank",
+                "INVALID_TOOL_PACK_CONTRACT", f"{field} must not be blank"
             )
         allowed = set("abcdefghijklmnopqrstuvwxyz0123456789_.")
         if any(char not in allowed for char in normalized):
@@ -205,13 +203,13 @@ KRAKEN_URBAN_SIGNALS_TOOL_PACK = ToolPack(
     planner_policy="urban_signals",
     recipe_namespace="kraken.urban_signals",
     extractor_policy="urban_signals",
-    result_delivery_policy="broad_evidence_stream",
-    result_dedup_policy="canonical_text_v1",
+    result_delivery_policy="soika_message_stream",
+    result_dedup_policy="none",
     description=(
-        "Broad public-web research for Kraken. ARGUS discovers independent official, "
-        "appeal, housing, forum, local-media, public-community, map and general-web lanes; "
-        "acquires and normalizes exact source-backed content with Evidence/Provenance; "
-        "Kraken performs downstream domain relevance and social-problem filtering."
+        "Exhaustive public-web acquisition for the unchanged original SOIKA pipeline. "
+        "ARGUS delivers source-backed atomic messages without canonical-text deduplication, "
+        "semantic relevance filtering, geocoding or risk calculation. Original SOIKA owns "
+        "TextClassifier, Geocoder and EventDetection."
     ),
 )
 
@@ -220,11 +218,7 @@ JANUS_RESIDENTIAL_FACTS_TOOL_PACK = ToolPack(
     version=1,
     consumer_id="janus.parking.potential.uds",
     capability="residential_facts",
-    allowed_source_ids=(
-        "mingkh_residential",
-        "site_discovery",
-        "generic_web",
-    ),
+    allowed_source_ids=("mingkh_residential", "site_discovery", "generic_web"),
     planner_policy="universal",
     recipe_namespace="janus.residential_facts",
     extractor_policy="residential_facts",
@@ -248,17 +242,11 @@ TEST_GENERIC_TOOL_PACK = ToolPack(
 )
 
 TOOL_PACK_REGISTRY = ToolPackRegistry(
-    (
-        KRAKEN_URBAN_SIGNALS_TOOL_PACK,
-        JANUS_RESIDENTIAL_FACTS_TOOL_PACK,
-        TEST_GENERIC_TOOL_PACK,
-    )
+    (KRAKEN_URBAN_SIGNALS_TOOL_PACK, JANUS_RESIDENTIAL_FACTS_TOOL_PACK, TEST_GENERIC_TOOL_PACK)
 )
 
-
 _ACTIVE_TOOL_PACK: ContextVar[ResolvedToolPack | None] = ContextVar(
-    "argus_active_tool_pack",
-    default=None,
+    "argus_active_tool_pack", default=None
 )
 
 
@@ -293,14 +281,11 @@ def resolved_tool_pack_from_request(request: object) -> ResolvedToolPack | None:
         normalized_id = str(tool_pack_id).strip().casefold()
         if not normalized_id.startswith(dynamic_prefix):
             raise ToolPackContractError(
-                "TOOL_PACK_NOT_REGISTERED",
-                f"tool pack '{tool_pack_id}' is not registered",
+                "TOOL_PACK_NOT_REGISTERED", f"tool pack '{tool_pack_id}' is not registered"
             )
         from argus.research_profiles import RESEARCH_PROFILE_REGISTRY
 
-        profile = RESEARCH_PROFILE_REGISTRY.require(
-            normalized_id.removeprefix(dynamic_prefix)
-        )
+        profile = RESEARCH_PROFILE_REGISTRY.require(normalized_id.removeprefix(dynamic_prefix))
         if int(tool_pack_version) != profile.version:
             raise ToolPackContractError(
                 "UNSUPPORTED_TOOL_PACK_VERSION",
