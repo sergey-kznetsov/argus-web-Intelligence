@@ -5,9 +5,14 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from argus.config import Settings
-from argus.crawler.block_detection import looks_like_blocked_page, looks_like_captcha_page
+from argus.crawler.block_detection import (
+    looks_like_blocked_page,
+    looks_like_captcha_page,
+    looks_like_transient_challenge_page,
+)
 from argus.crawler.lifecycle import FetchBroker
 from argus.crawler.models import FetchResult
+from argus.crawler.request_manager import build_request_manager
 from argus.human_interaction import FileCaptchaBroker
 from argus.recipes.executor import PlaywrightRecipeExecutor
 from argus.recipes.models import SiteRecipe
@@ -17,6 +22,8 @@ from argus.security.urls import UnsafeUrlError, UrlGuard
 class BrowserCrawlerRuntime:
     captcha_manual_timeout_seconds = 900.0
     captcha_max_manual_attempts = 3
+    challenge_passive_wait_seconds = 8.0
+    challenge_reload_wait_seconds = 5.0
     _captcha_input_selectors = (
         "input[name*='captcha' i]:visible",
         "input[id*='captcha' i]:visible",
@@ -143,6 +150,72 @@ class BrowserCrawlerRuntime:
                 continue
         return None
 
+    async def _challenge_state(self, page: Any) -> tuple[bool, bool]:
+        try:
+            html = await page.content()
+            body = await self._page_body_text(page, html)
+        except Exception:
+            return True, False
+        return (
+            looks_like_captcha_page(body, "text/html"),
+            looks_like_transient_challenge_page(body, "text/html"),
+        )
+
+    async def _wait_for_normal_browser_clearance(
+        self,
+        page: Any,
+        *,
+        timeout_seconds: float,
+    ) -> bool:
+        """Allow a site challenge to clear through ordinary browser execution only."""
+
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        while asyncio.get_running_loop().time() < deadline:
+            captcha, transient = await self._challenge_state(page)
+            if not captcha and not transient:
+                return True
+            await asyncio.sleep(0.5)
+        return False
+
+    async def _attempt_automatic_challenge_recovery(
+        self,
+        page: Any,
+        *,
+        explicit_captcha: bool,
+        transient_challenge: bool,
+    ) -> tuple[bool, str]:
+        """Use bounded normal browser behaviour before asking the user.
+
+        This is deliberately not a CAPTCHA solver. ARGUS only keeps the same real browser
+        session alive so JavaScript/cookies can finish a managed challenge. For transient
+        interstitials it may perform one ordinary reload. It never derives CAPTCHA answers,
+        clicks verification widgets, invokes solver services, or alters browser fingerprints.
+        """
+
+        if not explicit_captcha and not transient_challenge:
+            return False, "not_applicable"
+
+        if await self._wait_for_normal_browser_clearance(
+            page,
+            timeout_seconds=self.challenge_passive_wait_seconds,
+        ):
+            return True, "passive_browser_wait"
+
+        if explicit_captcha:
+            return False, "explicit_captcha_requires_user"
+
+        try:
+            await page.reload(wait_until="domcontentloaded", timeout=5000)
+        except Exception:
+            return False, "transient_reload_failed"
+
+        if await self._wait_for_normal_browser_clearance(
+            page,
+            timeout_seconds=self.challenge_reload_wait_seconds,
+        ):
+            return True, "bounded_browser_reload"
+        return False, "challenge_persisted"
+
     async def _submit_captcha_answer(self, page: Any, field: Any, answer: str) -> None:
         await field.fill(answer)
         for selector in (
@@ -178,13 +251,7 @@ class BrowserCrawlerRuntime:
         return False
 
     async def _handle_manual_captcha(self, page: Any, url: str) -> bool:
-        """Pause the live browser session and accept a human-entered text CAPTCHA.
-
-        No OCR, model inference, third-party solver, or challenge bypass is used. The user
-        sees the current browser screenshot through the authenticated ARGUS operations API;
-        the entered answer is applied to the same Playwright page/context so session cookies
-        and anti-bot state remain intact.
-        """
+        """Pause the live browser session and hand the remaining challenge to the user."""
 
         for _attempt in range(self.captcha_max_manual_attempts):
             selector = await self._captcha_input_selector(page)
@@ -197,7 +264,7 @@ class BrowserCrawlerRuntime:
                 prompt=(
                     "Введите символы CAPTCHA, показанные на скриншоте."
                     if kind == "text"
-                    else "Требуется интерактивная CAPTCHA; текстовый ввод недоступен."
+                    else "Требуется ручное прохождение интерактивной проверки в браузере."
                 ),
                 input_selector=selector,
             )
@@ -205,7 +272,7 @@ class BrowserCrawlerRuntime:
             if selector is None:
                 self._captcha.mark_failed(
                     challenge_id,
-                    "interactive CAPTCHA requires browser takeover; automatic solving is disabled",
+                    "interactive challenge requires user browser interaction",
                     status="interactive_required",
                 )
                 return False
@@ -349,33 +416,62 @@ class BrowserCrawlerRuntime:
                 content_type = await document_response.header_value("content-type") or "text/html"
 
                 captcha_seen = looks_like_captcha_page(text_sample, content_type)
-                captcha_solved = False
-                if captcha_seen:
-                    captcha_solved = await self._handle_manual_captcha(context.page, final_url)
-                    if captcha_solved:
-                        final_url = context.page.url
-                        await self.url_guard.validate_redirect(requested_url, final_url)
-                        html = await context.page.content()
-                        if len(html.encode("utf-8", errors="replace")) > self.settings.max_response_bytes:
-                            raise ValueError("browser content exceeds configured limit")
-                        title = await context.page.title()
-                        links = await self._page_links(context.page)
-                        text_sample = await self._page_body_text(context.page, html)
-                        status_code = document_response.status
-                        content_type = (
-                            await document_response.header_value("content-type") or "text/html"
+                transient_seen = looks_like_transient_challenge_page(text_sample, content_type)
+                challenge_seen = captcha_seen or transient_seen
+                auto_cleared = False
+                auto_strategy = "not_applicable"
+                manual_attempted = False
+                manual_solved = False
+
+                if challenge_seen:
+                    auto_cleared, auto_strategy = await self._attempt_automatic_challenge_recovery(
+                        context.page,
+                        explicit_captcha=captcha_seen,
+                        transient_challenge=transient_seen,
+                    )
+                    final_url = context.page.url
+                    await self.url_guard.validate_redirect(requested_url, final_url)
+                    html = await context.page.content()
+                    if len(html.encode("utf-8", errors="replace")) > self.settings.max_response_bytes:
+                        raise ValueError("browser content exceeds configured limit")
+                    title = await context.page.title()
+                    links = await self._page_links(context.page)
+                    text_sample = await self._page_body_text(context.page, html)
+                    captcha_remaining = looks_like_captcha_page(text_sample, content_type)
+                    transient_remaining = looks_like_transient_challenge_page(
+                        text_sample,
+                        content_type,
+                    )
+                    if not auto_cleared and (captcha_remaining or transient_remaining):
+                        manual_attempted = True
+                        manual_solved = await self._handle_manual_captcha(
+                            context.page,
+                            final_url,
                         )
+                        if manual_solved:
+                            final_url = context.page.url
+                            await self.url_guard.validate_redirect(requested_url, final_url)
+                            html = await context.page.content()
+                            if len(html.encode("utf-8", errors="replace")) > self.settings.max_response_bytes:
+                                raise ValueError("browser content exceeds configured limit")
+                            title = await context.page.title()
+                            links = await self._page_links(context.page)
+                            text_sample = await self._page_body_text(context.page, html)
 
                 blocked = (
                     status_code in {401, 403, 429}
-                    or (captcha_seen and not captcha_solved)
                     or looks_like_blocked_page(text_sample, content_type)
                 )
                 metadata: dict[str, object] = {
+                    "challenge_detected": challenge_seen,
+                    "challenge_transient_detected": transient_seen,
+                    "challenge_auto_recovery_attempted": challenge_seen,
+                    "challenge_auto_recovered": auto_cleared,
+                    "challenge_auto_strategy": auto_strategy,
                     "captcha_detected": captcha_seen,
-                    "captcha_manual_attempted": captcha_seen,
-                    "captcha_manual_solved": captcha_solved,
-                    "captcha_solver": "human_input" if captcha_seen else None,
+                    "captcha_manual_attempted": manual_attempted,
+                    "captcha_manual_solved": manual_solved,
+                    "captcha_solver": "human_input" if manual_attempted else None,
                     "captcha_automatic_solving": False,
                 }
                 if recipe is not None:
