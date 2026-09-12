@@ -10,7 +10,7 @@ from argus.config import Settings
 from argus.contracts.models import CollectionRecord, CollectionRequest, EvidencePage, ObservationPage
 from argus.human_interaction import CaptchaAnswerSubmission
 from argus.presentation import RussianPresentationService
-from argus.web.captcha_page import CAPTCHA_HTML
+from argus.web.captcha_page import CAPTCHA_APP_JS, CAPTCHA_HTML, CAPTCHA_STYLE_CSS
 from argus.web.client import ArgusApiClient
 from argus.web.config import WebSettings
 from argus.web.profiles import web_test_profiles
@@ -21,7 +21,7 @@ _BROWSER_HEADERS = {
     "Cache-Control": "no-store",
     "Content-Security-Policy": (
         "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; "
-        "form-action 'self'; script-src 'self'; style-src 'self'; connect-src 'self'"
+        "form-action 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'"
     ),
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
@@ -105,6 +105,14 @@ def create_web_app(
     @app.get("/assets/app.js", dependencies=[Depends(require_user)])
     async def javascript() -> Response:
         return Response(APP_JS, media_type="application/javascript", headers=_BROWSER_HEADERS)
+
+    @app.get("/assets/captcha.css", dependencies=[Depends(require_user)])
+    async def captcha_style() -> Response:
+        return Response(CAPTCHA_STYLE_CSS, media_type="text/css", headers=_BROWSER_HEADERS)
+
+    @app.get("/assets/captcha.js", dependencies=[Depends(require_user)])
+    async def captcha_javascript() -> Response:
+        return Response(CAPTCHA_APP_JS, media_type="application/javascript", headers=_BROWSER_HEADERS)
 
     @app.get("/health")
     async def health() -> dict[str, object]:
