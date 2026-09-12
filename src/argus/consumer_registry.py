@@ -78,9 +78,7 @@ class ConsumerProfileRegistry:
         requested_consumer = consumer.strip()
         profile = self.get(requested_consumer)
         structured_request = (
-            capability is not None
-            or bool(requested_facts)
-            or profile_version is not None
+            capability is not None or bool(requested_facts) or profile_version is not None
         )
 
         if profile is None:
@@ -153,8 +151,7 @@ class ConsumerProfileRegistry:
         normalized = value.strip().casefold().replace("-", "_")
         if not normalized:
             raise ConsumerContractError(
-                "INVALID_CONSUMER_CONTRACT",
-                f"{field} must not be blank",
+                "INVALID_CONSUMER_CONTRACT", f"{field} must not be blank"
             )
         allowed = set("abcdefghijklmnopqrstuvwxyz0123456789_.")
         if any(char not in allowed for char in normalized):
@@ -177,6 +174,9 @@ class ConsumerProfileRegistry:
         return tuple(result)
 
 
+# Kraken is only a transport consumer for original SOIKA. These fact labels tell ARGUS
+# which source-declared, atomic textual observations are useful to collect; they are not
+# SOIKA categories and ARGUS must not classify the text into SOIKA city functions.
 KRAKEN_URBAN_SIGNALS = ConsumerCapabilityProfile(
     capability="urban_signals",
     allowed_facts=(
@@ -187,6 +187,7 @@ KRAKEN_URBAN_SIGNALS = ConsumerCapabilityProfile(
         "resident_message",
         "local_news_mention",
         "incident_mention",
+        "review",
     ),
     tool_pack_id="kraken.urban_signals",
     default_requested_facts=(
@@ -197,10 +198,13 @@ KRAKEN_URBAN_SIGNALS = ConsumerCapabilityProfile(
         "resident_message",
         "local_news_mention",
         "incident_mention",
+        "review",
     ),
     description=(
-        "Citizen/resident messages and public local signals about urban problems suitable "
-        "for Kraken spatial-semantic analysis; establishment reviews are outside scope."
+        "Source-backed atomic public messages for the unchanged original SOIKA pipeline. "
+        "ARGUS acquires text/date/provenance only; SOIKA performs classification, "
+        "geocoding, event detection and risk calculation. Public-map reviews are valid "
+        "messages when extracted as atomic review/comment observations."
     ),
 )
 
@@ -222,7 +226,7 @@ CONSUMER_PROFILE_REGISTRY = ConsumerProfileRegistry(
             version=1,
             default_capability="urban_signals",
             capabilities=(KRAKEN_URBAN_SIGNALS,),
-            description="Kraken Development UDS spatial-semantic urban signal analysis.",
+            description="Kraken Development UDS transport contract for original SOIKA.",
         ),
         ConsumerProfile(
             consumer_id="janus.parking.potential.uds",
@@ -264,9 +268,7 @@ def consumer_profile_catalog() -> list[dict[str, object]]:
                     {
                         "capability": capability.capability,
                         "allowed_facts": list(capability.allowed_facts),
-                        "default_requested_facts": list(
-                            capability.default_requested_facts
-                        ),
+                        "default_requested_facts": list(capability.default_requested_facts),
                         "tool_pack_id": capability.tool_pack_id,
                         "description": capability.description,
                     }
