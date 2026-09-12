@@ -5,8 +5,15 @@ from collections.abc import Callable
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import FileResponse
 
 from argus.config import Settings
+from argus.human_interaction import (
+    CaptchaAnswerSubmission,
+    CaptchaChallengeNotFoundError,
+    CaptchaChallengeStateError,
+    FileCaptchaBroker,
+)
 from argus.research.lane_coverage import build_research_lane_coverage
 from argus.security.http_hardening import apply_http_hardening
 from argus.services import ServiceContainer
@@ -23,6 +30,7 @@ def register_operational_metrics_endpoint(
     """Register startup-time internal API extensions used by `create_app`."""
 
     apply_http_hardening(app, settings)
+    captcha_broker = FileCaptchaBroker(settings.db_path.parent / "human_interaction")
 
     @app.get("/v1/operations/metrics", dependencies=[Depends(require_bearer)])
     async def operational_metrics() -> dict[str, object]:
@@ -62,6 +70,14 @@ def register_operational_metrics_endpoint(
                 "public_outbound_ports": settings.outbound_public_ports,
                 "denied_outbound_host_count": len(settings.deny_outbound_hosts),
             },
+            "human_interaction": {
+                "captcha": {
+                    "version": captcha_broker.version,
+                    "manual_text_input": True,
+                    "automatic_solving": False,
+                    "pending": len(captcha_broker.list_pending()),
+                }
+            },
             "exporters": {
                 "prometheus": False,
                 "opentelemetry": False,
@@ -87,8 +103,50 @@ def register_operational_metrics_endpoint(
             time.perf_counter() - started,
             operation="research_lane_coverage",
         )
-        services.metrics.inc(
-            "operations_research_coverage_reads_total",
-            status="ok",
-        )
+        services.metrics.inc("operations_research_coverage_reads_total", status="ok")
         return build_research_lane_coverage(record, observations, evidence)
+
+    @app.get(
+        "/v1/operations/captcha",
+        dependencies=[Depends(require_bearer)],
+    )
+    async def pending_captcha_challenges() -> dict[str, object]:
+        """List live manual CAPTCHA challenges without exposing submitted answers."""
+
+        challenges = captcha_broker.list_pending()
+        return {
+            "version": captcha_broker.version,
+            "automatic_solving": False,
+            "items": challenges,
+            "count": len(challenges),
+        }
+
+    @app.get(
+        "/v1/operations/captcha/{challenge_id}/screenshot",
+        dependencies=[Depends(require_bearer)],
+    )
+    async def captcha_screenshot(challenge_id: str):
+        try:
+            path = captcha_broker.screenshot_path(challenge_id)
+        except CaptchaChallengeNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="CAPTCHA challenge not found") from exc
+        return FileResponse(path=path, media_type="image/png")
+
+    @app.post(
+        "/v1/operations/captcha/{challenge_id}/answer",
+        dependencies=[Depends(require_bearer)],
+    )
+    async def submit_captcha_answer(
+        challenge_id: str,
+        submission: CaptchaAnswerSubmission,
+    ) -> dict[str, object]:
+        try:
+            challenge = captcha_broker.submit_answer(challenge_id, submission.answer)
+        except CaptchaChallengeNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="CAPTCHA challenge not found") from exc
+        except CaptchaChallengeStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        services.metrics.inc("captcha_manual_answers_total", status="submitted")
+        return challenge
