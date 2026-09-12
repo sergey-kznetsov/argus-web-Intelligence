@@ -5,21 +5,35 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from argus.config import Settings
-from argus.crawler.block_detection import looks_like_blocked_page
+from argus.crawler.block_detection import looks_like_blocked_page, looks_like_captcha_page
 from argus.crawler.lifecycle import FetchBroker
 from argus.crawler.models import FetchResult
-from argus.crawler.request_manager import build_request_manager
+from argus.human_interaction import FileCaptchaBroker
 from argus.recipes.executor import PlaywrightRecipeExecutor
 from argus.recipes.models import SiteRecipe
 from argus.security.urls import UnsafeUrlError, UrlGuard
 
 
 class BrowserCrawlerRuntime:
+    captcha_manual_timeout_seconds = 900.0
+    captcha_max_manual_attempts = 3
+    _captcha_input_selectors = (
+        "input[name*='captcha' i]:visible",
+        "input[id*='captcha' i]:visible",
+        "input[placeholder*='captcha' i]:visible",
+        "input[aria-label*='captcha' i]:visible",
+        "input[name*='verification' i]:visible",
+        "input[id*='verification' i]:visible",
+        "input[placeholder*='код' i]:visible",
+        "input[aria-label*='код' i]:visible",
+    )
+
     def __init__(self, settings: Settings, url_guard: UrlGuard) -> None:
         self.settings = settings
         self.url_guard = url_guard
         self.recipe_executor = PlaywrightRecipeExecutor(url_guard)
         self._broker = FetchBroker()
+        self._captcha = FileCaptchaBroker(settings.db_path.parent / "human_interaction")
         self._crawler: Any | None = None
         self._run_task: asyncio.Task[Any] | None = None
         self._start_lock = asyncio.Lock()
@@ -36,7 +50,8 @@ class BrowserCrawlerRuntime:
         try:
             request = Request.from_url(url, unique_key=key)
             await self._crawler.add_requests([request])
-            return await asyncio.wait_for(future, timeout=self.settings.fetch_wait_timeout_seconds)
+            timeout = self.settings.fetch_wait_timeout_seconds + self.captcha_manual_timeout_seconds
+            return await asyncio.wait_for(future, timeout=timeout)
         except TimeoutError as exc:
             raise TimeoutError("BROWSER runtime result timeout") from exc
         finally:
@@ -61,8 +76,6 @@ class BrowserCrawlerRuntime:
             "browser_type": "chromium",
             "use_incognito_pages": True,
             "browser_launch_options": {
-                # Keep Chromium's process sandbox enabled. ARGUS never opts into
-                # --no-sandbox; host-level browser isolation is still a deployment duty.
                 "chromium_sandbox": True,
             },
             "browser_new_context_options": {
@@ -86,8 +99,6 @@ class BrowserCrawlerRuntime:
 
     @staticmethod
     async def _wait_for_dom_settle(page: Any) -> bool:
-        """Best-effort short settle after an SPA replaces the current execution context."""
-
         try:
             await page.wait_for_load_state("domcontentloaded", timeout=1500)
         except Exception:
@@ -95,8 +106,6 @@ class BrowserCrawlerRuntime:
         return True
 
     async def _page_links(self, page: Any) -> list[str]:
-        """Read links without failing an otherwise valid SPA snapshot on navigation races."""
-
         for attempt in range(3):
             try:
                 values = await page.locator("a[href]").evaluate_all(
@@ -113,8 +122,6 @@ class BrowserCrawlerRuntime:
         return []
 
     async def _page_body_text(self, page: Any, html: str) -> str:
-        """Read body text with an HTML fallback when an SPA replaces its execution context."""
-
         for attempt in range(3):
             try:
                 return (await page.locator("body").inner_text())[:50_000]
@@ -126,6 +133,106 @@ class BrowserCrawlerRuntime:
                 await self._wait_for_dom_settle(page)
                 await asyncio.sleep(0.1)
         return html[:50_000]
+
+    async def _captcha_input_selector(self, page: Any) -> str | None:
+        for selector in self._captcha_input_selectors:
+            try:
+                if await page.locator(selector).count() > 0:
+                    return selector
+            except Exception:
+                continue
+        return None
+
+    async def _submit_captcha_answer(self, page: Any, field: Any, answer: str) -> None:
+        await field.fill(answer)
+        for selector in (
+            "button[type='submit']:visible",
+            "input[type='submit']:visible",
+            "button:has-text('Проверить'):visible",
+            "button:has-text('Продолжить'):visible",
+            "button:has-text('Отправить'):visible",
+            "button:has-text('Submit'):visible",
+            "button:has-text('Continue'):visible",
+        ):
+            try:
+                candidate = page.locator(selector).first
+                if await candidate.count() > 0:
+                    await candidate.click()
+                    return
+            except Exception:
+                continue
+        await field.press("Enter")
+
+    async def _captcha_cleared(self, page: Any) -> bool:
+        deadline = asyncio.get_running_loop().time() + 10.0
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                html = await page.content()
+                body = await self._page_body_text(page, html)
+            except Exception:
+                await asyncio.sleep(0.25)
+                continue
+            if not looks_like_captcha_page(body, "text/html"):
+                return True
+            await asyncio.sleep(0.25)
+        return False
+
+    async def _handle_manual_captcha(self, page: Any, url: str) -> bool:
+        """Pause the live browser session and accept a human-entered text CAPTCHA.
+
+        No OCR, model inference, third-party solver, or challenge bypass is used. The user
+        sees the current browser screenshot through the authenticated ARGUS operations API;
+        the entered answer is applied to the same Playwright page/context so session cookies
+        and anti-bot state remain intact.
+        """
+
+        for _attempt in range(self.captcha_max_manual_attempts):
+            selector = await self._captcha_input_selector(page)
+            screenshot = await page.screenshot(type="png", full_page=False)
+            kind = "text" if selector is not None else "interactive"
+            challenge = self._captcha.create(
+                url=url,
+                screenshot=screenshot,
+                kind=kind,
+                prompt=(
+                    "Введите символы CAPTCHA, показанные на скриншоте."
+                    if kind == "text"
+                    else "Требуется интерактивная CAPTCHA; текстовый ввод недоступен."
+                ),
+                input_selector=selector,
+            )
+            challenge_id = str(challenge["challenge_id"])
+            if selector is None:
+                self._captcha.mark_failed(
+                    challenge_id,
+                    "interactive CAPTCHA requires browser takeover; automatic solving is disabled",
+                    status="interactive_required",
+                )
+                return False
+
+            try:
+                answer = await self._captcha.wait_for_answer(
+                    challenge_id,
+                    timeout_seconds=self.captcha_manual_timeout_seconds,
+                )
+                field = page.locator(selector).first
+                await self._submit_captcha_answer(page, field, answer)
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                except Exception:
+                    pass
+                if await self._captcha_cleared(page):
+                    self._captcha.mark_completed(challenge_id)
+                    return True
+                self._captcha.mark_failed(challenge_id, "CAPTCHA answer was rejected")
+            except Exception as exc:
+                try:
+                    self._captcha.mark_failed(challenge_id, str(exc))
+                except Exception:
+                    pass
+                if isinstance(exc, TimeoutError):
+                    return False
+        return False
 
     async def _ensure_started(self) -> None:
         if self._crawler is not None and self._run_task is not None and not self._run_task.done():
@@ -162,7 +269,9 @@ class BrowserCrawlerRuntime:
                     desired_concurrency=self.settings.browser_max_concurrency,
                     max_tasks_per_minute=self.settings.browser_max_requests_per_minute,
                 ),
-                request_handler_timeout=self._duration(self.settings.browser_timeout_seconds),
+                request_handler_timeout=self._duration(
+                    self.settings.browser_timeout_seconds + self.captcha_manual_timeout_seconds
+                ),
                 navigation_timeout=self._duration(self.settings.browser_timeout_seconds),
                 respect_robots_txt_file=True,
                 configure_logging=False,
@@ -186,12 +295,6 @@ class BrowserCrawlerRuntime:
                         await route.abort("blockedbyclient")
                         return
 
-                    # Playwright may follow a navigation redirect before a normal route
-                    # handler gets a chance to reject the next hop. For document requests,
-                    # fetch exactly one hop ourselves, validate Location while the browser
-                    # has not seen the redirect yet, then fulfill the intercepted request.
-                    # This preserves the network boundary: an unsafe redirect target is
-                    # never contacted by Chromium.
                     if route.request.resource_type == "document":
                         response = await route.fetch(max_redirects=0)
                         if 300 <= response.status < 400:
@@ -199,10 +302,7 @@ class BrowserCrawlerRuntime:
                             if location:
                                 redirect_url = urljoin(request_url, location)
                                 try:
-                                    await self.url_guard.validate_redirect(
-                                        request_url,
-                                        redirect_url,
-                                    )
+                                    await self.url_guard.validate_redirect(request_url, redirect_url)
                                 except UnsafeUrlError:
                                     await response.dispose()
                                     await route.abort("blockedbyclient")
@@ -247,17 +347,45 @@ class BrowserCrawlerRuntime:
                 text_sample = await self._page_body_text(context.page, html)
                 status_code = document_response.status
                 content_type = await document_response.header_value("content-type") or "text/html"
-                blocked = status_code in {401, 403, 429} or looks_like_blocked_page(
-                    text_sample,
-                    content_type,
+
+                captcha_seen = looks_like_captcha_page(text_sample, content_type)
+                captcha_solved = False
+                if captcha_seen:
+                    captcha_solved = await self._handle_manual_captcha(context.page, final_url)
+                    if captcha_solved:
+                        final_url = context.page.url
+                        await self.url_guard.validate_redirect(requested_url, final_url)
+                        html = await context.page.content()
+                        if len(html.encode("utf-8", errors="replace")) > self.settings.max_response_bytes:
+                            raise ValueError("browser content exceeds configured limit")
+                        title = await context.page.title()
+                        links = await self._page_links(context.page)
+                        text_sample = await self._page_body_text(context.page, html)
+                        status_code = document_response.status
+                        content_type = (
+                            await document_response.header_value("content-type") or "text/html"
+                        )
+
+                blocked = (
+                    status_code in {401, 403, 429}
+                    or (captcha_seen and not captcha_solved)
+                    or looks_like_blocked_page(text_sample, content_type)
                 )
-                metadata: dict[str, object] = {}
+                metadata: dict[str, object] = {
+                    "captcha_detected": captcha_seen,
+                    "captcha_manual_attempted": captcha_seen,
+                    "captcha_manual_solved": captcha_solved,
+                    "captcha_solver": "human_input" if captcha_seen else None,
+                    "captcha_automatic_solving": False,
+                }
                 if recipe is not None:
-                    metadata = {
-                        "recipe_id": recipe.recipe_id,
-                        "recipe_version": recipe.version,
-                        "recipe_extracted": recipe_extracted,
-                    }
+                    metadata.update(
+                        {
+                            "recipe_id": recipe.recipe_id,
+                            "recipe_version": recipe.version,
+                            "recipe_extracted": recipe_extracted,
+                        }
+                    )
                 self._broker.resolve(
                     key,
                     FetchResult(
