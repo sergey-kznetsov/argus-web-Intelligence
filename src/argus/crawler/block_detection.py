@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 
-_STRONG_BLOCK_MARKERS = (
+_CAPTCHA_MARKERS = (
     "captcha",
     "verify you are human",
-    "access denied",
     "robot check",
+    "i'm not a robot",
+    "i am not a robot",
+    "введите код с картинки",
+    "введите символы с картинки",
+    "подтвердите, что вы не робот",
+    "я не робот",
+)
+
+_STRONG_BLOCK_MARKERS = (
+    *_CAPTCHA_MARKERS,
+    "access denied",
     "checking your browser",
     "checking if the site connection is secure",
     "checking if the connection is secure",
@@ -24,25 +34,30 @@ _SHORT_INTERSTITIAL_MARKERS = (
 )
 
 
-def looks_like_blocked_page(text: str, content_type: str | None = None) -> bool:
-    """Identify access/challenge shells that must never become factual Evidence.
-
-    The detector stays deliberately generic and conservative. Strong challenge markers are
-    accepted on any HTML page; short ambiguous phrases only count when the visible payload
-    itself is tiny, which avoids classifying normal articles containing "please wait" as
-    blocked pages.
-    """
-
+def _html_sample(text: str, content_type: str | None) -> str | None:
     if content_type and "html" not in content_type.casefold():
-        return False
+        return None
+    return " ".join(text[:50_000].casefold().split())
 
-    sample = " ".join(text[:50_000].casefold().split())
+
+def looks_like_captcha_page(text: str, content_type: str | None = None) -> bool:
+    """Return True only for explicit human-verification/CAPTCHA markers."""
+
+    sample = _html_sample(text, content_type)
+    return sample is not None and any(marker in sample for marker in _CAPTCHA_MARKERS)
+
+
+def looks_like_blocked_page(text: str, content_type: str | None = None) -> bool:
+    """Identify access/challenge shells that must never become factual Evidence."""
+
+    sample = _html_sample(text, content_type)
+    if sample is None:
+        return False
     if any(marker in sample for marker in _STRONG_BLOCK_MARKERS):
         return True
-
     if len(sample) <= 2_000 and any(marker in sample for marker in _SHORT_INTERSTITIAL_MARKERS):
         return True
     return False
 
 
-__all__ = ["looks_like_blocked_page"]
+__all__ = ["looks_like_blocked_page", "looks_like_captcha_page"]
