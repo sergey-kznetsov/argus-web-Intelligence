@@ -4,25 +4,21 @@ CAPTCHA_HTML = """<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ARGUS CAPTCHA</title>
-  <style>
-    body{font-family:Inter,system-ui,sans-serif;background:#f4f6f8;color:#17202a;margin:0}
-    main{max-width:900px;margin:0 auto;padding:28px 18px 60px}
-    .panel{background:#fff;border:1px solid #dfe3e8;border-radius:12px;padding:18px;margin-top:16px}
-    .row{display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap}
-    button{border:0;border-radius:8px;padding:10px 14px;background:#182230;color:#fff;font:inherit;font-weight:700;cursor:pointer}
-    button.secondary{background:#e8edf2;color:#25313c}
-    input{font:inherit;padding:10px 12px;border:1px solid #cfd6dd;border-radius:8px;min-width:260px}
-    img{max-width:100%;border:1px solid #dfe3e8;border-radius:8px;margin-top:12px}
-    code{word-break:break-all}.muted{color:#667085}.danger{color:#b42318}.ok{color:#067647}
-  </style>
+  <link rel="stylesheet" href="/assets/captcha.css">
 </head>
 <body>
 <main>
   <div class="row"><div><h1>CAPTCHA ARGUS</h1><p class="muted">Ожидающие ручного вмешательства проверки.</p></div><button id="refresh" class="secondary">Обновить</button></div>
   <div id="root" class="panel">Загрузка...</div>
 </main>
-<script>
-(() => {
+<script src="/assets/captcha.js" defer></script>
+</body>
+</html>
+"""
+
+CAPTCHA_STYLE_CSS = """body{font-family:Inter,system-ui,sans-serif;background:#f4f6f8;color:#17202a;margin:0}main{max-width:900px;margin:0 auto;padding:28px 18px 60px}.panel{background:#fff;border:1px solid #dfe3e8;border-radius:12px;padding:18px;margin-top:16px}.row{display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap}button{border:0;border-radius:8px;padding:10px 14px;background:#182230;color:#fff;font:inherit;font-weight:700;cursor:pointer}button.secondary{background:#e8edf2;color:#25313c}input{font:inherit;padding:10px 12px;border:1px solid #cfd6dd;border-radius:8px;min-width:260px}img{max-width:100%;border:1px solid #dfe3e8;border-radius:8px;margin-top:12px}code{word-break:break-all}.muted{color:#667085}.danger{color:#b42318}.ok{color:#067647}"""
+
+CAPTCHA_APP_JS = """(() => {
   const root = document.getElementById('root');
   const request = async (path, options={}) => {
     const response = await fetch(path, {headers:{'Content-Type':'application/json'}, ...options});
@@ -91,7 +87,4 @@ CAPTCHA_HTML = """<!doctype html>
   load();
   setInterval(load, 3000);
 })();
-</script>
-</body>
-</html>
 """
