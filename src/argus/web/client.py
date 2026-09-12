@@ -54,6 +54,23 @@ class ArgusApiClient:
             }
         return response.status_code, payload
 
+    async def request_bytes(
+        self,
+        method: str,
+        path: str,
+    ) -> tuple[int, bytes, str | None]:
+        """Fetch a bounded binary response from the local authenticated API."""
+
+        if self._client is None:
+            raise RuntimeError("ARGUS API client is not started")
+        token = self._read_api_token()
+        response = await self._client.request(
+            method,
+            path,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        return response.status_code, response.content, response.headers.get("content-type")
+
     def _read_api_token(self) -> str:
         try:
             token = self.settings.api_token_file.read_text(encoding="utf-8").strip()
