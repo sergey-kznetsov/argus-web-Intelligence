@@ -27,11 +27,13 @@ class FileCaptchaBroker:
     """Cross-process human-in-the-loop CAPTCHA mailbox.
 
     API and worker processes share the same ARGUS data directory. The browser session stays
-    alive in the worker while the API only transports a screenshot and a human-entered
-    answer. ARGUS never calls a CAPTCHA-solving service and never derives an answer itself.
+    alive in the worker while the API transports a screenshot and, for text challenges, a
+    human-entered answer. Interactive challenges remain visible so the UI can clearly tell
+    the operator that browser interaction is required instead of silently dropping them.
     """
 
-    version = "captcha-human-input/1"
+    version = "captcha-human-input/2"
+    visible_statuses = frozenset({"pending", "answered", "applying", "interactive_required"})
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -74,7 +76,7 @@ class FileCaptchaBroker:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
-            if payload.get("status") in {"pending", "answered", "applying"}:
+            if payload.get("status") in self.visible_statuses:
                 result.append(self.public(payload))
         return result
 
@@ -99,6 +101,7 @@ class FileCaptchaBroker:
             "updated_at": payload.get("updated_at"),
             "has_screenshot": bool(payload.get("screenshot_file")),
             "manual_input_supported": payload.get("kind") == "text",
+            "interactive_required": payload.get("status") == "interactive_required",
             "error": payload.get("error"),
         }
 
@@ -145,9 +148,9 @@ class FileCaptchaBroker:
                 payload["updated_at"] = datetime.now(UTC).isoformat()
                 self._write(challenge_id, payload)
                 return answer
-            if status in {"failed", "expired", "completed"}:
+            if status in {"failed", "expired", "completed", "interactive_required"}:
                 raise CaptchaChallengeStateError(
-                    f"CAPTCHA challenge is no longer answerable: {status}"
+                    f"CAPTCHA challenge is no longer answerable as text: {status}"
                 )
             await asyncio.sleep(0.4)
         self.mark_failed(challenge_id, "manual CAPTCHA input timed out", status="expired")
