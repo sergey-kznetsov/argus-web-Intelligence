@@ -8,7 +8,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from argus.config import Settings
 from argus.contracts.models import CollectionRecord, CollectionRequest, EvidencePage, ObservationPage
+from argus.human_interaction import CaptchaAnswerSubmission
 from argus.presentation import RussianPresentationService
+from argus.web.captcha_page import CAPTCHA_HTML
 from argus.web.client import ArgusApiClient
 from argus.web.config import WebSettings
 from argus.web.profiles import web_test_profiles
@@ -92,6 +94,10 @@ def create_web_app(
     async def index() -> HTMLResponse:
         return HTMLResponse(INDEX_HTML, headers=_BROWSER_HEADERS)
 
+    @app.get("/captcha", dependencies=[Depends(require_user)], response_class=HTMLResponse)
+    async def captcha_page() -> HTMLResponse:
+        return HTMLResponse(CAPTCHA_HTML, headers=_BROWSER_HEADERS)
+
     @app.get("/assets/style.css", dependencies=[Depends(require_user)])
     async def style() -> Response:
         return Response(STYLE_CSS, media_type="text/css", headers=_BROWSER_HEADERS)
@@ -123,6 +129,45 @@ def create_web_app(
     @app.get("/api/sources", dependencies=[Depends(require_user)])
     async def sources() -> JSONResponse:
         return await proxy("GET", "/v1/sources")
+
+    @app.get("/api/captcha", dependencies=[Depends(require_user)])
+    async def captcha_challenges() -> JSONResponse:
+        return await proxy("GET", "/v1/operations/captcha")
+
+    @app.get(
+        "/api/captcha/{challenge_id}/screenshot",
+        dependencies=[Depends(require_user)],
+    )
+    async def captcha_screenshot(
+        challenge_id: str = Path(min_length=1, max_length=64, pattern=_TERMINAL_ID_PATTERN),
+    ) -> Response:
+        try:
+            status_code, content, content_type = await client.request_bytes(
+                "GET",
+                f"/v1/operations/captcha/{challenge_id}/screenshot",
+            )
+        except (httpx.HTTPError, RuntimeError):
+            return Response(status_code=502, headers=_BROWSER_HEADERS)
+        return Response(
+            content=content,
+            status_code=status_code,
+            media_type=content_type or "application/octet-stream",
+            headers=_BROWSER_HEADERS,
+        )
+
+    @app.post(
+        "/api/captcha/{challenge_id}/answer",
+        dependencies=[Depends(require_user)],
+    )
+    async def captcha_answer(
+        submission: CaptchaAnswerSubmission,
+        challenge_id: str = Path(min_length=1, max_length=64, pattern=_TERMINAL_ID_PATTERN),
+    ) -> JSONResponse:
+        return await proxy(
+            "POST",
+            f"/v1/operations/captcha/{challenge_id}/answer",
+            json_body=submission.model_dump(mode="json"),
+        )
 
     @app.post("/api/collections", dependencies=[Depends(require_user)])
     async def create_collection(request: CollectionRequest) -> JSONResponse:
