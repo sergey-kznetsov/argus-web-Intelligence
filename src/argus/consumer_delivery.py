@@ -11,21 +11,31 @@ from argus.normalization.identity import stable_evidence_id
 from argus.toolpacks import ResolvedToolPack
 
 
+_SOIKA_ATOMIC_ENTITY_TYPES = frozenset(
+    {
+        "complaint",
+        "public_appeal",
+        "post",
+        "comment",
+        "resident_message",
+        "local_news_mention",
+        "incident_mention",
+        "review",
+    }
+)
+
+
 @dataclass(slots=True)
 class ConsumerDeliveryProjector:
     """Apply consumer-selected transport policies without domain interpretation.
 
-    The projector is intentionally technical. It may collapse exact/canonical duplicate
-    text and redundant same-page wrapper documents, and it enforces explicit transport
-    semantics such as public-map information-only observations. It never decides whether
-    ordinary text is a complaint, incident, review, historical fact or any other
-    consumer-domain concept.
-
-    ToolPack metadata selects the policy, keeping this behavior consumer-scoped without
-    adding consumer IDs to ARGUS Core control flow.
+    The SOIKA delivery policy is deliberately conservative: ARGUS decides only whether an
+    observation is an atomic source-backed message or technical context. It does not
+    normalize message text, collapse equal text, classify relevance, geocode it, or derive
+    events/risk. Those operations belong to the unchanged original SOIKA pipeline.
     """
 
-    version: str = "consumer-delivery/2"
+    version: str = "consumer-delivery/3"
     min_dedup_chars: int = 40
     _indexes: dict[str, dict[str, str]] = field(default_factory=dict)
 
@@ -38,6 +48,9 @@ class ConsumerDeliveryProjector:
         observations: list[Observation],
         evidence: list[Evidence],
     ) -> tuple[list[Observation], list[Evidence], dict[str, object]]:
+        if pack is not None and pack.result_delivery_policy == "soika_message_stream":
+            return self._project_soika_message_stream(observations, evidence, pack)
+
         if (
             pack is None
             or pack.result_delivery_policy != "broad_evidence_stream"
@@ -52,19 +65,17 @@ class ConsumerDeliveryProjector:
                 "duplicates_collapsed": 0,
                 "information_only_observations_suppressed": 0,
                 "information_only_filtering_applied": False,
+                "semantic_filtering_applied": False,
+                "text_normalization_applied": False,
             }
 
         deliverable, information_only_ids = self._partition_information_only(observations)
         detached_evidence = self._detach_information_only_evidence(
-            evidence,
-            information_only_ids,
+            evidence, information_only_ids
         )
         index = await self._index_for(repository, collection_id)
         kept, duplicate_to_canonical = self._deduplicate_batch(deliverable, index)
-        remapped_evidence = self._remap_evidence(
-            detached_evidence,
-            duplicate_to_canonical,
-        )
+        remapped_evidence = self._remap_evidence(detached_evidence, duplicate_to_canonical)
         for observation in kept:
             key = self._dedup_key(observation)
             if key is not None:
@@ -80,7 +91,55 @@ class ConsumerDeliveryProjector:
             "information_only_observations_suppressed": len(information_only_ids),
             "information_only_filtering_applied": bool(information_only_ids),
             "semantic_filtering_applied": False,
+            "text_normalization_applied": True,
         }
+
+    def _project_soika_message_stream(
+        self,
+        observations: list[Observation],
+        evidence: list[Evidence],
+        pack: ResolvedToolPack,
+    ) -> tuple[list[Observation], list[Evidence], dict[str, object]]:
+        deliverable: list[Observation] = []
+        suppressed_ids: set[str] = set()
+        missing_source_time = 0
+
+        for observation in observations:
+            if not self._is_soika_atomic_message(observation):
+                suppressed_ids.add(observation.observation_id)
+                continue
+            # Preserve the Observation object itself. In particular, do not model_copy text
+            # through any canonicalizer: SOIKA receives the source text exactly as extracted.
+            deliverable.append(observation)
+            if observation.published_at is None:
+                missing_source_time += 1
+
+        detached_evidence = self._detach_information_only_evidence(evidence, suppressed_ids)
+        return deliverable, detached_evidence, {
+            "version": self.version,
+            "policy": pack.result_delivery_policy,
+            "dedup_policy": pack.result_dedup_policy,
+            "observations_input": len(observations),
+            "observations_output": len(deliverable),
+            "duplicates_collapsed": 0,
+            "technical_observations_suppressed": len(suppressed_ids),
+            "information_only_observations_suppressed": len(suppressed_ids),
+            "information_only_filtering_applied": bool(suppressed_ids),
+            "semantic_filtering_applied": False,
+            "text_normalization_applied": False,
+            "source_time_missing": missing_source_time,
+            "analytical_owner": "original_soika",
+        }
+
+    @staticmethod
+    def _is_soika_atomic_message(observation: Observation) -> bool:
+        entity_type = observation.entity_type.strip().casefold()
+        text = observation.text
+        return (
+            entity_type in _SOIKA_ATOMIC_ENTITY_TYPES
+            and isinstance(text, str)
+            and bool(text.strip())
+        )
 
     def release(self, collection_id: str) -> None:
         self._indexes.pop(collection_id, None)
@@ -96,8 +155,7 @@ class ConsumerDeliveryProjector:
         )
 
     def _partition_information_only(
-        self,
-        observations: list[Observation],
+        self, observations: list[Observation]
     ) -> tuple[list[Observation], set[str]]:
         deliverable: list[Observation] = []
         suppressed_ids: set[str] = set()
@@ -133,10 +191,7 @@ class ConsumerDeliveryProjector:
             }
             result.append(
                 item.model_copy(
-                    update={
-                        "observation_id": None,
-                        "metadata": metadata,
-                    }
+                    update={"observation_id": None, "metadata": metadata}
                 )
             )
         return result
@@ -159,8 +214,7 @@ class ConsumerDeliveryProjector:
         existing_index: dict[str, str],
     ) -> tuple[list[Observation], dict[str, str]]:
         duplicate_to_canonical: dict[str, str] = {}
-        suppressed_by_wrapper = self._same_page_wrapper_duplicates(observations)
-        duplicate_to_canonical.update(suppressed_by_wrapper)
+        duplicate_to_canonical.update(self._same_page_wrapper_duplicates(observations))
 
         kept: list[Observation] = []
         batch_index: dict[str, Observation] = {}
@@ -198,8 +252,7 @@ class ConsumerDeliveryProjector:
         return kept, duplicate_to_canonical
 
     def _same_page_wrapper_duplicates(
-        self,
-        observations: list[Observation],
+        self, observations: list[Observation]
     ) -> dict[str, str]:
         by_url: dict[str, list[Observation]] = defaultdict(list)
         for observation in observations:
@@ -225,8 +278,6 @@ class ConsumerDeliveryProjector:
                 wrapper_text = self._canonical_text(wrapper.text or "")
                 if not wrapper_text or representative_text not in wrapper_text:
                     continue
-                # Suppress only a thin page wrapper around one source-declared textual
-                # entity. Large pages can contain other useful text and must be preserved.
                 if len(wrapper_text) <= max(
                     len(representative_text) + 500,
                     int(len(representative_text) * 1.8),
@@ -250,9 +301,7 @@ class ConsumerDeliveryProjector:
         return " ".join(text.split()).strip().casefold()
 
     def _preferred(
-        self,
-        first: Observation,
-        second: Observation,
+        self, first: Observation, second: Observation
     ) -> tuple[Observation, Observation]:
         first_rank = self._rank(first)
         second_rank = self._rank(second)
