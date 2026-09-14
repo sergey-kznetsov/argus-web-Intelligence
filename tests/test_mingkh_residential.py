@@ -303,7 +303,7 @@ async def test_same_domain_house_links_are_preferred_before_agent_navigation():
 
 
 @pytest.mark.asyncio
-async def test_russian_access_challenge_is_blocked_not_solved():
+async def test_unresolved_russian_access_challenge_is_a_collector_error():
     web = _Web()
     adapter = MingkhResidentialAdapter(web, _Snapshots())
     html = """
@@ -318,10 +318,12 @@ async def test_russian_access_challenge_is_blocked_not_solved():
         _request("residential_population", "residential_premises_count"),
     )
 
-    assert result.blocked is True
+    assert result.blocked is False
+    assert result.partial is True
     assert result.observations == []
     assert result.evidence == []
-    assert [error.code for error in result.errors] == ["MINGKH_ACCESS_CHALLENGE"]
+    assert [error.code for error in result.errors] == ["MINGKH_ACCESS_CHALLENGE_UNRESOLVED"]
+    assert result.errors[0].retryable is True
     assert web.navigation_calls == 0
 
 
