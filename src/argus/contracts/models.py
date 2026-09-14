@@ -95,6 +95,56 @@ class CollectionRequest(BaseModel):
             raise ValueError("idempotency_key must not be blank")
         return normalized
 
+    @staticmethod
+    def _domain_within(host: str, roots: tuple[str, ...]) -> bool:
+        normalized = host.strip().rstrip(".").casefold()
+        return any(
+            normalized == root.strip().rstrip(".").casefold()
+            or normalized.endswith(f".{root.strip().rstrip('.').casefold()}")
+            for root in roots
+        )
+
+    def _apply_tool_pack_constraints(self, tool_pack) -> None:
+        exclusive_domains = tuple(
+            dict.fromkeys(
+                domain.strip().rstrip(".").casefold()
+                for domain in tool_pack.exclusive_domains
+                if domain.strip()
+            )
+        )
+        if exclusive_domains:
+            for domain in self.constraints.allowed_domains:
+                if not self._domain_within(domain, exclusive_domains):
+                    raise ValueError(
+                        "TOOL_PACK_DOMAIN_SCOPE: request allowed_domains exceed the "
+                        f"'{tool_pack.tool_pack_id}' domain contour"
+                    )
+            for url in [*self.constraints.seed_urls, *self.constraints.source_pool_urls]:
+                host = str(url.host or "")
+                if not self._domain_within(host, exclusive_domains):
+                    raise ValueError(
+                        "TOOL_PACK_DOMAIN_SCOPE: request URL exceeds the "
+                        f"'{tool_pack.tool_pack_id}' domain contour"
+                    )
+
+        max_pages = self.constraints.max_pages
+        if tool_pack.max_pages is not None:
+            max_pages = min(max_pages, int(tool_pack.max_pages))
+        max_depth = self.constraints.max_depth
+        if tool_pack.max_depth is not None:
+            max_depth = min(max_depth, int(tool_pack.max_depth))
+        self.constraints = self.constraints.model_copy(
+            update={
+                "max_pages": max_pages,
+                "max_depth": max_depth,
+                "allowed_domains": (
+                    list(exclusive_domains)
+                    if exclusive_domains
+                    else list(self.constraints.allowed_domains)
+                ),
+            }
+        )
+
     @model_validator(mode="after")
     def resolve_consumer_contract(self) -> "CollectionRequest":
         resolved = CONSUMER_PROFILE_REGISTRY.resolve(
@@ -149,6 +199,7 @@ class CollectionRequest(BaseModel):
         )
         self.tool_pack_id = tool_pack.tool_pack_id
         self.tool_pack_version = tool_pack.version
+        self._apply_tool_pack_constraints(tool_pack)
         profile = RESEARCH_PROFILE_REGISTRY.get(tool_pack.planner_policy)
         if profile is not None:
             if self.research_profile is not None and self.research_profile != profile.profile_id:
@@ -208,7 +259,7 @@ class Observation(BaseModel):
 
 
 class Snapshot(BaseModel):
-    snapshot_id: str = Field(default_factory=lambda: str(uuid4()))
+    snapshot_id: str
     source_id: str
     source_url: str
     collected_at: datetime = Field(default_factory=utcnow)
