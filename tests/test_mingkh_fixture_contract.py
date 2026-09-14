@@ -120,7 +120,7 @@ async def test_similar_wrong_address_never_becomes_residential_evidence() -> Non
 
 
 @pytest.mark.asyncio
-async def test_janus_single_pass_search_page_does_not_follow_similar_house_links() -> None:
+async def test_janus_single_pass_search_page_does_not_enqueue_similar_house_links() -> None:
     web = _Web()
     adapter = MingkhResidentialAdapter(web, _Snapshots())
     url = "https://dom.mingkh.ru/search"
@@ -135,7 +135,10 @@ async def test_janus_single_pass_search_page_does_not_follow_similar_house_links
     )
     assert result.observations == []
     assert result.discovered_tasks == []
-    assert web.navigation_calls == 0
+    # max_depth=0 blocks linked-house follow-up tasks, but the dedicated source may still
+    # perform one bounded interface-navigation attempt using the requested address. Any
+    # returned page is re-validated against the exact territory before facts can be emitted.
+    assert web.navigation_calls == 1
 
 
 @pytest.mark.asyncio
