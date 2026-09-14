@@ -34,6 +34,7 @@ class ToolPack:
     consumer_id: str
     capability: str
     allowed_source_ids: tuple[str, ...]
+    allowed_intents: tuple[str, ...] = ()
     shared_tools: tuple[str, ...] = (
         "fast",
         "browser",
@@ -54,6 +55,9 @@ class ToolPack:
     def allows_source(self, source_id: str) -> bool:
         return "*" in self.allowed_source_ids or source_id in self.allowed_source_ids
 
+    def allows_intent(self, intent: str) -> bool:
+        return not self.allowed_intents or "*" in self.allowed_intents or intent in self.allowed_intents
+
 
 @dataclass(frozen=True, slots=True)
 class ResolvedToolPack:
@@ -62,6 +66,7 @@ class ResolvedToolPack:
     consumer_id: str
     capability: str
     allowed_source_ids: tuple[str, ...]
+    allowed_intents: tuple[str, ...]
     shared_tools: tuple[str, ...]
     planner_policy: str
     recipe_namespace: str
@@ -74,6 +79,9 @@ class ResolvedToolPack:
 
     def allows_source(self, source_id: str) -> bool:
         return "*" in self.allowed_source_ids or source_id in self.allowed_source_ids
+
+    def allows_intent(self, intent: str) -> bool:
+        return not self.allowed_intents or "*" in self.allowed_intents or intent in self.allowed_intents
 
 
 class ToolPackRegistry:
@@ -169,6 +177,7 @@ class ToolPackRegistry:
             consumer_id=pack.consumer_id,
             capability=pack.capability,
             allowed_source_ids=pack.allowed_source_ids,
+            allowed_intents=pack.allowed_intents,
             shared_tools=pack.shared_tools,
             planner_policy=pack.planner_policy,
             recipe_namespace=pack.recipe_namespace,
@@ -232,6 +241,8 @@ JANUS_RESIDENTIAL_FACTS_TOOL_PACK = ToolPack(
     consumer_id="janus.parking.potential.uds",
     capability="residential_facts",
     allowed_source_ids=("mingkh_residential",),
+    allowed_intents=("residential_premises_count",),
+    shared_tools=("browser", "evidence", "provenance", "snapshots"),
     planner_policy="janus_residential_facts",
     recipe_namespace="janus.residential_facts",
     extractor_policy="residential_facts",
@@ -256,7 +267,7 @@ TEST_GENERIC_TOOL_PACK = ToolPack(
     planner_policy="generic_research",
     recipe_namespace="test.generic",
     extractor_policy="generic_research",
-    description="Internal CI/manual smoke tool pack; not a product consumer pack.",
+    description="Internal CI/manual smoke tool pack; not a product consumer contract.",
 )
 
 TOOL_PACK_REGISTRY = ToolPackRegistry(
@@ -321,6 +332,7 @@ def resolved_tool_pack_from_request(request: object) -> ResolvedToolPack | None:
             consumer_id=str(consumer),
             capability=profile.profile_id,
             allowed_source_ids=profile.required_source_ids,
+            allowed_intents=(),
             shared_tools=("fast", "browser", "evidence", "provenance", "snapshots"),
             planner_policy=profile.profile_id,
             recipe_namespace=f"profile.{profile.profile_id}",
@@ -348,6 +360,7 @@ def tool_pack_catalog() -> list[dict[str, object]]:
             "consumer_id": pack.consumer_id,
             "capability": pack.capability,
             "allowed_source_ids": list(pack.allowed_source_ids),
+            "allowed_intents": list(pack.allowed_intents),
             "shared_tools": list(pack.shared_tools),
             "planner_policy": pack.planner_policy,
             "recipe_namespace": pack.recipe_namespace,
