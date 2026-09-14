@@ -68,47 +68,51 @@ def _evidence(observation_id: str, evidence_id: str, *, text: str) -> Evidence:
 
 
 @pytest.mark.asyncio
-async def test_kraken_exact_duplicate_is_collapsed_and_evidence_is_preserved():
+async def test_kraken_equal_atomic_messages_are_not_deduplicated():
     text = (
         "Ижевск, Пушкинская. Жители пишут о проблеме у перехода и просят принять меры."
     )
-    existing = _observation(
-        "existing",
+    first = _observation(
+        "first",
         text=text,
         url="https://example.test/a",
         entity_type="post",
         source_kind="json_ld",
     )
-    duplicate = _observation(
-        "duplicate",
+    second = _observation(
+        "second",
         text=text,
         url="https://example.test/b",
-        entity_type="document",
+        entity_type="post",
+        source_kind="json_ld",
     )
     projector = ConsumerDeliveryProjector()
     pack = resolved_tool_pack_from_request(_request())
     assert pack is not None
 
     observations, evidence, stats = await projector.project_task_result(
-        _Repository([existing]),
+        _Repository(),
         collection_id="collection-1",
         pack=pack,
-        observations=[duplicate],
-        evidence=[_evidence("duplicate", "ev-duplicate", text=text)],
+        observations=[first, second],
+        evidence=[
+            _evidence("first", "ev-first", text=text),
+            _evidence("second", "ev-second", text=text),
+        ],
     )
 
-    assert observations == []
-    assert len(evidence) == 1
-    assert evidence[0].observation_id == "existing"
-    dedup = evidence[0].metadata["consumer_delivery_dedup"]
-    assert dedup["duplicate_observation_id"] == "duplicate"
-    assert dedup["canonical_observation_id"] == "existing"
-    assert stats["duplicates_collapsed"] == 1
+    assert [item.observation_id for item in observations] == ["first", "second"]
+    assert [item.observation_id for item in evidence] == ["first", "second"]
+    assert stats["policy"] == "soika_message_stream"
+    assert stats["dedup_policy"] == "none"
+    assert stats["duplicates_collapsed"] == 0
     assert stats["semantic_filtering_applied"] is False
+    assert stats["text_normalization_applied"] is False
+    assert stats["analytical_owner"] == "original_soika"
 
 
 @pytest.mark.asyncio
-async def test_kraken_same_page_thin_document_wrapper_prefers_typed_post():
+async def test_kraken_same_page_document_wrapper_is_context_only():
     post_text = (
         "Ижевск, улица Пушкинская, дом 277. Жители сообщают, что у перехода "
         "не работает освещение и вечером опасно переходить дорогу."
@@ -141,8 +145,15 @@ async def test_kraken_same_page_thin_document_wrapper_prefers_typed_post():
     )
 
     assert [item.observation_id for item in observations] == ["post"]
-    assert {item.observation_id for item in evidence} == {"post"}
-    assert stats["duplicates_collapsed"] == 1
+    by_id = {item.evidence_id: item for item in evidence}
+    assert by_id["ev-document"].observation_id is None
+    assert by_id["ev-post"].observation_id == "post"
+    info_only = by_id["ev-document"].metadata["consumer_delivery_information_only"]
+    assert info_only["context_observation_id"] == "document"
+    assert info_only["observation_delivered"] is False
+    assert info_only["evidence_preserved"] is True
+    assert stats["duplicates_collapsed"] == 0
+    assert stats["technical_observations_suppressed"] == 1
 
 
 @pytest.mark.asyncio
