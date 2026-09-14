@@ -33,6 +33,18 @@ def register_operational_metrics_endpoint(
     apply_http_hardening(app, settings)
     captcha_broker = FileCaptchaBroker(settings.db_path.parent / "human_interaction")
 
+    async def collection_challenge(collection_id: str, challenge_id: str) -> dict[str, object]:
+        record = await repository.get_collection(collection_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="collection not found")
+        try:
+            payload = captcha_broker.get(challenge_id)
+        except CaptchaChallengeNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="human interaction not found") from exc
+        if payload.get("collection_id") != collection_id:
+            raise HTTPException(status_code=404, detail="human interaction not found")
+        return payload
+
     @app.get("/v1/operations/metrics", dependencies=[Depends(require_bearer)])
     async def operational_metrics() -> dict[str, object]:
         queue_payload: dict[str, object] | None = None
@@ -78,6 +90,7 @@ def register_operational_metrics_endpoint(
                     "interactive_click_relay": True,
                     "arbitrary_browser_commands": False,
                     "automatic_solving": False,
+                    "collection_scoped": True,
                     "pending": len(captcha_broker.list_pending()),
                 }
             },
@@ -178,5 +191,91 @@ def register_operational_metrics_endpoint(
         services.metrics.inc(
             "captcha_manual_interactions_total",
             status=submission.action,
+        )
+        return challenge
+
+    @app.get(
+        "/v1/collections/{collection_id}/interactions",
+        dependencies=[Depends(require_bearer)],
+    )
+    async def collection_interactions(collection_id: str) -> dict[str, object]:
+        """List pending human interactions belonging only to one collection."""
+
+        record = await repository.get_collection(collection_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="collection not found")
+        interactions = captcha_broker.list_pending(collection_id=collection_id)
+        return {
+            "collection_id": collection_id,
+            "version": captcha_broker.version,
+            "automatic_solving": False,
+            "items": interactions,
+            "count": len(interactions),
+        }
+
+    @app.get(
+        "/v1/collections/{collection_id}/interactions/{challenge_id}/screenshot",
+        dependencies=[Depends(require_bearer)],
+    )
+    async def collection_interaction_screenshot(collection_id: str, challenge_id: str):
+        await collection_challenge(collection_id, challenge_id)
+        try:
+            path = captcha_broker.screenshot_path(challenge_id)
+        except CaptchaChallengeNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="human interaction not found") from exc
+        return FileResponse(path=path, media_type="image/png")
+
+    @app.post(
+        "/v1/collections/{collection_id}/interactions/{challenge_id}/answer",
+        dependencies=[Depends(require_bearer)],
+    )
+    async def submit_collection_interaction_answer(
+        collection_id: str,
+        challenge_id: str,
+        submission: CaptchaAnswerSubmission,
+    ) -> dict[str, object]:
+        await collection_challenge(collection_id, challenge_id)
+        try:
+            challenge = captcha_broker.submit_answer(challenge_id, submission.answer)
+        except CaptchaChallengeNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="human interaction not found") from exc
+        except CaptchaChallengeStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        services.metrics.inc(
+            "captcha_manual_answers_total",
+            status="submitted",
+            scope="collection",
+        )
+        return challenge
+
+    @app.post(
+        "/v1/collections/{collection_id}/interactions/{challenge_id}/interaction",
+        dependencies=[Depends(require_bearer)],
+    )
+    async def submit_collection_interaction(
+        collection_id: str,
+        challenge_id: str,
+        submission: CaptchaInteractionSubmission,
+    ) -> dict[str, object]:
+        await collection_challenge(collection_id, challenge_id)
+        try:
+            challenge = captcha_broker.submit_interaction(
+                challenge_id,
+                action=submission.action,
+                x_ratio=submission.x_ratio,
+                y_ratio=submission.y_ratio,
+            )
+        except CaptchaChallengeNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="human interaction not found") from exc
+        except CaptchaChallengeStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        services.metrics.inc(
+            "captcha_manual_interactions_total",
+            status=submission.action,
+            scope="collection",
         )
         return challenge
