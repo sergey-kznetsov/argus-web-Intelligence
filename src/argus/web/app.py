@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from argus.config import Settings
 from argus.contracts.models import CollectionRecord, CollectionRequest, EvidencePage, ObservationPage
-from argus.human_interaction import CaptchaAnswerSubmission
+from argus.human_interaction import CaptchaAnswerSubmission, CaptchaInteractionSubmission
 from argus.presentation import RussianPresentationService
 from argus.web.captcha_page import CAPTCHA_APP_JS, CAPTCHA_HTML, CAPTCHA_STYLE_CSS
 from argus.web.client import ArgusApiClient
@@ -174,6 +174,20 @@ def create_web_app(
         return await proxy(
             "POST",
             f"/v1/operations/captcha/{challenge_id}/answer",
+            json_body=submission.model_dump(mode="json"),
+        )
+
+    @app.post(
+        "/api/captcha/{challenge_id}/interaction",
+        dependencies=[Depends(require_user)],
+    )
+    async def captcha_interaction(
+        submission: CaptchaInteractionSubmission,
+        challenge_id: str = Path(min_length=1, max_length=64, pattern=_TERMINAL_ID_PATTERN),
+    ) -> JSONResponse:
+        return await proxy(
+            "POST",
+            f"/v1/operations/captcha/{challenge_id}/interaction",
             json_body=submission.model_dump(mode="json"),
         )
 
