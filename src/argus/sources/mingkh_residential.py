@@ -56,7 +56,7 @@ class MingkhResidentialAdapter:
     source_id = "mingkh_residential"
     intents = set(RESIDENTIAL_INTENTS)
     domain = "dom.mingkh.ru"
-    extractor_version = "mingkh-residential/3"
+    extractor_version = "mingkh-residential/4"
     interface_navigation_version = "mingkh-interface-navigation/1"
 
     _LABELS: dict[str, tuple[str, ...]] = {
@@ -71,6 +71,28 @@ class MingkhResidentialAdapter:
             "Число жителей",
         ),
     }
+    # Object status is intentionally parsed only from an explicit label/value pair.
+    # Generic occurrences of words such as "нежилых помещений" are never enough to
+    # classify the requested building as non-residential.
+    _OBJECT_STATUS_LABELS = (
+        "Тип дома",
+        "Тип объекта",
+        "Назначение объекта",
+    )
+    _RESIDENTIAL_STATUS_VALUES = frozenset(
+        {
+            "многоквартирный дом",
+            "жилой дом",
+            "жилое здание",
+        }
+    )
+    _NON_RESIDENTIAL_STATUS_VALUES = frozenset(
+        {
+            "нежилой дом",
+            "нежилое здание",
+            "нежилое строение",
+        }
+    )
     _CHALLENGE_MARKERS = (
         "captcha",
         "recaptcha",
@@ -258,6 +280,45 @@ class MingkhResidentialAdapter:
             ):
                 return await self._navigate_interface(task, fetched, request, result)
             return result
+
+        status_matches = self._extract_object_status(chunks)
+        statuses = {status for _, _, status in status_matches}
+        if len(statuses) > 1:
+            return SourceResult(
+                observations=[],
+                partial=True,
+                errors=[
+                    StructuredError(
+                        code="MINGKH_OBJECT_STATUS_CONFLICT",
+                        message="dom.mingkh.ru exposes conflicting explicit object-status values",
+                        retryable=False,
+                        source_id=self.source_id,
+                    )
+                ],
+                discovered_tasks=discovered_tasks,
+            )
+        explicit_non_residential = next(
+            (match for match in status_matches if match[2] == "non_residential"),
+            None,
+        )
+        if explicit_non_residential is not None and "residential_premises_count" in request.intents:
+            label, source_value, _status = explicit_non_residential
+            observation, evidence = self._non_residential_fact(
+                request=request,
+                collection_id=collection_id,
+                source_url=fetched.final_url,
+                snapshot_id=snapshot.snapshot_id,
+                label=label,
+                source_value=source_value,
+                relevance_basis=relevance.basis,
+                fetch_metadata=fetched.metadata,
+            )
+            return SourceResult(
+                observations=[observation],
+                evidence=[evidence],
+                discovered_tasks=[],
+                partial=False,
+            )
 
         observations: list[Observation] = []
         evidence_items: list[Evidence] = []
@@ -476,6 +537,110 @@ class MingkhResidentialAdapter:
         )
         return observation, evidence
 
+    def _non_residential_fact(
+        self,
+        *,
+        request: CollectionRequest,
+        collection_id: str,
+        source_url: str,
+        snapshot_id: str,
+        label: str,
+        source_value: str,
+        relevance_basis: str,
+        fetch_metadata: dict[str, object],
+    ) -> tuple[Observation, Evidence]:
+        intent = "residential_premises_count"
+        evidence_text = f"{label}: {source_value}"
+        content_hash = sha256_text(f"object_status\x00non_residential\x00{label}\x00{source_value}")
+        observation_id = stable_observation_id(
+            collection_id=collection_id,
+            source_id=self.source_id,
+            entity_type="residential_building_fact",
+            entity_id=f"{source_url}#object_status",
+            source_url=source_url,
+            content_hash=content_hash,
+        )
+        provenance: dict[str, object] = {
+            "snapshot_id": snapshot_id,
+            "extractor": self.extractor_version,
+            "source_label": label,
+            "source_value": source_value,
+            "territory_relevance": {
+                "version": self.territory_relevance.version,
+                "basis": relevance_basis,
+            },
+        }
+        recipe_id = fetch_metadata.get("recipe_id")
+        if isinstance(recipe_id, str) and recipe_id:
+            provenance["recipe_id"] = recipe_id
+            provenance["recipe_version"] = fetch_metadata.get("recipe_version")
+        agent_backend = fetch_metadata.get("agent_backend")
+        if isinstance(agent_backend, str) and agent_backend:
+            provenance["interface_navigation"] = {
+                "version": self.interface_navigation_version,
+                "agent_backend": agent_backend,
+                "verified_browser_replay": True,
+                "agent_output_is_evidence": False,
+            }
+        observation = Observation(
+            observation_id=observation_id,
+            collection_id=collection_id,
+            analysis_id=request.analysis_id,
+            consumer=request.consumer,
+            source=self.source_id,
+            source_kind="residential_building_fact",
+            url=source_url,
+            entity_type="residential_building_fact",
+            entity_id=f"{source_url}#object_status",
+            title=label,
+            text=evidence_text,
+            data={
+                "intent": intent,
+                "value": None,
+                "object_status": "non_residential",
+                "reason": "Объект не является жилым по данным dom.mingkh.ru",
+                "source_label": label,
+                "source_value": source_value,
+                "estimated": False,
+            },
+            content_hash=content_hash,
+            provenance=provenance,
+            quality={
+                "evidence_backed": True,
+                "territory_relevant": True,
+                "deterministic_label_match": True,
+                "estimated": False,
+                "not_applicable": True,
+                "intent_evidence": {intent: True},
+            },
+        )
+        evidence = Evidence(
+            evidence_id=stable_evidence_id(
+                observation_id=observation_id,
+                evidence_type="residential_building_object_status",
+                source_url=source_url,
+                text=evidence_text,
+            ),
+            observation_id=observation_id,
+            type="residential_building_object_status",
+            text=evidence_text,
+            source=EvidenceSource(
+                provider=self.source_id,
+                url=source_url,
+                collected_at=observation.collected_at,
+                source_id=self.source_id,
+            ),
+            metadata={
+                "intent": intent,
+                "object_status": "non_residential",
+                "source_label": label,
+                "source_value": source_value,
+                "estimated": False,
+                "provenance": provenance,
+            },
+        )
+        return observation, evidence
+
     @classmethod
     def _visible_text(cls, html: str) -> tuple[str, list[str]]:
         soup = BeautifulSoup(html or "", "html.parser")
@@ -522,6 +687,53 @@ class MingkhResidentialAdapter:
                         found.append(item)
                     break
         return found
+
+    @classmethod
+    def _extract_object_status(cls, chunks: list[str]) -> list[tuple[str, str, str]]:
+        found: list[tuple[str, str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for index, chunk in enumerate(chunks):
+            normalized = " ".join(chunk.split())
+            for label in cls._OBJECT_STATUS_LABELS:
+                candidate = cls._labeled_text(normalized, label)
+                if candidate is None and normalized.casefold().rstrip(":") == label.casefold():
+                    for next_chunk in chunks[index + 1 : index + 4]:
+                        value = " ".join(next_chunk.split()).strip()
+                        if not value or len(value) > 120:
+                            continue
+                        candidate = value
+                        break
+                if candidate is None:
+                    continue
+                status = cls._status_from_source_value(candidate)
+                if status is None:
+                    continue
+                item = (label, candidate, status)
+                if item not in seen:
+                    seen.add(item)
+                    found.append(item)
+        return found
+
+    @staticmethod
+    def _labeled_text(value: str, label: str) -> str | None:
+        match = re.search(
+            rf"{re.escape(label)}\s*[:—-]\s*(.+)$",
+            value,
+            flags=re.IGNORECASE,
+        )
+        if match is None:
+            return None
+        candidate = " ".join(match.group(1).split()).strip()
+        return candidate[:120] if candidate else None
+
+    @classmethod
+    def _status_from_source_value(cls, value: str) -> str | None:
+        normalized = re.sub(r"[.;:,]+$", "", " ".join(value.casefold().split())).strip()
+        if normalized in cls._RESIDENTIAL_STATUS_VALUES:
+            return "residential"
+        if normalized in cls._NON_RESIDENTIAL_STATUS_VALUES:
+            return "non_residential"
+        return None
 
     @staticmethod
     def _labeled_number(value: str, label: str) -> int | None:
