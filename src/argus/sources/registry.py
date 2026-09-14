@@ -7,6 +7,7 @@ from datetime import datetime
 
 from argus.contracts.models import CollectionRequest, utcnow
 from argus.observability import OperationalMetrics
+from argus.source_execution import source_execution_context
 from argus.sources.base import SourceAdapter, SourceResult, SourceTask
 from argus.toolpacks import (
     ToolPackSourceDeniedError,
@@ -117,7 +118,11 @@ class _TrackedSourceAdapter:
         runtime = "unknown"
         status = "error"
         try:
-            fetched = await self._adapter.fetch(task)
+            with source_execution_context(
+                collection_id=task.metadata.get("collection_id"),
+                source_id=self.source_id,
+            ):
+                fetched = await self._adapter.fetch(task)
             runtime = str(getattr(fetched, "runtime", None) or "unknown")[:80]
             status = "blocked" if bool(getattr(fetched, "blocked", False)) else "ok"
             return fetched
