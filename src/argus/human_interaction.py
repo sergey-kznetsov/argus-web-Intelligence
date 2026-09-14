@@ -33,13 +33,12 @@ class CaptchaChallengeStateError(RuntimeError):
 class FileCaptchaBroker:
     """Cross-process human-in-the-loop CAPTCHA mailbox.
 
-    API and worker processes share the same ARGUS data directory. The browser session stays
-    alive in the worker while the API transports only a screenshot plus bounded human input:
-    a text answer or a normalized click on the current screenshot. No arbitrary script,
-    selector, URL, or browser command can be submitted through this broker.
+    The worker keeps the browser session alive. The API transports only a screenshot and
+    bounded user input. Correlation fields are safe identifiers only: cookies, bearer tokens,
+    selectors and filesystem paths never leave the broker's private state.
     """
 
-    version = "captcha-human-input/3"
+    version = "captcha-human-input/4"
     visible_statuses = frozenset(
         {
             "pending",
@@ -63,6 +62,9 @@ class FileCaptchaBroker:
         kind: str,
         prompt: str,
         input_selector: str | None,
+        collection_id: str | None = None,
+        analysis_id: str | None = None,
+        source_id: str | None = None,
     ) -> dict[str, object]:
         challenge_id = str(uuid4())
         now = datetime.now(UTC).isoformat()
@@ -71,6 +73,10 @@ class FileCaptchaBroker:
         payload: dict[str, object] = {
             "version": self.version,
             "challenge_id": challenge_id,
+            "interaction_id": challenge_id,
+            "collection_id": str(collection_id or "").strip() or None,
+            "analysis_id": str(analysis_id or "").strip() or None,
+            "source_id": str(source_id or "").strip() or None,
             "url": url,
             "kind": kind,
             "prompt": prompt,
@@ -98,6 +104,14 @@ class FileCaptchaBroker:
                 result.append(self.public(payload))
         return result
 
+    def list_pending_for_collection(self, collection_id: str) -> list[dict[str, object]]:
+        expected = str(collection_id).strip()
+        return [
+            item
+            for item in self.list_pending()
+            if str(item.get("collection_id") or "").strip() == expected
+        ]
+
     def get(self, challenge_id: str) -> dict[str, object]:
         path = self._state_path(challenge_id)
         try:
@@ -110,9 +124,14 @@ class FileCaptchaBroker:
     def public(self, payload: dict[str, object]) -> dict[str, object]:
         status = payload.get("status")
         kind = payload.get("kind")
+        challenge_id = payload.get("challenge_id")
         return {
             "version": payload.get("version", self.version),
-            "challenge_id": payload.get("challenge_id"),
+            "challenge_id": challenge_id,
+            "interaction_id": payload.get("interaction_id") or challenge_id,
+            "collection_id": payload.get("collection_id"),
+            "analysis_id": payload.get("analysis_id"),
+            "source_id": payload.get("source_id"),
             "url": payload.get("url"),
             "kind": kind,
             "prompt": payload.get("prompt"),
@@ -126,6 +145,15 @@ class FileCaptchaBroker:
             "interaction_count": int(payload.get("interaction_count", 0) or 0),
             "error": payload.get("error"),
         }
+
+    def assert_collection(self, challenge_id: str, collection_id: str) -> dict[str, object]:
+        payload = self.get(challenge_id)
+        actual = str(payload.get("collection_id") or "").strip()
+        expected = str(collection_id).strip()
+        if not actual or actual != expected:
+            # Do not reveal whether the challenge exists for another collection.
+            raise CaptchaChallengeNotFoundError(challenge_id)
+        return payload
 
     def screenshot_path(self, challenge_id: str) -> Path:
         payload = self.get(challenge_id)
