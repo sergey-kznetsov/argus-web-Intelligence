@@ -28,17 +28,17 @@ _TEST_PROFILES: dict[str, dict[str, object]] = {
     "janus": {
         "label": "Имитировать запрос Janus",
         "description": (
-            "Проверка публичного веб-контура фактов многоквартирного дома: число жителей "
-            "и количество жилых помещений. Профиль только формирует CollectionRequest; "
-            "источник выбирается consumer-neutral маршрутизацией по intents."
+            "Изолированный контур Janus: получить с dom.mingkh.ru только фактическое "
+            "количество жилых помещений для конкретного дома. ARGUS не анализирует "
+            "парковки и не рассчитывает парковочный потенциал."
         ),
-        "consumer": "janus.simulation",
-        "intents": [
-            "residential_population",
-            "residential_premises_count",
-        ],
-        "max_pages": 35,
-        "max_depth": 2,
+        "consumer": "janus.parking.potential.uds",
+        "consumer_profile_version": 1,
+        "capability": "residential_facts",
+        "requested_facts": ["residential_premises_count"],
+        "intents": ["residential_premises_count"],
+        "max_pages": 1,
+        "max_depth": 0,
     },
     "historical": {
         "label": "Имитировать исторический модуль",
