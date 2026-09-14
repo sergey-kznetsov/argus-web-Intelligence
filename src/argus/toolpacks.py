@@ -46,6 +46,9 @@ class ToolPack:
     extractor_policy: str = "universal"
     result_delivery_policy: str = "intent_evidence"
     result_dedup_policy: str = "none"
+    exclusive_domains: tuple[str, ...] = ()
+    max_pages: int | None = None
+    max_depth: int | None = None
     description: str = ""
 
     def allows_source(self, source_id: str) -> bool:
@@ -65,6 +68,9 @@ class ResolvedToolPack:
     extractor_policy: str
     result_delivery_policy: str
     result_dedup_policy: str
+    exclusive_domains: tuple[str, ...]
+    max_pages: int | None
+    max_depth: int | None
 
     def allows_source(self, source_id: str) -> bool:
         return "*" in self.allowed_source_ids or source_id in self.allowed_source_ids
@@ -83,6 +89,10 @@ class ToolPackRegistry:
             capability = self._token(pack.capability, "capability")
             if pack.version < 1:
                 raise ValueError(f"tool pack version must be >= 1: {pack.tool_pack_id}")
+            if pack.max_pages is not None and pack.max_pages < 1:
+                raise ValueError(f"tool pack max_pages must be >= 1: {pack.tool_pack_id}")
+            if pack.max_depth is not None and pack.max_depth < 0:
+                raise ValueError(f"tool pack max_depth must be >= 0: {pack.tool_pack_id}")
             if pack_id in by_id:
                 raise ValueError(f"duplicate tool_pack_id: {pack.tool_pack_id}")
             contract_key = (consumer_id, capability)
@@ -165,6 +175,9 @@ class ToolPackRegistry:
             extractor_policy=pack.extractor_policy,
             result_delivery_policy=pack.result_delivery_policy,
             result_dedup_policy=pack.result_dedup_policy,
+            exclusive_domains=pack.exclusive_domains,
+            max_pages=pack.max_pages,
+            max_depth=pack.max_depth,
         )
 
     def by_contract(self, *, consumer_id: str, capability: str) -> ToolPack | None:
@@ -223,6 +236,9 @@ JANUS_RESIDENTIAL_FACTS_TOOL_PACK = ToolPack(
     recipe_namespace="janus.residential_facts",
     extractor_policy="residential_facts",
     result_delivery_policy="intent_evidence",
+    exclusive_domains=("dom.mingkh.ru",),
+    max_pages=1,
+    max_depth=0,
     description=(
         "Dedicated Janus acquisition contour. ARGUS reads only source-declared residential "
         "premises facts from dom.mingkh.ru and returns factual Evidence/Provenance. It does "
@@ -311,6 +327,9 @@ def resolved_tool_pack_from_request(request: object) -> ResolvedToolPack | None:
             extractor_policy="universal",
             result_delivery_policy="intent_evidence",
             result_dedup_policy="none",
+            exclusive_domains=(),
+            max_pages=None,
+            max_depth=None,
         )
     return TOOL_PACK_REGISTRY.resolve(
         consumer_id=str(consumer),
@@ -335,6 +354,9 @@ def tool_pack_catalog() -> list[dict[str, object]]:
             "extractor_policy": pack.extractor_policy,
             "result_delivery_policy": pack.result_delivery_policy,
             "result_dedup_policy": pack.result_dedup_policy,
+            "exclusive_domains": list(pack.exclusive_domains),
+            "max_pages": pack.max_pages,
+            "max_depth": pack.max_depth,
             "description": pack.description,
         }
         for pack in TOOL_PACK_REGISTRY.all()
