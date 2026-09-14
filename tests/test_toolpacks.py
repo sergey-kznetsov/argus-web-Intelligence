@@ -63,8 +63,8 @@ def test_kraken_contract_resolves_versioned_tool_pack():
     assert pack.capability == "urban_signals"
     assert pack.planner_policy == "urban_signals"
     assert pack.recipe_namespace == "kraken.urban_signals"
-    assert pack.result_delivery_policy == "broad_evidence_stream"
-    assert pack.result_dedup_policy == "canonical_text_v1"
+    assert pack.result_delivery_policy == "soika_message_stream"
+    assert pack.result_dedup_policy == "none"
 
 
 def test_non_kraken_pack_keeps_default_result_policy():
@@ -154,8 +154,8 @@ def test_tool_pack_catalog_is_explicit_and_consumer_scoped():
 
     assert kraken["consumer_id"] == "kraken.development.uds"
     assert kraken["capability"] == "urban_signals"
-    assert kraken["result_delivery_policy"] == "broad_evidence_stream"
-    assert kraken["result_dedup_policy"] == "canonical_text_v1"
+    assert kraken["result_delivery_policy"] == "soika_message_stream"
+    assert kraken["result_dedup_policy"] == "none"
     assert "generic_web" in kraken["allowed_source_ids"]
     assert "mingkh_residential" not in kraken["allowed_source_ids"]
     assert "pastvu_historical" not in kraken["allowed_source_ids"]
