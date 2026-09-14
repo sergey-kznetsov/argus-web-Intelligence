@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
@@ -17,6 +18,9 @@ from argus.human_interaction import FileCaptchaBroker
 from argus.recipes.executor import PlaywrightRecipeExecutor
 from argus.recipes.models import SiteRecipe
 from argus.security.urls import UnsafeUrlError, UrlGuard
+
+
+logger = logging.getLogger(__name__)
 
 
 class BrowserCrawlerRuntime:
@@ -147,6 +151,7 @@ class BrowserCrawlerRuntime:
                 if await page.locator(selector).count() > 0:
                     return selector
             except Exception:
+                logger.debug("CAPTCHA selector probe failed: %s", selector, exc_info=True)
                 continue
         return None
 
@@ -233,6 +238,7 @@ class BrowserCrawlerRuntime:
                     await candidate.click()
                     return
             except Exception:
+                logger.debug("CAPTCHA submit candidate failed: %s", selector, exc_info=True)
                 continue
         await field.press("Enter")
 
@@ -287,7 +293,7 @@ class BrowserCrawlerRuntime:
                 try:
                     await page.wait_for_load_state("domcontentloaded", timeout=5000)
                 except Exception:
-                    pass
+                    logger.debug("CAPTCHA post-submit navigation did not settle", exc_info=True)
                 if await self._captcha_cleared(page):
                     self._captcha.mark_completed(challenge_id)
                     return True
@@ -296,7 +302,7 @@ class BrowserCrawlerRuntime:
                 try:
                     self._captcha.mark_failed(challenge_id, str(exc))
                 except Exception:
-                    pass
+                    logger.exception("Failed to persist CAPTCHA failure state")
                 if isinstance(exc, TimeoutError):
                     return False
         return False
