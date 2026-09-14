@@ -131,8 +131,9 @@ class ConsumerDeliveryProjector:
             "analytical_owner": "original_soika",
         }
 
-    @staticmethod
-    def _is_soika_atomic_message(observation: Observation) -> bool:
+    def _is_soika_atomic_message(self, observation: Observation) -> bool:
+        if self._is_public_map_information_only(observation):
+            return False
         entity_type = observation.entity_type.strip().casefold()
         text = observation.text
         return (
