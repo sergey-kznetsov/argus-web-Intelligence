@@ -37,9 +37,13 @@ class FileCaptchaBroker:
     alive in the worker while the API transports only a screenshot plus bounded human input:
     a text answer or a normalized click on the current screenshot. No arbitrary script,
     selector, URL, or browser command can be submitted through this broker.
+
+    Challenge records may be bound to the collection and source that produced them. This
+    makes human interaction routable through a consuming module without exposing answers,
+    browser-local selectors, cookies, or filesystem paths.
     """
 
-    version = "captcha-human-input/3"
+    version = "captcha-human-input/4"
     visible_statuses = frozenset(
         {
             "pending",
@@ -63,6 +67,8 @@ class FileCaptchaBroker:
         kind: str,
         prompt: str,
         input_selector: str | None,
+        collection_id: str | None = None,
+        source_id: str | None = None,
     ) -> dict[str, object]:
         challenge_id = str(uuid4())
         now = datetime.now(UTC).isoformat()
@@ -71,6 +77,8 @@ class FileCaptchaBroker:
         payload: dict[str, object] = {
             "version": self.version,
             "challenge_id": challenge_id,
+            "collection_id": self._optional_context_value(collection_id),
+            "source_id": self._optional_context_value(source_id),
             "url": url,
             "kind": kind,
             "prompt": prompt,
@@ -87,15 +95,19 @@ class FileCaptchaBroker:
         self._write(challenge_id, payload)
         return self.public(payload)
 
-    def list_pending(self) -> list[dict[str, object]]:
+    def list_pending(self, *, collection_id: str | None = None) -> list[dict[str, object]]:
+        collection_id = self._optional_context_value(collection_id)
         result: list[dict[str, object]] = []
         for path in sorted(self.root.glob("*.json")):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
-            if payload.get("status") in self.visible_statuses:
-                result.append(self.public(payload))
+            if payload.get("status") not in self.visible_statuses:
+                continue
+            if collection_id is not None and payload.get("collection_id") != collection_id:
+                continue
+            result.append(self.public(payload))
         return result
 
     def get(self, challenge_id: str) -> dict[str, object]:
@@ -113,6 +125,8 @@ class FileCaptchaBroker:
         return {
             "version": payload.get("version", self.version),
             "challenge_id": payload.get("challenge_id"),
+            "collection_id": payload.get("collection_id"),
+            "source_id": payload.get("source_id"),
             "url": payload.get("url"),
             "kind": kind,
             "prompt": payload.get("prompt"),
@@ -293,6 +307,13 @@ class FileCaptchaBroker:
             UUID(challenge_id)
         except (ValueError, AttributeError) as exc:
             raise CaptchaChallengeNotFoundError(str(challenge_id)) from exc
+
+    @staticmethod
+    def _optional_context_value(value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
     def _write(self, challenge_id: str, payload: dict[str, object]) -> None:
         path = self._state_path(challenge_id)
