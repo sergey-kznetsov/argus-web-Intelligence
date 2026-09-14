@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 class BrowserCrawlerRuntime:
     captcha_manual_timeout_seconds = 900.0
     captcha_max_manual_attempts = 3
+    captcha_max_interactive_actions = 20
+    captcha_interaction_settle_seconds = 1.0
     challenge_passive_wait_seconds = 8.0
     challenge_reload_wait_seconds = 5.0
     _captcha_input_selectors = (
@@ -256,6 +258,89 @@ class BrowserCrawlerRuntime:
             await asyncio.sleep(0.25)
         return False
 
+    @staticmethod
+    async def _viewport_size(page: Any) -> tuple[float, float]:
+        viewport = page.viewport_size
+        if isinstance(viewport, dict):
+            width = float(viewport.get("width") or 0)
+            height = float(viewport.get("height") or 0)
+            if width > 0 and height > 0:
+                return width, height
+        measured = await page.evaluate(
+            "() => ({width: window.innerWidth || 0, height: window.innerHeight || 0})"
+        )
+        if not isinstance(measured, dict):
+            raise RuntimeError("browser viewport size is unavailable")
+        width = float(measured.get("width") or 0)
+        height = float(measured.get("height") or 0)
+        if width <= 0 or height <= 0:
+            raise RuntimeError("browser viewport size is invalid")
+        return width, height
+
+    async def _handle_interactive_captcha(
+        self,
+        page: Any,
+        challenge_id: str,
+    ) -> bool:
+        """Relay bounded operator clicks to the same live page until the challenge clears."""
+
+        self._captcha.mark_interactive_required(challenge_id)
+        deadline = asyncio.get_running_loop().time() + self.captcha_manual_timeout_seconds
+        for _attempt in range(self.captcha_max_interactive_actions):
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                self._captcha.mark_failed(
+                    challenge_id,
+                    "interactive CAPTCHA input timed out",
+                    status="expired",
+                )
+                return False
+            try:
+                interaction = await self._captcha.wait_for_interaction(
+                    challenge_id,
+                    timeout_seconds=remaining,
+                )
+                action = str(interaction.get("action") or "")
+                if action == "click":
+                    width, height = await self._viewport_size(page)
+                    x_ratio = float(interaction["x_ratio"])
+                    y_ratio = float(interaction["y_ratio"])
+                    x = min(max(x_ratio, 0.0), 1.0) * max(width - 1.0, 1.0)
+                    y = min(max(y_ratio, 0.0), 1.0) * max(height - 1.0, 1.0)
+                    await page.mouse.click(x, y)
+                elif action != "refresh":
+                    raise RuntimeError("unsupported interactive CAPTCHA action")
+
+                await asyncio.sleep(self.captcha_interaction_settle_seconds)
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=1500)
+                except Exception:
+                    logger.debug(
+                        "Interactive CAPTCHA page did not reach DOMContentLoaded after action",
+                        exc_info=True,
+                    )
+                captcha, transient = await self._challenge_state(page)
+                if not captcha and not transient:
+                    self._captcha.mark_completed(challenge_id)
+                    return True
+                screenshot = await page.screenshot(type="png", full_page=False)
+                self._captcha.update_interactive_screenshot(challenge_id, screenshot)
+            except TimeoutError:
+                return False
+            except Exception as exc:
+                logger.exception("Interactive CAPTCHA relay failed")
+                try:
+                    self._captcha.mark_failed(challenge_id, str(exc))
+                except Exception:
+                    logger.exception("Failed to persist interactive CAPTCHA failure state")
+                return False
+
+        self._captcha.mark_failed(
+            challenge_id,
+            "interactive CAPTCHA action limit reached",
+        )
+        return False
+
     async def _handle_manual_captcha(self, page: Any, url: str) -> bool:
         """Pause the live browser session and hand the remaining challenge to the user."""
 
@@ -270,18 +355,13 @@ class BrowserCrawlerRuntime:
                 prompt=(
                     "Введите символы CAPTCHA, показанные на скриншоте."
                     if kind == "text"
-                    else "Требуется ручное прохождение интерактивной проверки в браузере."
+                    else "Кликните по нужным элементам проверки на скриншоте."
                 ),
                 input_selector=selector,
             )
             challenge_id = str(challenge["challenge_id"])
             if selector is None:
-                self._captcha.mark_failed(
-                    challenge_id,
-                    "interactive challenge requires user browser interaction",
-                    status="interactive_required",
-                )
-                return False
+                return await self._handle_interactive_captcha(page, challenge_id)
 
             try:
                 answer = await self._captcha.wait_for_answer(
