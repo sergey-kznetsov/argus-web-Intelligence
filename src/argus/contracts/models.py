@@ -105,6 +105,16 @@ class CollectionRequest(BaseModel):
         )
 
     def _apply_tool_pack_constraints(self, tool_pack) -> None:
+        if tool_pack.allowed_intents:
+            unsupported_intents = [
+                intent for intent in self.intents if not tool_pack.allows_intent(intent)
+            ]
+            if unsupported_intents:
+                raise ValueError(
+                    "TOOL_PACK_INTENT_SCOPE: request intents exceed the "
+                    f"'{tool_pack.tool_pack_id}' contour: {', '.join(unsupported_intents)}"
+                )
+
         exclusive_domains = tuple(
             dict.fromkeys(
                 domain.strip().rstrip(".").casefold()
@@ -113,6 +123,16 @@ class CollectionRequest(BaseModel):
             )
         )
         if exclusive_domains:
+            for denied in self.constraints.denied_domains:
+                if any(
+                    self._domain_within(root, (denied,))
+                    or self._domain_within(denied, (root,))
+                    for root in exclusive_domains
+                ):
+                    raise ValueError(
+                        "TOOL_PACK_DOMAIN_SCOPE: request denied_domains conflict with the "
+                        f"'{tool_pack.tool_pack_id}' domain contour"
+                    )
             for domain in self.constraints.allowed_domains:
                 if not self._domain_within(domain, exclusive_domains):
                     raise ValueError(
