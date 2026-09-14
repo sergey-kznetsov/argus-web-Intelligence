@@ -12,6 +12,7 @@ from argus.human_interaction import (
     CaptchaAnswerSubmission,
     CaptchaChallengeNotFoundError,
     CaptchaChallengeStateError,
+    CaptchaInteractionSubmission,
     FileCaptchaBroker,
 )
 from argus.research.lane_coverage import build_research_lane_coverage
@@ -74,6 +75,8 @@ def register_operational_metrics_endpoint(
                 "captcha": {
                     "version": captcha_broker.version,
                     "manual_text_input": True,
+                    "interactive_click_relay": True,
+                    "arbitrary_browser_commands": False,
                     "automatic_solving": False,
                     "pending": len(captcha_broker.list_pending()),
                 }
@@ -111,7 +114,7 @@ def register_operational_metrics_endpoint(
         dependencies=[Depends(require_bearer)],
     )
     async def pending_captcha_challenges() -> dict[str, object]:
-        """List live manual CAPTCHA challenges without exposing submitted answers."""
+        """List live manual CAPTCHA challenges without exposing submitted input."""
 
         challenges = captcha_broker.list_pending()
         return {
@@ -149,4 +152,31 @@ def register_operational_metrics_endpoint(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         services.metrics.inc("captcha_manual_answers_total", status="submitted")
+        return challenge
+
+    @app.post(
+        "/v1/operations/captcha/{challenge_id}/interaction",
+        dependencies=[Depends(require_bearer)],
+    )
+    async def submit_captcha_interaction(
+        challenge_id: str,
+        submission: CaptchaInteractionSubmission,
+    ) -> dict[str, object]:
+        try:
+            challenge = captcha_broker.submit_interaction(
+                challenge_id,
+                action=submission.action,
+                x_ratio=submission.x_ratio,
+                y_ratio=submission.y_ratio,
+            )
+        except CaptchaChallengeNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="CAPTCHA challenge not found") from exc
+        except CaptchaChallengeStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        services.metrics.inc(
+            "captcha_manual_interactions_total",
+            status=submission.action,
+        )
         return challenge
