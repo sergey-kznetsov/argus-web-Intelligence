@@ -37,8 +37,8 @@ _TEST_PROFILES: dict[str, dict[str, object]] = {
         "capability": "residential_facts",
         "requested_facts": ["residential_premises_count"],
         "intents": ["residential_premises_count"],
-        "max_pages": 1,
-        "max_depth": 0,
+        "max_pages": 18,
+        "max_depth": 2,
     },
     "historical": {
         "label": "Имитировать исторический модуль",
