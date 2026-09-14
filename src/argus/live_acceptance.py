@@ -3,13 +3,7 @@ from __future__ import annotations
 from argus.contracts.models import CollectionConstraints, CollectionRequest, TerritoryContext
 
 ACCEPTABLE_STATUSES = frozenset({"completed", "partial"})
-JANUS_SOURCE_BLOCK_CODES = frozenset(
-    {
-        "MINGKH_ACCESS_CHALLENGE",
-        "SOURCE_ROBOTS_ACCESS_BLOCKED",
-        "SOURCE_ROBOTS_UNREACHABLE",
-    }
-)
+JANUS_SOURCE_BLOCK_CODES = frozenset({"MINGKH_ACCESS_CHALLENGE"})
 QUERY_CHECKPOINT_KEYS = (
     "queries",
     "discovery_queries",
@@ -30,6 +24,18 @@ def build_profile_request(
     """Build the bounded request used by live consumer-profile acceptance probes."""
 
     intents = [str(value) for value in profile.get("intents", []) if str(value).strip()]
+    consumer_contract: dict[str, object] = {}
+    if profile.get("consumer_profile_version") is not None:
+        consumer_contract["consumer_profile_version"] = int(profile["consumer_profile_version"])
+    if profile.get("capability") is not None:
+        consumer_contract["capability"] = str(profile["capability"])
+    if profile.get("requested_facts") is not None:
+        consumer_contract["requested_facts"] = [
+            str(value)
+            for value in profile.get("requested_facts", [])
+            if str(value).strip()
+        ]
+
     return CollectionRequest(
         consumer=str(profile["consumer"]),
         analysis_id=f"perm-ai-acceptance-{profile_id}",
@@ -42,6 +48,7 @@ def build_profile_request(
             output_language="ru",
         ),
         allow_partial=True,
+        **consumer_contract,
     )
 
 
@@ -95,8 +102,11 @@ def acceptance_failures(overview: list[dict[str, object]]) -> list[str]:
             )
 
         supervisor = item.get("research_supervisor")
-        if uncovered and not expected_source_block and (
-            not isinstance(supervisor, dict) or not supervisor
+        if (
+            profile != "janus"
+            and uncovered
+            and not expected_source_block
+            and (not isinstance(supervisor, dict) or not supervisor)
         ):
             failures.append(f"{profile}: factual gaps remained but research supervisor never ran")
 
@@ -113,7 +123,7 @@ def acceptance_failures(overview: list[dict[str, object]]) -> list[str]:
             if not covered.intersection(supporting_intents):
                 failures.append("kraken: no supporting urban-information intent is covered")
         elif profile == "janus":
-            required = {"residential_population", "residential_premises_count"}
+            required = {"residential_premises_count"}
             missing = sorted(required - covered)
             if missing and not expected_source_block:
                 failures.append(
@@ -162,7 +172,7 @@ def mandatory_janus_source_blocked(
     evidence_count: int,
     error_details: list[dict[str, str]],
 ) -> bool:
-    """Recognize an explicit external-source block without treating it as code failure."""
+    """Recognize a direct dom.mingkh.ru access challenge for the Janus contour."""
 
     if profile_id != "janus" or status != "blocked":
         return False
@@ -170,7 +180,7 @@ def mandatory_janus_source_blocked(
         return False
     return any(
         item.get("code") in JANUS_SOURCE_BLOCK_CODES
-        and item.get("source_id") in {"mingkh_residential", "site_discovery"}
+        and item.get("source_id") == "mingkh_residential"
         for item in error_details
     )
 

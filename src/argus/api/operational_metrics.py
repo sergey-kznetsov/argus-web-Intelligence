@@ -33,6 +33,19 @@ def register_operational_metrics_endpoint(
     apply_http_hardening(app, settings)
     captcha_broker = FileCaptchaBroker(settings.db_path.parent / "human_interaction")
 
+    async def collection_or_404(collection_id: str):
+        record = await repository.get_collection(collection_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="collection not found")
+        return record
+
+    def correlated_challenge_or_404(collection_id: str, challenge_id: str):
+        try:
+            return captcha_broker.assert_collection(challenge_id, collection_id)
+        except CaptchaChallengeNotFoundError as exc:
+            # Do not leak whether the identifier belongs to another collection.
+            raise HTTPException(status_code=404, detail="interaction not found") from exc
+
     @app.get("/v1/operations/metrics", dependencies=[Depends(require_bearer)])
     async def operational_metrics() -> dict[str, object]:
         queue_payload: dict[str, object] | None = None
@@ -76,6 +89,8 @@ def register_operational_metrics_endpoint(
                     "version": captcha_broker.version,
                     "manual_text_input": True,
                     "interactive_click_relay": True,
+                    "refresh_relay": True,
+                    "collection_scoped": True,
                     "arbitrary_browser_commands": False,
                     "automatic_solving": False,
                     "pending": len(captcha_broker.list_pending()),
@@ -114,7 +129,7 @@ def register_operational_metrics_endpoint(
         dependencies=[Depends(require_bearer)],
     )
     async def pending_captcha_challenges() -> dict[str, object]:
-        """List live manual CAPTCHA challenges without exposing submitted input."""
+        """Operator view of all live challenges. Consumer modules must use collection routes."""
 
         challenges = captcha_broker.list_pending()
         return {
@@ -177,6 +192,89 @@ def register_operational_metrics_endpoint(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         services.metrics.inc(
             "captcha_manual_interactions_total",
+            status=submission.action,
+        )
+        return challenge
+
+    @app.get(
+        "/v1/collections/{collection_id}/interactions",
+        dependencies=[Depends(require_bearer)],
+    )
+    async def collection_interactions(collection_id: str) -> dict[str, object]:
+        """Expose only interactions correlated with this ARGUS collection."""
+
+        record = await collection_or_404(collection_id)
+        analysis_id = str(record.request.analysis_id)
+        items = [
+            item
+            for item in captcha_broker.list_pending_for_collection(collection_id)
+            if str(item.get("analysis_id") or "") == analysis_id
+        ]
+        return {
+            "version": captcha_broker.version,
+            "collection_id": collection_id,
+            "analysis_id": analysis_id,
+            "items": items,
+            "count": len(items),
+        }
+
+    @app.get(
+        "/v1/collections/{collection_id}/interactions/{challenge_id}/screenshot",
+        dependencies=[Depends(require_bearer)],
+    )
+    async def collection_interaction_screenshot(collection_id: str, challenge_id: str):
+        await collection_or_404(collection_id)
+        correlated_challenge_or_404(collection_id, challenge_id)
+        try:
+            path = captcha_broker.screenshot_path(challenge_id)
+        except CaptchaChallengeNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="interaction not found") from exc
+        return FileResponse(path=path, media_type="image/png")
+
+    @app.post(
+        "/v1/collections/{collection_id}/interactions/{challenge_id}/answer",
+        dependencies=[Depends(require_bearer)],
+    )
+    async def submit_collection_interaction_answer(
+        collection_id: str,
+        challenge_id: str,
+        submission: CaptchaAnswerSubmission,
+    ) -> dict[str, object]:
+        await collection_or_404(collection_id)
+        correlated_challenge_or_404(collection_id, challenge_id)
+        try:
+            challenge = captcha_broker.submit_answer(challenge_id, submission.answer)
+        except CaptchaChallengeStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        services.metrics.inc("captcha_collection_answers_total", status="submitted")
+        return challenge
+
+    @app.post(
+        "/v1/collections/{collection_id}/interactions/{challenge_id}/interaction",
+        dependencies=[Depends(require_bearer)],
+    )
+    async def submit_collection_interaction_action(
+        collection_id: str,
+        challenge_id: str,
+        submission: CaptchaInteractionSubmission,
+    ) -> dict[str, object]:
+        await collection_or_404(collection_id)
+        correlated_challenge_or_404(collection_id, challenge_id)
+        try:
+            challenge = captcha_broker.submit_interaction(
+                challenge_id,
+                action=submission.action,
+                x_ratio=submission.x_ratio,
+                y_ratio=submission.y_ratio,
+            )
+        except CaptchaChallengeStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        services.metrics.inc(
+            "captcha_collection_interactions_total",
             status=submission.action,
         )
         return challenge

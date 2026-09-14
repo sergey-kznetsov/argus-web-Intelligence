@@ -51,8 +51,15 @@ class BrowserCrawlerRuntime:
         self._run_task: asyncio.Task[Any] | None = None
         self._start_lock = asyncio.Lock()
         self._recipes: dict[str, SiteRecipe] = {}
+        self._interaction_contexts: dict[str, dict[str, str]] = {}
 
-    async def fetch(self, url: str, recipe: SiteRecipe | None = None) -> FetchResult:
+    async def fetch(
+        self,
+        url: str,
+        recipe: SiteRecipe | None = None,
+        *,
+        interaction_context: dict[str, object] | None = None,
+    ) -> FetchResult:
         await self.url_guard.validate(url)
         await self._ensure_started()
         from crawlee import Request
@@ -60,6 +67,14 @@ class BrowserCrawlerRuntime:
         key, future = self._broker.create(url)
         if recipe is not None:
             self._recipes[key] = recipe
+        if interaction_context:
+            safe_context: dict[str, str] = {}
+            for field in ("collection_id", "analysis_id", "source_id"):
+                value = str(interaction_context.get(field) or "").strip()
+                if value:
+                    safe_context[field] = value[:256]
+            if safe_context:
+                self._interaction_contexts[key] = safe_context
         try:
             request = Request.from_url(url, unique_key=key)
             await self._crawler.add_requests([request])
@@ -69,6 +84,7 @@ class BrowserCrawlerRuntime:
             raise TimeoutError("BROWSER runtime result timeout") from exc
         finally:
             self._recipes.pop(key, None)
+            self._interaction_contexts.pop(key, None)
             self._broker.discard(key)
 
     async def shutdown(self) -> None:
@@ -76,6 +92,7 @@ class BrowserCrawlerRuntime:
         self._crawler = None
         self._run_task = None
         self._recipes.clear()
+        self._interaction_contexts.clear()
         self._broker.reject_all(RuntimeError("BROWSER runtime is shutting down"))
         if crawler is not None:
             crawler.stop("ARGUS BROWSER shutdown")
@@ -174,8 +191,6 @@ class BrowserCrawlerRuntime:
         *,
         timeout_seconds: float,
     ) -> bool:
-        """Allow a site challenge to clear through ordinary browser execution only."""
-
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         while asyncio.get_running_loop().time() < deadline:
             captcha, transient = await self._challenge_state(page)
@@ -191,34 +206,22 @@ class BrowserCrawlerRuntime:
         explicit_captcha: bool,
         transient_challenge: bool,
     ) -> tuple[bool, str]:
-        """Use bounded normal browser behaviour before asking the user.
-
-        This is deliberately not a CAPTCHA solver. ARGUS only keeps the same real browser
-        session alive so JavaScript/cookies can finish a managed challenge. For transient
-        interstitials it may perform one ordinary reload. It never derives CAPTCHA answers,
-        clicks verification widgets, invokes solver services, or alters browser fingerprints.
-        """
+        """Use bounded normal browser behaviour before asking the user."""
 
         if not explicit_captcha and not transient_challenge:
             return False, "not_applicable"
-
         if await self._wait_for_normal_browser_clearance(
-            page,
-            timeout_seconds=self.challenge_passive_wait_seconds,
+            page, timeout_seconds=self.challenge_passive_wait_seconds
         ):
             return True, "passive_browser_wait"
-
         if explicit_captcha:
             return False, "explicit_captcha_requires_user"
-
         try:
             await page.reload(wait_until="domcontentloaded", timeout=5000)
         except Exception:
             return False, "transient_reload_failed"
-
         if await self._wait_for_normal_browser_clearance(
-            page,
-            timeout_seconds=self.challenge_reload_wait_seconds,
+            page, timeout_seconds=self.challenge_reload_wait_seconds
         ):
             return True, "bounded_browser_reload"
         return False, "challenge_persisted"
@@ -282,8 +285,6 @@ class BrowserCrawlerRuntime:
         page: Any,
         challenge_id: str,
     ) -> bool:
-        """Relay bounded operator clicks to the same live page until the challenge clears."""
-
         self._captcha.mark_interactive_required(challenge_id)
         deadline = asyncio.get_running_loop().time() + self.captcha_manual_timeout_seconds
         for _attempt in range(self.captcha_max_interactive_actions):
@@ -308,7 +309,9 @@ class BrowserCrawlerRuntime:
                     x = min(max(x_ratio, 0.0), 1.0) * max(width - 1.0, 1.0)
                     y = min(max(y_ratio, 0.0), 1.0) * max(height - 1.0, 1.0)
                     await page.mouse.click(x, y)
-                elif action != "refresh":
+                elif action == "refresh":
+                    await page.reload(wait_until="domcontentloaded", timeout=5000)
+                else:
                     raise RuntimeError("unsupported interactive CAPTCHA action")
 
                 await asyncio.sleep(self.captcha_interaction_settle_seconds)
@@ -335,15 +338,18 @@ class BrowserCrawlerRuntime:
                     logger.exception("Failed to persist interactive CAPTCHA failure state")
                 return False
 
-        self._captcha.mark_failed(
-            challenge_id,
-            "interactive CAPTCHA action limit reached",
-        )
+        self._captcha.mark_failed(challenge_id, "interactive CAPTCHA action limit reached")
         return False
 
-    async def _handle_manual_captcha(self, page: Any, url: str) -> bool:
-        """Pause the live browser session and hand the remaining challenge to the user."""
+    async def _handle_manual_captcha(
+        self,
+        page: Any,
+        url: str,
+        interaction_context: dict[str, str] | None = None,
+    ) -> bool:
+        """Pause the same live browser session and hand the challenge to the user."""
 
+        interaction_context = interaction_context or {}
         for _attempt in range(self.captcha_max_manual_attempts):
             selector = await self._captcha_input_selector(page)
             screenshot = await page.screenshot(type="png", full_page=False)
@@ -358,6 +364,9 @@ class BrowserCrawlerRuntime:
                     else "Кликните по нужным элементам проверки на скриншоте."
                 ),
                 input_selector=selector,
+                collection_id=interaction_context.get("collection_id"),
+                analysis_id=interaction_context.get("analysis_id"),
+                source_id=interaction_context.get("source_id"),
             )
             challenge_id = str(challenge["challenge_id"])
             if selector is None:
@@ -471,6 +480,7 @@ class BrowserCrawlerRuntime:
             async def handler(context: PlaywrightCrawlingContext) -> None:
                 key = context.request.unique_key
                 recipe = self._recipes.get(key)
+                interaction_context = self._interaction_contexts.get(key, {})
                 recipe_extracted: list[dict[str, Any]] = []
                 document_response = context.response
 
@@ -533,6 +543,7 @@ class BrowserCrawlerRuntime:
                         manual_solved = await self._handle_manual_captcha(
                             context.page,
                             final_url,
+                            interaction_context,
                         )
                         if manual_solved:
                             final_url = context.page.url

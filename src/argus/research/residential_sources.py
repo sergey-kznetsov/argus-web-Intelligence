@@ -15,6 +15,7 @@ RESIDENTIAL_INTENTS = frozenset(
         "residential_premises_count",
     }
 )
+JANUS_RESIDENTIAL_TOOL_PACK_ID = "janus.residential_facts"
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,17 +32,20 @@ MINGKH_RESIDENTIAL_SOURCE = ResidentialSourceProfile(
 )
 
 
-class MingkhResidentialSourceResearchPlanner:
-    """Build deterministic discovery/navigation for residential building facts.
+def _is_janus_residential_request(request: CollectionRequest) -> bool:
+    return request.tool_pack_id == JANUS_RESIDENTIAL_TOOL_PACK_ID
 
-    These intents have one mandatory factual source. ARGUS enters the source through its
-    public ``robots.txt`` and declared sitemap, then routes relevant same-domain pages to the
-    dedicated residential adapter. Search engines are a fallback navigation aid and their
-    snippets never become Evidence. Without a building address this source planner fails
-    closed instead of selecting an arbitrary house from a city-level result set.
+
+class MingkhResidentialSourceResearchPlanner:
+    """Build deterministic navigation for source-declared residential building facts.
+
+    The Janus tool pack is a strict single-site contour. It enters ``dom.mingkh.ru``
+    directly and lets the dedicated adapter operate the site's own address interface in the
+    same source task. It never uses search providers, ``site_discovery`` or generic-web source
+    tasks. Other residential consumers retain the pre-existing robots/sitemap route unchanged.
     """
 
-    version = "mingkh-residential-sources/6"
+    version = "mingkh-residential-sources/7"
     supported_intents = RESIDENTIAL_INTENTS
     source = MINGKH_RESIDENTIAL_SOURCE
 
@@ -52,6 +56,35 @@ class MingkhResidentialSourceResearchPlanner:
         if not self._house_search_text(request):
             return []
         origin = f"https://{self.source.domain_scope}"
+        input_candidates = research_input_candidates(request)
+
+        if _is_janus_residential_request(request):
+            if requested != {"residential_premises_count"}:
+                return []
+            return [
+                SourceTask(
+                    source_id=self.source.source_id,
+                    goal="residential_premises_count",
+                    url=f"{origin}/",
+                    task_key=f"{self.source.source_id}:janus:{request.analysis_id}",
+                    metadata={
+                        "research_goals": ["residential_premises_count"],
+                        "allowed_domains": [self.source.domain_scope],
+                        "research_input_candidates": input_candidates,
+                        "research_input_candidates_navigation_only": True,
+                        "research_input_candidates_are_evidence": False,
+                        "research_input_scope": "territory_context",
+                        "dedicated_source_direct_entry": True,
+                        "dedicated_source_navigation": "address_interface",
+                        "source_policy": "janus_single_site_factual_collection",
+                        "source_owned_navigation": True,
+                        "janus_isolated_contour": True,
+                        "external_discovery_allowed": False,
+                        "domain_scope": self.source.domain_scope,
+                    },
+                )
+            ]
+
         return [
             SourceTask(
                 source_id="site_discovery",
@@ -65,7 +98,7 @@ class MingkhResidentialSourceResearchPlanner:
                     "site_discovery_target_source_id": self.source.source_id,
                     "research_goals": sorted(requested),
                     "allowed_domains": [self.source.domain_scope],
-                    "research_input_candidates": research_input_candidates(request),
+                    "research_input_candidates": input_candidates,
                     "research_input_candidates_navigation_only": True,
                     "research_input_candidates_are_evidence": False,
                     "research_input_scope": "territory_context",
@@ -78,9 +111,9 @@ class MingkhResidentialSourceResearchPlanner:
         ]
 
     def queries(self, request: CollectionRequest, *, limit: int = 2) -> list[str]:
-        """Return fallback search-provider navigation queries for uncovered facts."""
+        """Return fallback navigation queries only for non-Janus residential consumers."""
 
-        if limit <= 0:
+        if limit <= 0 or _is_janus_residential_request(request):
             return []
         requested = self.supported_intents.intersection(request.intents)
         if not requested:
@@ -110,7 +143,8 @@ class MingkhResidentialSourceResearchPlanner:
             "fallback_sources": False,
             "building_address_required": True,
             "direct_entry": "/robots.txt -> declared sitemap -> same-domain page",
-            "search_provider_policy": "followup_only_after_direct_navigation",
+            "janus_direct_entry": "/ -> source-owned address interface -> house page",
+            "search_provider_policy": "non_janus_followup_only",
         }
 
     @staticmethod
@@ -129,13 +163,12 @@ class MingkhResidentialSourceResearchPlanner:
 
 
 class CuratedResidentialResearchPlanner:
-    """Keep residential intents on their mandatory source without consumer branching.
+    """Keep residential intents on their mandatory source without source leakage.
 
-    Non-residential intents are delegated to the normal ARGUS planner. Residential requests
-    with a building address receive the source-owned robots/sitemap navigation task first.
-    Search-provider navigation for residential facts is deliberately deferred to adaptive
-    follow-up so it cannot consume the initial page budget ahead of the source's own public
-    navigation path. Mixed requests preserve normal research for other intents.
+    Janus receives an isolated deterministic single-site route and never delegates to the
+    normal ARGUS planner. Non-Janus residential behavior remains unchanged: other intents may
+    still be delegated and residential navigation may use the existing source-owned
+    robots/sitemap path.
     """
 
     def __init__(
@@ -154,6 +187,22 @@ class CuratedResidentialResearchPlanner:
         if not residential:
             return await self.delegate.plan(request)
 
+        if _is_janus_residential_request(request):
+            source_tasks = self.source_planner.tasks(request)
+            return ResearchPlan(
+                queries=[],
+                tasks=source_tasks,
+                notes=[
+                    "janus_residential_contour="
+                    f"{self.source_planner.source.source_id};"
+                    f"version={self.source_planner.version};"
+                    f"direct_entry={str(bool(source_tasks)).lower()};"
+                    "domain=dom.mingkh.ru;navigation=address_interface;"
+                    "generic_discovery=false;search_provider=false;"
+                    "analysis=false;fallback_sources=false"
+                ],
+            )
+
         other_intents = [intent for intent in request.intents if intent not in RESIDENTIAL_INTENTS]
         if other_intents:
             delegated_request = request.model_copy(update={"intents": other_intents})
@@ -162,10 +211,6 @@ class CuratedResidentialResearchPlanner:
             delegated = ResearchPlan()
 
         source_tasks = self.source_planner.tasks(request)
-        # The mandatory source's own published navigation path is primary. Residential
-        # search-provider queries are generated only by the follow-up planner when factual
-        # coverage is still missing after direct navigation. This prevents navigation noise
-        # from exhausting max_pages before robots/sitemap traversal can run.
         queries = _merge_queries([], delegated.queries, limit=self.max_queries)
         notes = [
             *delegated.notes,
@@ -189,11 +234,9 @@ class CuratedResidentialResearchPlanner:
 class CuratedResidentialFollowupResearchPlanner:
     """Keep adaptive residential gap research on the same mandatory source.
 
-    The delegate never sees the source-scoped residential intents, so an LLM or heuristic
-    follow-up planner cannot propose alternative factual sources for them. Search-provider
-    queries are emitted here only for facts still uncovered after primary source navigation.
-    One independent ``dom.mingkh.ru`` fact is sufficient for each explicitly single-source
-    residential intent.
+    Janus is deliberately source-owned and has no follow-up search queries. For other
+    residential consumers, the pre-existing bounded search-provider navigation fallback is
+    retained.
     """
 
     def __init__(
@@ -225,6 +268,17 @@ class CuratedResidentialFollowupResearchPlanner:
                 seen_queries=seen_queries,
                 max_queries=max_queries,
             )
+
+        if _is_janus_residential_request(request):
+            counts = self.coverage.counts(observations, request=request)
+            gaps = [intent for intent in residential if int(counts.get(intent, 0)) < 1]
+            notes = [
+                "janus_residential_followup="
+                f"{self.source_planner.source.source_id};"
+                f"gaps={','.join(gaps)};search_provider=false;"
+                "external_discovery=false;fallback_sources=false"
+            ]
+            return FollowupPlan(queries=[], notes=notes)
 
         other_intents = [intent for intent in request.intents if intent not in RESIDENTIAL_INTENTS]
         if other_intents:

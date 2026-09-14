@@ -53,10 +53,16 @@ def test_profiles_are_request_fixtures_not_source_routes():
     assert profiles["kraken"]["consumer"] == "kraken.development.uds"
     assert "complaints" in profiles["kraken"]["intents"]
     assert "reviews" not in profiles["kraken"]["intents"]
-    assert profiles["janus"]["consumer"] == "janus.simulation"
-    assert "residential_population" in profiles["janus"]["intents"]
-    assert "residential_premises_count" in profiles["janus"]["intents"]
-    assert "parking_capacity" not in profiles["janus"]["intents"]
+
+    janus = profiles["janus"]
+    assert janus["consumer"] == "janus.parking.potential.uds"
+    assert janus["consumer_profile_version"] == 1
+    assert janus["capability"] == "residential_facts"
+    assert janus["requested_facts"] == ["residential_premises_count"]
+    assert janus["intents"] == ["residential_premises_count"]
+    assert "residential_population" not in janus["intents"]
+    assert "parking_capacity" not in janus["intents"]
+
     assert profiles["historical"]["consumer"] == "historical.simulation"
     assert "historical_context" in profiles["historical"]["intents"]
     for profile in profiles.values():
