@@ -18,6 +18,7 @@ from argus.human_interaction import FileCaptchaBroker
 from argus.recipes.executor import PlaywrightRecipeExecutor
 from argus.recipes.models import SiteRecipe
 from argus.security.urls import UnsafeUrlError, UrlGuard
+from argus.source_execution import SourceExecutionContext, current_source_execution_context
 
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,11 @@ class BrowserCrawlerRuntime:
         "input[placeholder*='код' i]:visible",
         "input[aria-label*='код' i]:visible",
     )
+    _confirmed_challenge_generic_input_selectors = (
+        "input[type='text']:visible:not([disabled]):not([readonly])",
+        "input:not([type]):visible:not([disabled]):not([readonly])",
+        "input[type='number']:visible:not([disabled]):not([readonly])",
+    )
 
     def __init__(self, settings: Settings, url_guard: UrlGuard) -> None:
         self.settings = settings
@@ -51,6 +57,7 @@ class BrowserCrawlerRuntime:
         self._run_task: asyncio.Task[Any] | None = None
         self._start_lock = asyncio.Lock()
         self._recipes: dict[str, SiteRecipe] = {}
+        self._interaction_contexts: dict[str, SourceExecutionContext] = {}
 
     async def fetch(self, url: str, recipe: SiteRecipe | None = None) -> FetchResult:
         await self.url_guard.validate(url)
@@ -58,6 +65,9 @@ class BrowserCrawlerRuntime:
         from crawlee import Request
 
         key, future = self._broker.create(url)
+        execution_context = current_source_execution_context()
+        if execution_context is not None:
+            self._interaction_contexts[key] = execution_context
         if recipe is not None:
             self._recipes[key] = recipe
         try:
@@ -69,6 +79,7 @@ class BrowserCrawlerRuntime:
             raise TimeoutError("BROWSER runtime result timeout") from exc
         finally:
             self._recipes.pop(key, None)
+            self._interaction_contexts.pop(key, None)
             self._broker.discard(key)
 
     async def shutdown(self) -> None:
@@ -76,6 +87,7 @@ class BrowserCrawlerRuntime:
         self._crawler = None
         self._run_task = None
         self._recipes.clear()
+        self._interaction_contexts.clear()
         self._broker.reject_all(RuntimeError("BROWSER runtime is shutting down"))
         if crawler is not None:
             crawler.stop("ARGUS BROWSER shutdown")
@@ -154,8 +166,21 @@ class BrowserCrawlerRuntime:
                     return selector
             except Exception:
                 logger.debug("CAPTCHA selector probe failed: %s", selector, exc_info=True)
+        # This fallback is used only after ARGUS has already classified the page as a
+        # challenge. It handles sites such as dom.mingkh.ru where the arithmetic CAPTCHA
+        # is presented in an ordinary text/number field without a captcha-like name.
+        candidates: list[str] = []
+        for selector in self._confirmed_challenge_generic_input_selectors:
+            try:
+                count = await page.locator(selector).count()
+            except Exception:
+                logger.debug("Generic CAPTCHA input probe failed: %s", selector, exc_info=True)
                 continue
-        return None
+            if count == 1:
+                candidates.append(selector)
+            elif count > 1:
+                return None
+        return candidates[0] if len(candidates) == 1 else None
 
     async def _challenge_state(self, page: Any) -> tuple[bool, bool]:
         try:
@@ -341,7 +366,13 @@ class BrowserCrawlerRuntime:
         )
         return False
 
-    async def _handle_manual_captcha(self, page: Any, url: str) -> bool:
+    async def _handle_manual_captcha(
+        self,
+        page: Any,
+        url: str,
+        *,
+        execution_context: SourceExecutionContext | None = None,
+    ) -> bool:
         """Pause the live browser session and hand the remaining challenge to the user."""
 
         for _attempt in range(self.captcha_max_manual_attempts):
@@ -358,6 +389,8 @@ class BrowserCrawlerRuntime:
                     else "Кликните по нужным элементам проверки на скриншоте."
                 ),
                 input_selector=selector,
+                collection_id=(execution_context.collection_id if execution_context else None),
+                source_id=(execution_context.source_id if execution_context else None),
             )
             challenge_id = str(challenge["challenge_id"])
             if selector is None:
@@ -471,6 +504,7 @@ class BrowserCrawlerRuntime:
             async def handler(context: PlaywrightCrawlingContext) -> None:
                 key = context.request.unique_key
                 recipe = self._recipes.get(key)
+                execution_context = self._interaction_contexts.get(key)
                 recipe_extracted: list[dict[str, Any]] = []
                 document_response = context.response
 
@@ -533,6 +567,7 @@ class BrowserCrawlerRuntime:
                         manual_solved = await self._handle_manual_captcha(
                             context.page,
                             final_url,
+                            execution_context=execution_context,
                         )
                         if manual_solved:
                             final_url = context.page.url
