@@ -36,8 +36,10 @@ async def test_bootstrap_uses_public_map_provenance_generic_web_adapter(tmp_path
         "google_maps_web",
     ]
     assert provenance["delivery_contract"] == {
-        "version": "public-map-information-only/1",
-        "information_only": True,
-        "source_message_candidate": False,
+        "version": "public-map-atomic-messages/2",
+        "technical_surface_information_only": True,
+        "atomic_message_entity_types": ["comment", "post", "review"],
+        "atomic_message_candidate": True,
+        "text_normalization_applied": False,
         "evidence_preserved": True,
     }
