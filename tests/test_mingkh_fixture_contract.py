@@ -7,6 +7,7 @@ import pytest
 
 from argus.contracts.models import CollectionRequest
 from argus.crawler.models import FetchResult
+from argus.research.intent_coverage import IntentCoverageEvaluator
 from argus.sources.base import SourceTask
 from argus.sources.mingkh_residential import MingkhResidentialAdapter
 
@@ -135,9 +136,9 @@ async def test_janus_single_pass_search_page_does_not_enqueue_similar_house_link
     )
     assert result.observations == []
     assert result.discovered_tasks == []
-    # max_depth=0 blocks linked-house follow-up tasks, but the dedicated source may still
-    # perform one bounded interface-navigation attempt using the requested address. Any
-    # returned page is re-validated against the exact territory before facts can be emitted.
+    # With the fixture request's default depth budget, linked-house follow-up is blocked;
+    # the dedicated source may still perform one bounded interface-navigation attempt.
+    # Any returned page is re-validated against the exact requested territory.
     assert web.navigation_calls == 1
 
 
@@ -157,3 +158,38 @@ async def test_nezhilye_area_text_does_not_imply_non_residential_object_status()
         if isinstance(item.data, dict)
     ]
     assert "non_residential" not in statuses
+
+
+@pytest.mark.asyncio
+async def test_explicit_source_label_can_resolve_non_residential_without_fabricating_zero() -> None:
+    web = _Web()
+    adapter = MingkhResidentialAdapter(web, _Snapshots())
+    url = "https://dom.mingkh.ru/perm/perm/123456"
+    request = _request()
+    result = await adapter.extract(
+        _task(url),
+        _fetched(_html("mingkh_explicit_non_residential.html"), url=url),
+        request,
+    )
+
+    assert result.partial is False
+    assert result.errors == []
+    assert len(result.observations) == 1
+    observation = result.observations[0]
+    assert observation.source == "mingkh_residential"
+    assert observation.data["intent"] == "residential_premises_count"
+    assert observation.data["object_status"] == "non_residential"
+    assert observation.data["value"] is None
+    assert observation.data["source_label"] == "Тип объекта"
+    assert observation.data["source_value"] == "Нежилое здание"
+    assert observation.quality["not_applicable"] is True
+    assert observation.provenance["snapshot_id"] == "snapshot-fixture"
+    assert result.evidence[0].text == "Тип объекта: Нежилое здание"
+    assert web.navigation_calls == 0
+
+    coverage = IntentCoverageEvaluator()
+    assert coverage.supports(
+        observation,
+        "residential_premises_count",
+        request=request,
+    ) is True
