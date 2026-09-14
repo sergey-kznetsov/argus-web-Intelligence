@@ -32,13 +32,18 @@ def test_janus_profile_allows_only_residential_premises_fact():
     assert capability.allowed_facts == ("residential_premises_count",)
 
 
-def test_janus_request_resolves_to_mingkh_bounded_tool_pack():
+def test_janus_request_resolves_to_isolated_mingkh_tool_pack():
     request = _request()
     pack = resolved_tool_pack_from_request(request)
     assert pack is not None
     assert pack.tool_pack_id == "janus.residential_facts"
-    assert pack.allows_source("mingkh_residential")
-    assert pack.allows_source("site_discovery")
+    assert pack.allowed_source_ids == ("mingkh_residential",)
+    assert pack.planner_policy == "janus_residential_facts"
+    assert pack.exclusive_domains == ("dom.mingkh.ru",)
+    assert pack.max_pages == 1
+    assert pack.max_depth == 0
+    assert not pack.allows_source("site_discovery")
+    assert not pack.allows_source("generic_web")
     assert not pack.allows_source("openstreetmap_overpass")
 
 
