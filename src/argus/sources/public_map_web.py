@@ -25,7 +25,8 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
     """
 
     semantic_escalation_version = "public-map-goal-escalation/6"
-    public_map_delivery_version = "public-map-information-only/1"
+    public_map_delivery_version = "public-map-atomic-messages/2"
+    public_map_atomic_message_types = frozenset({"review", "comment", "post"})
     semantic_escalation_goals = frozenset(
         {"reviews", "comments", "discussions", "complaints"}
     )
@@ -306,6 +307,18 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
     def _review_fact_count(result: SourceResult) -> int:
         return sum(1 for item in result.observations if item.entity_type == "review")
 
+    @classmethod
+    def _is_public_map_atomic_message(cls, observation) -> bool:
+        entity_type = observation.entity_type.strip().casefold()
+        text = observation.text
+        return (
+            entity_type in cls.public_map_atomic_message_types
+            and isinstance(text, str)
+            and bool(text.strip())
+            and observation.quality.get("navigation_only") is not True
+            and observation.quality.get("atomic_container_superseded") is not True
+        )
+
     def _attach_public_map_provenance(
         self,
         result: SourceResult,
@@ -331,32 +344,48 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             "status_code": task.metadata.get("public_map_review_view_status_code"),
             "blocked": bool(task.metadata.get("public_map_review_view_blocked")),
         }
-        delivery = {
-            "version": self.public_map_delivery_version,
-            "information_only": True,
-            "message_candidate": False,
-            "evidence_preserved": True,
-        }
+        delivery_by_observation: dict[str, dict[str, object]] = {}
         for observation in result.observations:
             provenance = classify_public_map_url(observation.url)
             if provenance is None:
                 continue
+            message_candidate = self._is_public_map_atomic_message(observation)
+            delivery: dict[str, object] = {
+                "version": self.public_map_delivery_version,
+                "information_only": not message_candidate,
+                "message_candidate": message_candidate,
+                "evidence_preserved": True,
+                "text_normalization_applied": False,
+            }
+            delivery_by_observation[observation.observation_id] = delivery
             observation.provenance["public_map_source"] = dict(provenance)
             observation.provenance["public_map_semantic_escalation"] = dict(escalation)
             observation.provenance["public_map_review_view"] = dict(review_view)
             observation.provenance["public_map_delivery"] = dict(delivery)
             observation.quality["public_map_source_identified"] = True
-            observation.quality["public_map_information_only"] = True
-            observation.quality["message_candidate"] = False
+            observation.quality["public_map_information_only"] = not message_candidate
+            observation.quality["message_candidate"] = message_candidate
 
+        technical_delivery = {
+            "version": self.public_map_delivery_version,
+            "information_only": True,
+            "message_candidate": False,
+            "evidence_preserved": True,
+            "text_normalization_applied": False,
+        }
         for evidence in result.evidence:
             provenance = classify_public_map_url(evidence.source.url)
             if provenance is None:
                 continue
+            delivery = delivery_by_observation.get(
+                str(evidence.observation_id or ""), technical_delivery
+            )
             evidence.metadata["public_map_source"] = dict(provenance)
             evidence.metadata["public_map_semantic_escalation"] = dict(escalation)
             evidence.metadata["public_map_review_view"] = dict(review_view)
-            evidence.metadata["public_map_information_only"] = True
+            evidence.metadata["public_map_information_only"] = bool(
+                delivery["information_only"]
+            )
             evidence.metadata["public_map_delivery"] = dict(delivery)
 
     async def health(self) -> dict[str, object]:
@@ -369,8 +398,10 @@ class PublicMapProvenanceWebAdapter(HistoricalTimelineWebAdapter):
             "paid_api": False,
             "delivery_contract": {
                 "version": self.public_map_delivery_version,
-                "information_only": True,
-                "source_message_candidate": False,
+                "technical_surface_information_only": True,
+                "atomic_message_entity_types": sorted(self.public_map_atomic_message_types),
+                "atomic_message_candidate": True,
+                "text_normalization_applied": False,
                 "evidence_preserved": True,
             },
             "direct_browser_navigation": {
