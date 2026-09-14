@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import pytest
-
-from argus.consumer_registry import CONSUMER_PROFILE_REGISTRY, ConsumerContractError
+from argus.consumer_registry import CONSUMER_PROFILE_REGISTRY
 from argus.contracts.models import CollectionRequest, Observation, Point, TerritoryContext
 from argus.orchestrator.area_atomic import AreaAwareAtomicCollectionOrchestrator
 from argus.research.territory_relevance import TerritoryRelevanceEvaluator
@@ -127,16 +125,15 @@ def test_kraken_street_query_searches_social_problems_not_reviews() -> None:
     assert "отзывы" not in query
 
 
-def test_kraken_consumer_contract_rejects_establishment_review_fact() -> None:
-    with pytest.raises(ConsumerContractError) as error:
-        CONSUMER_PROFILE_REGISTRY.resolve(
-            consumer="kraken.development.uds",
-            capability="urban_signals",
-            requested_facts=["review"],
-            profile_version=1,
-        )
+def test_kraken_consumer_contract_accepts_atomic_review_fact() -> None:
+    resolved = CONSUMER_PROFILE_REGISTRY.resolve(
+        consumer="kraken.development.uds",
+        capability="urban_signals",
+        requested_facts=["review"],
+        profile_version=1,
+    )
 
-    assert error.value.code == "UNSUPPORTED_REQUESTED_FACT"
+    assert resolved.requested_facts == ("review",)
 
 
 def test_generic_policy_does_not_broaden_house_request_to_street_scope() -> None:
