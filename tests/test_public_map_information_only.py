@@ -7,8 +7,19 @@ from argus.sources.base import SourceResult, SourceTask
 from argus.sources.public_map_web import PublicMapProvenanceWebAdapter
 
 
-@pytest.mark.parametrize("entity_type", ["document", "review", "comment"])
-def test_public_map_observations_remain_evidence_not_messages(entity_type: str) -> None:
+@pytest.mark.parametrize(
+    ("entity_type", "expected_candidate"),
+    [
+        ("document", False),
+        ("review", True),
+        ("comment", True),
+        ("post", True),
+    ],
+)
+def test_public_map_atomic_messages_are_deliverable(
+    entity_type: str,
+    expected_candidate: bool,
+) -> None:
     adapter = object.__new__(PublicMapProvenanceWebAdapter)
     adapter.agent = None
     observation = Observation(
@@ -50,14 +61,47 @@ def test_public_map_observations_remain_evidence_not_messages(entity_type: str) 
     adapter._attach_public_map_provenance(result, task)
 
     assert observation.quality["public_map_source_identified"] is True
-    assert observation.quality["public_map_information_only"] is True
-    assert observation.quality["message_candidate"] is False
+    assert observation.quality["public_map_information_only"] is not expected_candidate
+    assert observation.quality["message_candidate"] is expected_candidate
     assert observation.provenance["public_map_delivery"] == {
-        "version": "public-map-information-only/1",
-        "information_only": True,
-        "message_candidate": False,
+        "version": "public-map-atomic-messages/2",
+        "information_only": not expected_candidate,
+        "message_candidate": expected_candidate,
         "evidence_preserved": True,
+        "text_normalization_applied": False,
     }
-    assert evidence.metadata["public_map_information_only"] is True
+    assert evidence.metadata["public_map_information_only"] is not expected_candidate
     assert evidence.metadata["public_map_delivery"]["evidence_preserved"] is True
     assert len(result.evidence) == 1
+
+
+def test_navigation_review_remains_information_only() -> None:
+    adapter = object.__new__(PublicMapProvenanceWebAdapter)
+    adapter.agent = None
+    observation = Observation(
+        observation_id="obs-review-navigation",
+        collection_id="collection-1",
+        analysis_id="analysis-1",
+        consumer="test",
+        source="generic_web",
+        source_kind="json_ld",
+        url="https://2gis.ru/izhevsk/firm/example",
+        entity_type="review",
+        text="Navigation-only review-shaped shell",
+        data={},
+        content_hash="b" * 64,
+        provenance={},
+        quality={"navigation_only": True},
+    )
+    result = SourceResult(observations=[observation], evidence=[])
+    task = SourceTask(
+        source_id="generic_web",
+        goal="reviews",
+        url=observation.url,
+        metadata={},
+    )
+
+    adapter._attach_public_map_provenance(result, task)
+
+    assert observation.quality["public_map_information_only"] is True
+    assert observation.quality["message_candidate"] is False
