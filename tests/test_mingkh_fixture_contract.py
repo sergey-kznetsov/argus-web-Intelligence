@@ -120,7 +120,7 @@ async def test_similar_wrong_address_never_becomes_residential_evidence() -> Non
 
 
 @pytest.mark.asyncio
-async def test_search_results_may_discover_similar_addresses_but_do_not_emit_facts() -> None:
+async def test_janus_single_pass_search_page_does_not_follow_similar_house_links() -> None:
     web = _Web()
     adapter = MingkhResidentialAdapter(web, _Snapshots())
     url = "https://dom.mingkh.ru/search"
@@ -134,7 +134,7 @@ async def test_search_results_may_discover_similar_addresses_but_do_not_emit_fac
         _request(),
     )
     assert result.observations == []
-    assert {task.url for task in result.discovered_tasks} == set(links)
+    assert result.discovered_tasks == []
     assert web.navigation_calls == 0
 
 
