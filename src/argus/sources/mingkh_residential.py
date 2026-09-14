@@ -45,19 +45,18 @@ class ResidentialWebRuntime(Protocol):
 
 
 class MingkhResidentialAdapter:
-    """Collect source-declared residential building facts from ``dom.mingkh.ru``.
+    """Collect source-declared residential facts only from ``dom.mingkh.ru``.
 
-    Population is never estimated from apartments, area or other proxies. A fact is
-    emitted only when the fetched public page explicitly labels the value. Accessible
-    public search/filter interfaces may be traversed through the bounded AGENT -> verified
-    SiteRecipe contract. Access challenges are detected and reported as blocked; this
-    adapter never solves or bypasses CAPTCHA/access-control mechanisms.
+    The source never estimates factual values. Public site navigation may use the bounded
+    browser/agent infrastructure, but every emitted fact must be backed by the actual page.
+    CAPTCHA is handled as human-in-the-loop by Browser Runtime; an unresolved challenge is
+    a collector failure, never a residential business state.
     """
 
     source_id = "mingkh_residential"
     intents = set(RESIDENTIAL_INTENTS)
     domain = "dom.mingkh.ru"
-    extractor_version = "mingkh-residential/2"
+    extractor_version = "mingkh-residential/3"
     interface_navigation_version = "mingkh-interface-navigation/1"
 
     _LABELS: dict[str, tuple[str, ...]] = {
@@ -114,6 +113,7 @@ class MingkhResidentialAdapter:
                     goal=sorted(requested)[0],
                     url=url,
                     metadata={
+                        "analysis_id": request.analysis_id,
                         "research_goals": sorted(requested),
                         "allowed_domains": [self.domain],
                         "research_input_candidates": list(input_candidates),
@@ -128,6 +128,20 @@ class MingkhResidentialAdapter:
     async def fetch(self, task: SourceTask) -> FetchResult:
         if not self._is_domain_url(task.url):
             raise ValueError("mingkh residential task must target dom.mingkh.ru")
+
+        # Mingkh is an interactive factual source. Prefer the shared browser runtime so a
+        # challenge can pause the exact same live page and be correlated to its collection.
+        browser = getattr(self.web, "browser", None)
+        browser_fetch = getattr(browser, "fetch", None)
+        if callable(browser_fetch):
+            return await browser_fetch(
+                task.url,
+                interaction_context={
+                    "collection_id": task.metadata.get("collection_id"),
+                    "analysis_id": task.metadata.get("analysis_id"),
+                    "source_id": self.source_id,
+                },
+            )
         return await self.web.fetch(task)
 
     async def extract(
@@ -136,6 +150,7 @@ class MingkhResidentialAdapter:
         fetched: FetchResult,
         request: CollectionRequest,
     ) -> SourceResult:
+        task.metadata["analysis_id"] = request.analysis_id
         result = await self._extract_page(
             task,
             fetched,
@@ -171,14 +186,14 @@ class MingkhResidentialAdapter:
         if fetched.blocked or self._has_access_challenge(visible_text):
             return SourceResult(
                 observations=[],
-                blocked=True,
-                partial=False,
+                blocked=False,
+                partial=True,
                 errors=[
                     StructuredError(
-                        code="MINGKH_ACCESS_CHALLENGE",
+                        code="MINGKH_ACCESS_CHALLENGE_UNRESOLVED",
                         message=(
-                            "dom.mingkh.ru presented an automated-access challenge; "
-                            "ARGUS did not attempt to bypass it"
+                            "dom.mingkh.ru challenge remained after the bounded human-in-the-loop "
+                            "recovery process"
                         ),
                         retryable=True,
                         source_id=self.source_id,
@@ -309,6 +324,7 @@ class MingkhResidentialAdapter:
     ) -> SourceResult:
         task.metadata["mingkh_interface_navigation_attempted"] = True
         task.metadata["mingkh_interface_navigation_version"] = self.interface_navigation_version
+        task.metadata["analysis_id"] = request.analysis_id
         self._ensure_research_inputs(task, request)
         guided = await self.web.navigate_with_agent(task, context_fetch=fetched)
         if guided is None:
@@ -347,7 +363,7 @@ class MingkhResidentialAdapter:
             "intents": sorted(self.intents),
             "extractor_version": self.extractor_version,
             "population_estimation": False,
-            "access_challenge_policy": "detect_and_report_blocked",
+            "access_challenge_policy": "human_in_the_loop_same_session",
             "interface_navigation": {
                 "version": self.interface_navigation_version,
                 "enabled": True,
@@ -356,6 +372,7 @@ class MingkhResidentialAdapter:
                 "max_rounds_per_task": 1,
                 "candidate_requires_source_fact": True,
                 "research_input_scope": "territory_context",
+                "human_interaction": ["text", "click", "refresh"],
                 "challenge_bypass": False,
             },
             "upstream_web_runtime": upstream,
@@ -541,8 +558,6 @@ class MingkhResidentialAdapter:
         if result.blocked or result.discovered_tasks:
             return False
         if not relevance_matched and self._has_explicit_residential_value(chunks):
-            # A detail page for another house is not a navigation surface. Never let AGENT
-            # turn a proven territory mismatch into evidence for the requested address.
             return False
         return True
 
@@ -551,6 +566,7 @@ class MingkhResidentialAdapter:
         task: SourceTask,
         request: CollectionRequest,
     ) -> None:
+        task.metadata["analysis_id"] = request.analysis_id
         task.metadata["research_input_candidates"] = research_input_candidates(request)
         task.metadata["research_input_candidates_navigation_only"] = True
         task.metadata["research_input_candidates_are_evidence"] = False
@@ -573,8 +589,6 @@ class MingkhResidentialAdapter:
         fallback: SourceResult,
         guided: SourceResult,
     ) -> SourceResult:
-        """Keep prior valid facts while replacing navigation-surface errors with success."""
-
         return SourceResult(
             observations=cls._dedupe_observations(
                 [*fallback.observations, *guided.observations]
@@ -594,8 +608,6 @@ class MingkhResidentialAdapter:
         fallback: SourceResult,
         guided: SourceResult,
     ) -> SourceResult:
-        """Retain all factual rows and diagnostics when navigation reveals no goal fact."""
-
         return SourceResult(
             observations=cls._dedupe_observations(
                 [*fallback.observations, *guided.observations]
@@ -683,6 +695,7 @@ class MingkhResidentialAdapter:
                     url=url,
                     depth=task.depth + 1,
                     metadata={
+                        "analysis_id": request.analysis_id,
                         "research_goals": goals,
                         "allowed_domains": [self.domain],
                         "research_input_candidates": list(input_candidates),
