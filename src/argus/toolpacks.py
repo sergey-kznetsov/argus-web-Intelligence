@@ -218,14 +218,16 @@ JANUS_RESIDENTIAL_FACTS_TOOL_PACK = ToolPack(
     version=1,
     consumer_id="janus.parking.potential.uds",
     capability="residential_facts",
-    allowed_source_ids=("mingkh_residential", "site_discovery", "generic_web"),
-    planner_policy="universal",
+    allowed_source_ids=("mingkh_residential",),
+    planner_policy="janus_residential_facts",
     recipe_namespace="janus.residential_facts",
     extractor_policy="residential_facts",
     result_delivery_policy="intent_evidence",
     description=(
-        "Bounded source-scoped acquisition of apartment/residential-premises counts from "
-        "dom.mingkh.ru for Janus. No parking calculations are performed by ARGUS."
+        "Dedicated Janus acquisition contour. ARGUS reads only source-declared residential "
+        "premises facts from dom.mingkh.ru and returns factual Evidence/Provenance. It does "
+        "not use generic web discovery, does not collect SOIKA/Kraken data, and does not "
+        "classify parking or calculate parking potential."
     ),
 )
 
