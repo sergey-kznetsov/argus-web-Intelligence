@@ -259,7 +259,7 @@ class Observation(BaseModel):
 
 
 class Snapshot(BaseModel):
-    snapshot_id: str
+    snapshot_id: str = Field(default_factory=lambda: str(uuid4()))
     source_id: str
     source_url: str
     collected_at: datetime = Field(default_factory=utcnow)
