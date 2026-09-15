@@ -926,6 +926,4 @@ class MingkhResidentialAdapter:
     def _is_domain_url(cls, url: str) -> bool:
         parsed = urlparse(str(url))
         host = (parsed.hostname or "").casefold().strip(".")
-        return parsed.scheme in {"http", "https"} and (
-            host == cls.domain or host.endswith(f".{cls.domain}")
-        )
+        return parsed.scheme in {"http", "https"} and host == cls.domain
