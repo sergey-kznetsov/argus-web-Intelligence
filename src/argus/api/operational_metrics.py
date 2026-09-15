@@ -4,7 +4,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 
 from argus.config import Settings
@@ -18,6 +18,44 @@ from argus.human_interaction import (
 from argus.research.lane_coverage import build_research_lane_coverage
 from argus.security.http_hardening import apply_http_hardening
 from argus.services import ServiceContainer
+
+
+def _public_collection_interaction(payload: dict[str, object]) -> dict[str, object]:
+    """Return the stable consumer-safe interaction contract.
+
+    Collection consumers never receive the source URL, selector, screenshot path, answer,
+    browser state, cookies, bearer material, or raw runtime errors. Raw broker state remains
+    available only to the authenticated operator endpoints.
+    """
+
+    challenge_id = payload.get("challenge_id")
+    error = payload.get("error")
+    return {
+        "version": payload.get("version"),
+        "challenge_id": challenge_id,
+        "interaction_id": payload.get("interaction_id") or challenge_id,
+        "collection_id": payload.get("collection_id"),
+        "analysis_id": payload.get("analysis_id"),
+        "source_id": payload.get("source_id"),
+        "kind": payload.get("kind"),
+        "prompt": payload.get("prompt"),
+        "status": payload.get("status"),
+        "created_at": payload.get("created_at"),
+        "updated_at": payload.get("updated_at"),
+        "has_screenshot": bool(payload.get("has_screenshot")),
+        "manual_input_supported": bool(payload.get("manual_input_supported")),
+        "interactive_required": bool(payload.get("interactive_required")),
+        "interactive_input_supported": bool(payload.get("interactive_input_supported")),
+        "interaction_count": int(payload.get("interaction_count", 0) or 0),
+        "error": (
+            {
+                "code": "INTERACTION_ERROR",
+                "message": "Interaction processing requires operator attention",
+            }
+            if error
+            else None
+        ),
+    }
 
 
 def register_operational_metrics_endpoint(
@@ -39,12 +77,21 @@ def register_operational_metrics_endpoint(
             raise HTTPException(status_code=404, detail="collection not found")
         return record
 
-    def correlated_challenge_or_404(collection_id: str, challenge_id: str):
+    def correlated_challenge_or_404(
+        collection_id: str,
+        analysis_id: str,
+        challenge_id: str,
+    ) -> dict[str, object]:
         try:
-            return captcha_broker.assert_collection(challenge_id, collection_id)
+            payload = captcha_broker.assert_collection(challenge_id, collection_id)
         except CaptchaChallengeNotFoundError as exc:
             # Do not leak whether the identifier belongs to another collection.
             raise HTTPException(status_code=404, detail="interaction not found") from exc
+        actual_analysis_id = str(payload.get("analysis_id") or "").strip()
+        if not actual_analysis_id or actual_analysis_id != str(analysis_id).strip():
+            # A collection identifier is not sufficient authority for another analysis.
+            raise HTTPException(status_code=404, detail="interaction not found")
+        return payload
 
     @app.get("/v1/operations/metrics", dependencies=[Depends(require_bearer)])
     async def operational_metrics() -> dict[str, object]:
@@ -201,14 +248,14 @@ def register_operational_metrics_endpoint(
         dependencies=[Depends(require_bearer)],
     )
     async def collection_interactions(collection_id: str) -> dict[str, object]:
-        """Expose only interactions correlated with this ARGUS collection."""
+        """Expose only interactions correlated with this collection and its analysis."""
 
         record = await collection_or_404(collection_id)
         analysis_id = str(record.request.analysis_id)
         items = [
-            item
+            _public_collection_interaction(item)
             for item in captcha_broker.list_pending_for_collection(collection_id)
-            if str(item.get("analysis_id") or "") == analysis_id
+            if str(item.get("analysis_id") or "").strip() == analysis_id
         ]
         return {
             "version": captcha_broker.version,
@@ -223,13 +270,17 @@ def register_operational_metrics_endpoint(
         dependencies=[Depends(require_bearer)],
     )
     async def collection_interaction_screenshot(collection_id: str, challenge_id: str):
-        await collection_or_404(collection_id)
-        correlated_challenge_or_404(collection_id, challenge_id)
+        record = await collection_or_404(collection_id)
+        correlated_challenge_or_404(collection_id, str(record.request.analysis_id), challenge_id)
         try:
-            path = captcha_broker.screenshot_path(challenge_id)
-        except CaptchaChallengeNotFoundError as exc:
+            content = captcha_broker.screenshot_path(challenge_id).read_bytes()
+        except (CaptchaChallengeNotFoundError, OSError) as exc:
             raise HTTPException(status_code=404, detail="interaction not found") from exc
-        return FileResponse(path=path, media_type="image/png")
+        return Response(
+            content=content,
+            media_type="image/png",
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.post(
         "/v1/collections/{collection_id}/interactions/{challenge_id}/answer",
@@ -240,16 +291,16 @@ def register_operational_metrics_endpoint(
         challenge_id: str,
         submission: CaptchaAnswerSubmission,
     ) -> dict[str, object]:
-        await collection_or_404(collection_id)
-        correlated_challenge_or_404(collection_id, challenge_id)
+        record = await collection_or_404(collection_id)
+        correlated_challenge_or_404(collection_id, str(record.request.analysis_id), challenge_id)
         try:
             challenge = captcha_broker.submit_answer(challenge_id, submission.answer)
         except CaptchaChallengeStateError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail="interaction is not accepting text input") from exc
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail="invalid interaction answer") from exc
         services.metrics.inc("captcha_collection_answers_total", status="submitted")
-        return challenge
+        return _public_collection_interaction(challenge)
 
     @app.post(
         "/v1/collections/{collection_id}/interactions/{challenge_id}/interaction",
@@ -260,8 +311,8 @@ def register_operational_metrics_endpoint(
         challenge_id: str,
         submission: CaptchaInteractionSubmission,
     ) -> dict[str, object]:
-        await collection_or_404(collection_id)
-        correlated_challenge_or_404(collection_id, challenge_id)
+        record = await collection_or_404(collection_id)
+        correlated_challenge_or_404(collection_id, str(record.request.analysis_id), challenge_id)
         try:
             challenge = captcha_broker.submit_interaction(
                 challenge_id,
@@ -270,11 +321,11 @@ def register_operational_metrics_endpoint(
                 y_ratio=submission.y_ratio,
             )
         except CaptchaChallengeStateError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail="interaction is not accepting this action") from exc
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail="invalid interaction action") from exc
         services.metrics.inc(
             "captcha_collection_interactions_total",
             status=submission.action,
         )
-        return challenge
+        return _public_collection_interaction(challenge)
