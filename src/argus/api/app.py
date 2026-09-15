@@ -7,6 +7,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 
 from argus import __version__
+from argus.api.interactions import register_human_interaction_endpoints
 from argus.api.operational_metrics import register_operational_metrics_endpoint
 from argus.bootstrap import (
     build_services,
@@ -115,6 +116,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings=settings,
         services=services,
         repository=repository,
+        require_bearer=require_bearer,
+    )
+    register_human_interaction_endpoints(
+        app,
+        settings=settings,
         require_bearer=require_bearer,
     )
 
