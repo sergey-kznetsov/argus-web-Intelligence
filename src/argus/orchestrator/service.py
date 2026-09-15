@@ -397,6 +397,24 @@ class CollectionOrchestrator:
 
             intent_request = record.request.model_copy(update={"intents": [intent]})
             intent_plan = await self.planner.plan(intent_request)
+            direct_tasks = self._direct_no_discovery_tasks(intent_plan.tasks, intent)
+            if direct_tasks:
+                pending = self._merge_tasks(
+                    pending,
+                    direct_tasks,
+                    record.collection_id,
+                )
+                completed_intents.add(intent)
+                await self._checkpoint_discovery_progress(
+                    record,
+                    pending,
+                    discovery_queries,
+                    discovery_providers,
+                    discovery_blocked,
+                    completed_intents,
+                )
+                continue
+
             remaining_intent_count = len(intents_to_run) - index
             allocation = max(1, remaining_queries // remaining_intent_count)
             queries = [query for query in intent_plan.queries if query.strip()][:allocation]
@@ -491,6 +509,25 @@ class CollectionOrchestrator:
                     seen.add(key)
                     tasks.append(task)
         return tasks, covered_intents
+
+    @staticmethod
+    def _direct_no_discovery_tasks(
+        tasks: list[SourceTask],
+        intent: str,
+    ) -> list[SourceTask]:
+        direct: list[SourceTask] = []
+        for task in tasks:
+            if task.metadata.get("external_discovery_allowed") is not False:
+                continue
+            raw_goals = task.metadata.get("research_goals", [])
+            goals = {
+                str(value).strip()
+                for value in raw_goals
+                if isinstance(raw_goals, list) and str(value).strip()
+            }
+            if task.goal == intent or intent in goals:
+                direct.append(task)
+        return direct
 
     @classmethod
     def _merge_tasks(
